@@ -776,6 +776,8 @@ public:
 | 寄存器控制信号：原样保留 | 经层次连到无效常量的使能、同步复位去掉；异步复位只有全部为常量无效时才去掉 | `FDRE` 的 `CE=1'b1`、`R=1'b0` 在模型内部是端口，不去掉会把同步链的每一级都当作带使能的捕获寄存器 |
 | MUX 原样保留 | `BodyEditor` 把"两个数据输入在某位上相同"的 MUX 输出位替换为该输入位（生成单元时和结束时各做一次） | 两进程写法中记录的未修改字段要经过每一级 if 的整记录 MUX；不替换会使常量位看起来依赖选择信号（surf FIFO 的 CDC-007 误报） |
 | 时钟进程：只认 if/elsif 链 | 时钟 if 之后的 `if <cond> then ... end if` 是最高优先级的异步复位（VHDL 中后一条赋值生效） | surf 的 `Synchronizer` 用这种写法 |
+| 接口：不支持 | 接口实例展平到声明它的模块；接口端口按使用的成员拆成普通端口（第 17.3 节） | 保持 IR 只有模块和普通端口，后续分析无需了解接口 |
+| 派生时钟没有周期 | 时钟生成器模型通过属性给出周期比例，时钟分析计算周期 | CDC-007 需要周期；Vivado 也从 MMCM 参数自动推导这些时钟 |
 | Gray 识别：一个多比特源寄存器 | 还识别"按位拆开的寄存器组"（`xpm_cdc_gray` 每一位一条 generate 链）：同一 generate 的兄弟寄存器合起来证明 Gray 编码 | XPM 宏和很多手写代码都按位生成同步链 |
 
 ## 15. VHDL 前端（阶段 8）
@@ -842,3 +844,30 @@ src/frontend/Primitives    PrimitiveLibrary：查找（不区分大小写）、�
 ### 16.2 工程编辑
 
 `engine::projectToJson` / `saveProjectFile` 写出工程文件（路径相对于工程文件，`/` 分隔；先写临时文件再替换）；与 `parseProjectJson` 往返不变。GUI 的 `ProjectEditor` 对话框只编辑 `ProjectConfig`，保存和重新分析由主窗口负责。`opencdc-gui --edit-test` 是无界面的自测：编辑、保存、重新打开、分析。
+
+## 17. 时钟频率、存储器原语与 SystemVerilog 接口（阶段 10）
+
+### 17.1 时钟生成器的输出周期
+
+MMCM/PLL 模型的每个输出寄存器带三个属性：`OPENCDC_CLOCK_RATIO`（`DIVCLK_DIVIDE × CLKOUTn_DIVIDE / CLKFBOUT_MULT`，按实例参数由 slang 求值）、`OPENCDC_CLOCK_INPUT_PERIOD`（`CLKIN1_PERIOD`）、`OPENCDC_CLOCK_PIN`（引脚名）。时钟分析建立分频时钟时读取这些属性：时钟名改为 `实例.引脚`；在生成时钟的主时钟解析之后，周期 = 主时钟周期 × 比例，主时钟没有周期时用 `CLKIN1_PERIOD` × 比例。链式生成器（MMCM 驱动 MMCM）按固定点迭代。
+
+### 17.2 存储器与 DDR 原语
+
+- 块 RAM 和 XPM/Intel 存储器：每个写端口写自己的数组，每个读端口读取所有数组（按位异或合并）。这样"端口 A 写、端口 B 读"在两个时钟之间形成跨域，同一端口的读写不跨域；共用时钟的模式（`common_clock`、`address_reg_b = "CLOCK0"`）不跨域。
+- DDR 输入：下降沿采样寄存器 + 上升沿输出寄存器；DDR 输出：两个上升沿寄存器经或门到引脚。
+- `IDELAYCTRL.RDY`、MMCM `LOCKED` 由内置黑盒 `opencdc_async_source` 驱动：没有时钟域。
+- 宽容处理：模型不需要的参数（`INIT_xx` 等）忽略；模型没有的引脚（级联、ECC）的连接作为 `FE-PRIMITIVE-PORT` 信息报告，Verilog（slang `PortDoesNotExist` 降级）和 VHDL（`ElabOptions::lenientModules`）一致。VHDL 中没有类型上下文的聚合 generic（`INIT_00 => (others => '0')`）跳过。
+
+### 17.3 SystemVerilog 接口
+
+| 构造 | 处理 |
+|---|---|
+| 接口实例 `bus_if ia(clk)` | 展平到声明它的模块体：成员为 `ia.data` 线网，接口内的 always/assign 在该模块体中降级，接口端口连接成为连续赋值 |
+| 接口端口 `bus_if.src b` | 模块体中被引用的每个成员成为一个端口 `b.data`（`ifaceTarget` 把 modport 端口解析到接口成员，按成员相对接口实例的路径命名） |
+| 端口方向 | modport 给出 input/output 时用之；否则（通用 `interface` 端口、modport inout）按使用：本模块或子模块驱动它则为输出 |
+| 父模块绑定 | 按端口名前缀找到连接的接口实例（或接口数组元素 `b[1]`），在实例中按路径查找成员，实参为父模块中该成员的线网（本地展平的或父模块自己的接口端口） |
+| 接口端口继续向下传递 | 同一机制递归；子模块驱动的成员使父模块的对应端口成为输出 |
+| 只含断言的 always 块 | 跳过（不是硬件） |
+| 不支持 | 接口中的函数/任务、modport 表达式、clocking block、虚接口、跨模块的普通层次引用（仍为 `IR-UNSUPPORTED-EXPR`） |
+
+slang 对相同参数、相同接口连接定义的实例共享规范模块体；端口按"端口名.成员路径"命名而不是按具体接口实例命名，所以共享的模块体对每个实例都正确。
