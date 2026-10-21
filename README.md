@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 10, SystemVerilog interfaces, memory/DDR primitives and clock generator frequencies**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 11, SERDES/UltraRAM primitives, clock dividers, clock frequencies in every view**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–10)
+## What works today (stages 1–11)
 
 | Feature | Status |
 |---|---|
@@ -108,6 +108,7 @@ opencdc analyze examples/cdc_advanced/cdc_advanced.ocdc.json  # protocol synchro
 opencdc analyze examples/cdc_advanced/cdc_advanced.ocdc.json -q --schematic-dir schematics   # SVG per path
 opencdc analyze examples/cdc_advanced/cdc_advanced_waived.ocdc.json    # same design with two waivers
 opencdc analyze examples/cdc_advanced/cdc_advanced.ocdc.json -q --html report.html --csv report/
+opencdc analyze examples/primitives/primitives.ocdc.json      # MMCM (derived clocks with periods), XPM, block RAM
 python3 tools/bench/gen_bench.py soc --domains 8 --blocks 1250 --out bench/soc_100k   # benchmark design
 opencdc-gui examples/smoke/smoke.ocdc.json
 ```
@@ -176,16 +177,16 @@ Designs that instantiate FPGA vendor primitives directly need no simulation libr
 
 | Library | Primitives |
 |---|---|
-| Xilinx UNISIM | `FDRE`, `FDSE`, `FDCE`, `FDPE` and the older `FD*` forms, `LDCE`/`LDPE`, `BUFG*`, `BUFH*`, `BUFR`, `BUFIO`, `IBUF*`/`OBUF*`/`IOBUF`, `SRL16E`/`SRLC32E`, `LUT1`–`LUT6_2`, `MUXF7/8`, `VCC`/`GND`; `IDDR`/`IDDRE1`, `ODDR`/`ODDRE1`, `IDELAYE2/3`, `ODELAYE2/3`, `IDELAYCTRL` (`RDY` has no clock domain); `RAMB18E1`, `RAMB36E1`, `RAMB18E2`, `RAMB36E2` (each port in its own clock: data written by one port and read by the other is a crossing) |
+| Xilinx UNISIM | `FDRE`, `FDSE`, `FDCE`, `FDPE` and the older `FD*` forms, `LDCE`/`LDPE`, `BUFG*`, `BUFH*`, `BUFR`, `BUFIO`, `IBUF*`/`OBUF*`/`IOBUF`, `SRL16E`/`SRLC32E`, `LUT1`–`LUT6_2`, `MUXF7/8`, `VCC`/`GND`; `IDDR`/`IDDRE1`, `ODDR`/`ODDRE1`, `IDELAYE2/3`, `ODELAYE2/3`, `IDELAYCTRL` (`RDY` has no clock domain); `RAMB18E1`, `RAMB36E1`, `RAMB18E2`, `RAMB36E2` (each port in its own clock: data written by one port and read by the other is a crossing; a port whose write enable is tied off writes nothing); `ISERDESE2/3`, `OSERDESE2/3` (serial side on `CLK`, word on `CLKDIV`); `URAM288` (one clock); `BUFR` (`BUFR_DIVIDE`) and `BUFGCE_DIV` (`BUFGCE_DIVIDE`) create divided clocks with their period |
 | Xilinx clocking | `MMCME2/3/4_BASE/ADV`, `PLLE2/3/4_BASE/ADV`: every `CLKOUT*` becomes a clock derived from `CLKIN1`, so its domains are synchronous to each other and follow the input clock's constraints. Each output's period is the input period × `DIVCLK_DIVIDE` × `CLKOUTn_DIVIDE[_F]` / `CLKFBOUT_MULT[_F]` (the input period comes from the input clock's constraint, or from `CLKIN1_PERIOD`), so CDC-007 can check pulses; the clock is named after the pin (`top.mmcm.CLKOUT0`). `LOCKED` has no clock domain (a reset released by it must be synchronized, CDC-006) |
 | Xilinx XPM | `xpm_cdc_single`, `_array_single`, `_gray`, `_handshake`, `_pulse`, `_async_rst`, `_sync_rst`, `xpm_fifo_async` — recognized as the matching synchronizer structures; `xpm_memory_sdpram`, `_tdpram`, `_spram`, `_dpdistram` (`CLOCKING_MODE = "independent_clock"` crosses clocks, `"common_clock"` does not) |
-| Intel | `altera_std_synchronizer`, `altera_std_synchronizer_bundle`, `altera_reset_synchronizer`, `dcfifo`, `altsyncram` (port B on `clock1` when its address or output register says so), `altddio_in`, `altddio_out` |
+| Intel | `altera_std_synchronizer`, `altera_std_synchronizer_bundle`, `altera_reset_synchronizer`, `dcfifo`, `altsyncram` / `altera_syncram` (port B on `clock1` when its address or output register says so), `altddio_in`, `altddio_out` |
 
 VHDL code reaches them through `library unisim; use unisim.vcomponents.all;`, `library xpm; use xpm.vcomponents.all;` or `library altera_mf; use altera_mf.altera_mf_components.all;`. `ASYNC_REG` on an instance (Verilog attribute or VHDL `attribute ASYNC_REG of s1 : label is "TRUE"`) marks a synchronizer stage. Parameters the models do not use are ignored, and connections to pins they do not model (cascade, ECC, ...) are listed as `FE-PRIMITIVE-PORT` information. Other unknown modules remain errors (`FE-UNKNOWN-MODULE`).
 
 #### SystemVerilog interfaces
 
-An interface instance becomes part of the module that declares it (its signals are named `ia.data`, its own `always` blocks and ports are analyzed there). A module with an interface port gets one port per interface member it uses (`b.data`), in the direction of the modport, or — for generic `interface` ports — in the direction of its use. Interface arrays (`bus_if b[2]`) and interface ports passed on to submodules work the same way. Project files with `.sv` sources default to SystemVerilog. Not modelled: functions/tasks declared in interfaces, modport expressions, clocking blocks, virtual interfaces.
+An interface instance becomes part of the module that declares it (its signals are named `ia.data`, its own `always` blocks and ports are analyzed there). A module with an interface port gets one port per interface member it uses (`b.data`), in the direction of the modport, or — for generic `interface` ports — in the direction of its use. Interface arrays (`bus_if b[2]`) and interface ports passed on to submodules work the same way. Project files with `.sv` sources default to SystemVerilog. Functions declared in interfaces (also through modport `import`) and modport expressions (`input .g(gray)`) work. Not modelled: clocking blocks, virtual interfaces.
 
 #### Editing projects in the GUI
 

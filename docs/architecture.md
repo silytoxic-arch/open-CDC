@@ -871,3 +871,11 @@ MMCM/PLL 模型的每个输出寄存器带三个属性：`OPENCDC_CLOCK_RATIO`�
 | 不支持 | 接口中的函数/任务、modport 表达式、clocking block、虚接口、跨模块的普通层次引用（仍为 `IR-UNSUPPORTED-EXPR`） |
 
 slang 对相同参数、相同接口连接定义的实例共享规范模块体；端口按"端口名.成员路径"命名而不是按具体接口实例命名，所以共享的模块体对每个实例都正确。
+
+## 18. 分频缓冲器、SERDES 与常量控制（阶段 11）
+
+- **分频缓冲器**：`BUFR`（`BUFR_DIVIDE`）、`BUFGCE_DIV`（`BUFGCE_DIVIDE`）的模型在分频系数大于 1 时是翻转寄存器，带 `OPENCDC_CLOCK_RATIO`，所以输出成为周期 = 输入周期 × 系数的派生时钟；系数为 1 或 `"BYPASS"` 时是导线，与输入是同一个时钟。
+- **SERDES**：串行侧在 `CLK` 上移位，并行字在 `CLKDIV` 上寄存。两者在合法配置中来自同一个源（BUFIO/BUFR 或同一个 MMCM），所以它们之间不是跨域；UltraScale 的 `ISERDESE3` 内部 FIFO 是硬件同步器，模型直接在 `CLKDIV` 域给出并行字。
+- **常量控制**：`SeqGraph::constantBit` 沿层次和简单逻辑（非、与、或、归约、逻辑与/或、MUX）求常量。使能恒为 0 的寄存器（只读 RAM 端口的写侧）不再加载，`neverLoads` 标记它，CDC 分析不把它当作源；使能恒为 1 的仍按原来的方式去掉。
+- **显示**：CLI、HTML、JSON（`frequencyMHz`）给出频率；HTML 时钟表列出主时钟；GUI 时钟树把派生时钟放在主时钟之下（防环：沿主时钟链最多走时钟数步）。
+- **SystemVerilog**：modport 表达式端口（`input .g(gray)`）按其表达式读写，表达式中的接口成员照常成为端口；接口中的函数经 modport `import` 调用时在调用处内联。
