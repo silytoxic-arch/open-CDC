@@ -171,3 +171,49 @@ module altddio_out #(parameter extend_oe_disable = "OFF", parameter intended_dev
     assign dataout = h | l;
     assign oe_out = oe;
 endmodule
+
+
+// Quartus Prime successor of altsyncram: same ports and behavior.
+module altera_syncram #(parameter address_aclr_a = "NONE", parameter address_aclr_b = "NONE",
+                    parameter address_reg_b = "CLOCK1", parameter byte_size = 8,
+                    parameter clock_enable_input_a = "BYPASS", parameter clock_enable_input_b = "BYPASS",
+                    parameter clock_enable_output_a = "BYPASS", parameter clock_enable_output_b = "BYPASS",
+                    parameter indata_reg_b = "CLOCK1", parameter init_file = "UNUSED",
+                    parameter intended_device_family = "", parameter lpm_type = "altera_syncram",
+                    parameter numwords_a = 256, parameter numwords_b = 256, parameter operation_mode = "DUAL_PORT",
+                    parameter outdata_aclr_a = "NONE", parameter outdata_aclr_b = "NONE",
+                    parameter outdata_reg_a = "UNREGISTERED", parameter outdata_reg_b = "UNREGISTERED",
+                    parameter power_up_uninitialized = "FALSE", parameter ram_block_type = "AUTO",
+                    parameter rdcontrol_reg_b = "CLOCK1", parameter read_during_write_mode_mixed_ports = "DONT_CARE",
+                    parameter read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
+                    parameter read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ",
+                    parameter width_a = 8, parameter width_b = 8, parameter width_byteena_a = 1,
+                    parameter width_byteena_b = 1, parameter widthad_a = 8, parameter widthad_b = 8,
+                    parameter wrcontrol_wraddress_reg_b = "CLOCK1")
+                   (input aclr0, input aclr1, input [widthad_a-1:0] address_a, input [widthad_b-1:0] address_b,
+                    input addressstall_a, input addressstall_b, input [width_byteena_a-1:0] byteena_a,
+                    input [width_byteena_b-1:0] byteena_b, input clock0, input clock1, input clocken0,
+                    input clocken1, input clocken2, input clocken3, input [width_a-1:0] data_a,
+                    input [width_b-1:0] data_b, output [7:0] eccstatus, output [width_a-1:0] q_a,
+                    output [width_b-1:0] q_b, input rden_a, input rden_b, input wren_a, input wren_b);
+    localparam integer W = width_a > width_b ? width_a : width_b;
+    reg [W-1:0] mem_a [0:numwords_a-1];
+    reg [W-1:0] mem_b [0:numwords_a-1];
+    wire cb;
+    generate
+        if (address_reg_b == "CLOCK1" || outdata_reg_b == "CLOCK1") begin : g_c1
+            assign cb = clock1;
+        end else begin : g_c0
+            assign cb = clock0;
+        end
+    endgenerate
+    always @(posedge clock0) if (wren_a) mem_a[address_a] <= data_a;
+    always @(posedge cb) if (wren_b) mem_b[address_b] <= data_b;
+    reg [width_a-1:0] qa;
+    reg [width_b-1:0] qb;
+    always @(posedge clock0) qa <= mem_a[address_a] ^ mem_b[address_a];
+    always @(posedge cb) qb <= mem_a[address_b] ^ mem_b[address_b];
+    assign q_a = qa;
+    assign q_b = qb;
+    assign eccstatus = 8'd0;
+endmodule

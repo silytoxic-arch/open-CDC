@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -74,7 +75,8 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
                           "altera_std_synchronizer", "IDDR", "ODDR", "IDDRE1", "ODDRE1", "IDELAYE2", "ODELAYE2",
                           "IDELAYE3", "ODELAYE3", "IDELAYCTRL", "RAMB18E1", "RAMB36E1", "RAMB18E2", "RAMB36E2",
                           "xpm_memory_sdpram", "xpm_memory_tdpram", "xpm_memory_spram", "xpm_memory_dpdistram",
-                          "altsyncram", "altddio_in", "altddio_out"})
+                          "altsyncram", "altddio_in", "altddio_out", "BUFGCE_DIV", "ISERDESE2", "OSERDESE2",
+                          "ISERDESE3", "OSERDESE3", "URAM288", "altera_syncram"})
         CHECK(lib.find(n).has_value());
     CHECK(lib.find("fdre") == std::optional<std::string>("FDRE")); // VHDL spelling
     CHECK(lib.find("MMCME2_ADV").has_value()); // clock generators are generated on demand
@@ -560,4 +562,59 @@ TEST_CASE("Primitives: VHDL block RAM and XPM memory", "[primitives][vhdl]") {
     CHECK(run->count("FE-PRIMITIVE-PORT") == 1); // NOTAPORT
     CHECK(crosses(*run, "top.b.mem_b", "top.b.da"));
     CHECK(crosses(*run, "top.m.mem", "top.m.pipe"));
+}
+
+TEST_CASE("Primitives: BUFR / BUFGCE_DIV dividers, SERDES and UltraRAM", "[primitives]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input d, input [7:0] w, output [7:0] q, output o,\n"
+        "           output [71:0] u, output reg r);\n"
+        "  wire div4, byp, div2;\n"
+        "  BUFR #(.BUFR_DIVIDE(\"4\")) br (.I(clk_a), .O(div4), .CE(1'b1), .CLR(1'b0));\n"
+        "  BUFR #(.BUFR_DIVIDE(\"BYPASS\")) bb (.I(clk_a), .O(byp), .CE(1'b1), .CLR(1'b0));\n"
+        "  BUFGCE_DIV #(.BUFGCE_DIVIDE(2)) bd (.I(clk_b), .O(div2), .CE(1'b1), .CLR(1'b0));\n"
+        "  ISERDESE2 #(.DATA_WIDTH(8), .IOBDELAY(\"NONE\")) is (.D(d), .CLK(clk_a), .CLKB(~clk_a), .CLKDIV(div4),\n"
+        "    .CE1(1'b1), .CE2(1'b1), .RST(1'b0), .BITSLIP(1'b0), .Q1(q[0]), .Q2(q[1]), .Q3(q[2]), .Q4(q[3]),\n"
+        "    .Q5(q[4]), .Q6(q[5]), .Q7(q[6]), .Q8(q[7]));\n"
+        "  reg [7:0] wb;\n"
+        "  always @(posedge div2) wb <= w;\n" // clk_b domain data into an OSERDES clocked from clk_a
+        "  OSERDESE2 #(.DATA_WIDTH(8)) os (.OQ(o), .CLK(byp), .CLKDIV(div4), .D1(wb[0]), .D2(wb[1]), .D3(wb[2]),\n"
+        "    .D4(wb[3]), .D5(wb[4]), .D6(wb[5]), .D7(wb[6]), .D8(wb[7]), .OCE(1'b1), .TCE(1'b0), .RST(1'b0));\n"
+        "  URAM288 ur (.CLK(clk_a), .ADDR_A(23'd0), .DIN_A(72'd0), .EN_A(1'b1), .RDB_WR_A(1'b0), .DOUT_A(u),\n"
+        "    .CAS_IN_ADDR_A(23'd0));\n"
+        "  always @(posedge byp) r <= q[0];\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    REQUIRE(run->r->clocks);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-PRIMITIVE-PORT") == 1); // CAS_IN_ADDR_A
+    std::map<std::string, std::optional<double>> periods;
+    for (const auto& c : run->r->clocks->clocks)
+        periods[c.name] = c.periodNs;
+    CHECK(periods.size() == 4); // clk_a, clk_b, br.O, bd.O; BYPASS is clk_a itself
+    CHECK(periods["top.br.O"] == 40.0);
+    CHECK(periods["top.bd.O"] == 14.0);
+    CHECK_FALSE(crosses(*run, "top.is.", "top.is.")); // CLK and CLKDIV from one source
+    CHECK_FALSE(crosses(*run, "top.is.", "top.r"));
+    CHECK(crosses(*run, "top.wb", "top.os.word")); // clk_b -> clk_a
+    CHECK_FALSE(crosses(*run, "top.ur.", "top.ur."));
+}
+
+TEST_CASE("Primitives: Intel altera_syncram is altsyncram", "[primitives]") {
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input [7:0] d, input [3:0] a, output [7:0] q);\n"
+                       "  reg [7:0] dr; reg [3:0] ar, br;\n"
+                       "  always @(posedge clk_a) begin dr <= d; ar <= a; end\n"
+                       "  always @(posedge clk_b) br <= a;\n"
+                       "  altera_syncram #(.operation_mode(\"DUAL_PORT\"), .width_a(8), .widthad_a(4), .numwords_a(16),\n"
+                       "    .width_b(8), .widthad_b(4), .numwords_b(16), .address_reg_b(\"CLOCK1\"),\n"
+                       "    .enable_force_to_zero(\"FALSE\")) m (.clock0(clk_a), .wren_a(1'b1), .address_a(ar),\n"
+                       "    .data_a(dr), .clock1(clk_b), .address_b(br), .q_b(q));\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(crosses(*run, "top.m.mem_a", "top.m.qb"));
 }

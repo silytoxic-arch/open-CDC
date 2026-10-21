@@ -180,4 +180,16 @@ package vcomponents is
   component RAMB18E2 port (CLKARDCLK : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component RAMB36E2 port (CLKARDCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component BUFGCE_DIV port (I : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component ISERDESE2 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component OSERDESE2 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component ISERDESE3 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component OSERDESE3 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component URAM288 port (CLK : in std_ulogic); end component;
 end package;
