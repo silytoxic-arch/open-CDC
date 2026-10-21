@@ -436,6 +436,14 @@ std::optional<BodyBuilder::IfaceRef> BodyBuilder::ifaceRef(const sast::Symbol& s
     return std::nullopt;
 }
 
+const sast::Expression* BodyBuilder::modportExpression(const sast::ValueSymbol& sym) const {
+    // modport m (input .g(gray[3:0])): the expression over interface members
+    if (sym.kind != sast::SymbolKind::ModportPort)
+        return nullptr;
+    const auto& mp = sym.as<sast::ModportPortSymbol>();
+    return mp.explicitConnection ? mp.getConnectionExpr() : nullptr;
+}
+
 const sast::ValueSymbol* BodyBuilder::ifaceTarget(const sast::ValueSymbol& sym) {
     const sast::ValueSymbol* s = &sym;
     if (s->kind == sast::SymbolKind::ModportPort) {
@@ -1026,6 +1034,8 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
             }
         }
         case EK::HierarchicalValue: {
+            if (const auto* x = modportExpression(e.as<sast::HierarchicalValueExpression>().symbol))
+                return lower(*x).resized(w, false);
             if (const auto* t = ifaceTarget(e.as<sast::HierarchicalValueExpression>().symbol))
                 return read(*t).resized(w, false);
             return opaque(e, "hierarchical reference '" +
@@ -1306,6 +1316,8 @@ bool BodyBuilder::lvalueInto(const sast::Expression& e, std::vector<LTarget>& ou
     using EK = sast::ExpressionKind;
     switch (e.kind) {
         case EK::HierarchicalValue: {
+            if (const auto* x = modportExpression(e.as<sast::HierarchicalValueExpression>().symbol))
+                return lvalueInto(*x, out);
             const auto* t = ifaceTarget(e.as<sast::HierarchicalValueExpression>().symbol);
             if (!t)
                 return false;

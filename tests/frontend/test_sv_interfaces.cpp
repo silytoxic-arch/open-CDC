@@ -173,3 +173,34 @@ TEST_CASE("SV: always blocks holding only assertions are not hardware", "[sv]") 
     REQUIRE(run->r->cdc);
     CHECK(run->count("IR-UNSUPPORTED-PROCESS") == 0);
 }
+
+TEST_CASE("SV interfaces: functions in interfaces and modport expressions", "[sv][interface]") {
+    auto run = analyze("interface cnt_if (input logic clk);\n"
+                       "  logic [3:0] bin, gray;\n"
+                       "  function automatic logic [3:0] to_gray(input logic [3:0] b); return b ^ (b >> 1); endfunction\n"
+                       "  modport src (output bin, output gray, input clk, import to_gray);\n"
+                       "  modport dst (input .g(gray), input clk);\n" // modport expression
+                       "endinterface\n"
+                       "module src_m(cnt_if.src s);\n"
+                       "  always_ff @(posedge s.clk) begin s.bin <= s.bin + 4'd1; s.gray <= s.to_gray(s.bin); end\n"
+                       "endmodule\n"
+                       "module dst_m(cnt_if.dst d, output logic [3:0] q);\n"
+                       "  logic [3:0] s1, s2;\n"
+                       "  always_ff @(posedge d.clk) begin s1 <= d.g; s2 <= s1; end\n"
+                       "  assign q = s2;\n"
+                       "endmodule\n"
+                       "module top(input logic clk_a, input logic clk_b, output logic [3:0] q);\n"
+                       "  cnt_if ia (clk_a);\n"
+                       "  cnt_if ib (clk_b);\n"
+                       "  src_m s (.s(ia));\n"
+                       "  assign ib.gray = ia.gray;\n"
+                       "  dst_m d (.d(ib), .q(q));\n"
+                       "endmodule\n");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("IR-UNSUPPORTED-EXPR") == 0);
+    CHECK(run->has("input var [3:0] d.gray"));
+    const auto* p = run->path("top.s.s.gray", "top.d.s1");
+    REQUIRE(p);
+    CHECK(p->syncType == SyncType::Gray); // Gray encoder through the interface function
+    CHECK(p->syncStatus == SyncStatus::NecessaryConditionsVerified);
+}

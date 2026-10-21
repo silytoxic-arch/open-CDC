@@ -147,6 +147,9 @@ private:
     /// The variable/net a value reference designates when it is reachable here
     /// (modport ports resolved to the interface member), or nullptr.
     const sast::ValueSymbol* ifaceTarget(const sast::ValueSymbol& sym);
+    /// The connection expression of a modport port with an explicit
+    /// expression (".g(gray)"), or nullptr.
+    [[nodiscard]] const sast::Expression* modportExpression(const sast::ValueSymbol& sym) const;
     void lowerInterfaceInstance(const sast::InstanceSymbol& inst);
     void bindInterfacePort(const sast::PortConnection& pc, ir::ChildInstance& ci, ir::ModuleId cid);
     void finishVirtualPorts();
