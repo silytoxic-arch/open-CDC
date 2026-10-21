@@ -1080,6 +1080,13 @@ void Elaborator::declare(Scope& scope, const Decl& d, Ctx& ctx) {
                             body->body.net(ch.net).attrs.push_back({d.names.front().text, text});
                 }
             };
+            if (d.entityClass == "label") {
+                // attributes of statement labels (instances): ASYNC_REG on a primitive
+                std::string text = v.known() ? formatValue(*v.type, *v.value) : std::string();
+                for (const auto& en : d.entityNames)
+                    scope.labelAttrs[en.key].push_back({d.names.front().text, text});
+                return;
+            }
             for (const auto& en : d.entityNames) {
                 if (en.key == "all" || en.key == "others") {
                     for (const auto& k : scope.order)

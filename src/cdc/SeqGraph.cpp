@@ -101,20 +101,36 @@ SeqGraph::SeqGraph(const graph::DesignView& view, DiagnosticSink& sink) : view_(
         pr.dataLen = reg.d.width();
         for (std::uint32_t i = 0; i < reg.d.width(); ++i)
             add(reg.d, i);
+        // Controls tied to their inactive level through the hierarchy (a
+        // primitive FDRE with CE = 1 and R = 0) are no controls at all.
+        auto constantAt = [&](const SigSpec& sig, Logic level) {
+            auto b = view.bitOf(inst, sig, 0);
+            if (!b)
+                return false;
+            const auto drv = view.driver(*b);
+            return drv.kind == DriverKind::Constant && drv.constant == level;
+        };
         pr.en = static_cast<std::uint32_t>(bits_.size());
-        if (reg.enable) {
+        if (reg.enable && !constantAt(*reg.enable, Logic::L1)) {
             pr.enLen = 1;
             add(*reg.enable, 0);
         }
         pr.srst = static_cast<std::uint32_t>(bits_.size());
-        if (reg.syncReset) {
+        if (reg.syncReset &&
+            !constantAt(reg.syncReset->signal, reg.syncReset->activeHigh ? Logic::L0 : Logic::L1)) {
             pr.srstLen = 1;
             add(reg.syncReset->signal, 0);
         }
+        // (asynchronous resets are indexed by position: dropped only all together)
         pr.arst = static_cast<std::uint32_t>(bits_.size());
-        pr.arstLen = static_cast<std::uint32_t>(reg.asyncResets.size());
-        for (const auto& a : reg.asyncResets)
-            add(a.signal, 0);
+        const bool arstTied = std::ranges::all_of(reg.asyncResets, [&](const ResetSpec& a) {
+            return constantAt(a.signal, a.activeHigh ? Logic::L0 : Logic::L1);
+        });
+        if (!arstTied) {
+            pr.arstLen = static_cast<std::uint32_t>(reg.asyncResets.size());
+            for (const auto& a : reg.asyncResets)
+                add(a.signal, 0);
+        }
     }
 
     if (combLoops_ > 0) {

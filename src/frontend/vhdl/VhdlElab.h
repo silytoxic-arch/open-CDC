@@ -154,6 +154,8 @@ struct Scope {
     std::vector<std::string> libraries;        ///< library clauses visible here
     std::string workLibrary = "work";          ///< library that "work" denotes
     std::string label;                         ///< for messages
+    /// Attribute specifications for statement labels ("of u_sync : label is ...").
+    std::map<std::string, std::vector<ir::Attribute>> labelAttrs;
 
     void add(Symbol* s);
     [[nodiscard]] const std::vector<Symbol*>* local(const std::string& key) const;
@@ -551,6 +553,8 @@ public:
     const DesignUnit* findEntity(const std::string& lib, const std::string& name, std::string* foundLib);
     const DesignUnit* defaultArchitecture(const std::string& lib, const DesignUnit& entity);
     void elaborateForeignInstance(const Stmt& s, Scope& scope, const std::string& module);
+    /// Attributes specified for the label of an instance statement.
+    std::vector<ir::Attribute> labelAttributes(const Scope& scope, const std::string& label) const;
     SVal fromForeign(const ir::InstanceParam& p, const Type* t, Loc l);
     std::optional<ir::InstanceParam> toForeign(const SVal& v);
     const std::vector<ir::InstanceParam>* foreignParams_ = nullptr;

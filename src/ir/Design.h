@@ -172,6 +172,7 @@ struct ChildInstance {
     std::vector<PortBinding> ports;
     SourceLocation loc;
     std::vector<InstanceParam> unresolvedParams;
+    std::vector<Attribute> attrs; ///< attributes of the instance ((* ASYNC_REG *) on a primitive)
 };
 
 /// One unique elaborated module body (a module with a specific parameter set).

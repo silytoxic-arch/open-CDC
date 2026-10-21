@@ -280,6 +280,7 @@ void Elaborator::elaborateForeignInstance(const Stmt& s, Scope& scope, const std
     ci.name = instName;
     ci.definition = module;
     ci.loc = srcLoc(s.loc);
+    ci.attrs = labelAttributes(scope, s.label.key);
     if (!cid.valid()) {
         // requested; available in the next elaboration round
         ci.unresolvedParams = std::move(params);

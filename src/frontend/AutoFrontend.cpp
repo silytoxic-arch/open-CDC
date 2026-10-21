@@ -14,6 +14,8 @@
 #include "core/PathUtil.h"
 #include "frontend/Frontend.h"
 #include "frontend/MixedSupport.h"
+#include "frontend/Primitives.h"
+#include "core/Version.h"
 #include "frontend/vhdl/VhdlElab.h"
 
 #include <algorithm>
@@ -22,6 +24,8 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <regex>
+#include <sstream>
 #include <map>
 #include <set>
 
@@ -72,10 +76,43 @@ std::string verilogValue(const ir::InstanceParam& p) {
     return "0";
 }
 
+/// Directory with the vendor primitive models as files (stable paths, so
+/// source locations of primitive registers stay valid after the run).
+std::filesystem::path primitiveDir() {
+    std::error_code ec;
+    auto dir = std::filesystem::temp_directory_path(ec) / ("opencdc-primitives-" + std::string(kVersionString));
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+/// Writes `text` to `path` unless it already has exactly that content.
+void writeIfChanged(const std::filesystem::path& path, const std::string& text) {
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            if (ss.str() == text)
+                return;
+        }
+    }
+    static std::atomic<unsigned> n{0};
+    auto tmp = path;
+    tmp += ".tmp" + std::to_string(n++);
+    {
+        std::ofstream out(tmp, std::ios::binary);
+        out << text;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec)
+        std::filesystem::remove(tmp, ec);
+}
+
 struct Request {
     std::string module;
     std::vector<ir::InstanceParam> params;
-    std::string text; ///< "#(...)" as written into the wrapper
+    std::string text; ///< identity: module and parameter values
 };
 
 /// Keeps the diagnostics of one round; only the last round is reported.
@@ -168,6 +205,39 @@ public:
                 vin.sourceFiles.push_back(f);
             }
         }
+        // vendor component packages (unisim, xpm, altera_mf) for libraries the
+        // VHDL code uses but the project does not provide
+        {
+            std::set<std::string> given;
+            for (const auto& l : vhdlLibs)
+                given.insert(lower(l.empty() ? std::string("work") : l));
+            std::set<std::string> used;
+            static const std::regex libRe(R"((^|[^A-Za-z0-9_])library\s+([^;]+);)", std::regex::icase);
+            for (const auto& f : vhdlPaths) {
+                std::ifstream in(f, std::ios::binary);
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                const std::string text = lower(ss.str());
+                for (auto it = std::sregex_iterator(text.begin(), text.end(), libRe); it != std::sregex_iterator(); ++it) {
+                    std::stringstream names((*it)[2].str());
+                    std::string n;
+                    while (std::getline(names, n, ',')) {
+                        n.erase(0, n.find_first_not_of(" \t\r\n"));
+                        n.erase(n.find_last_not_of(" \t\r\n") + 1);
+                        used.insert(n);
+                    }
+                }
+            }
+            for (const auto& pkg : PrimitiveLibrary::instance().vhdlPackages()) {
+                if (!used.contains(pkg.library) || given.contains(pkg.library))
+                    continue;
+                const auto path = primitiveDir() / pkg.file;
+                writeIfChanged(path, pkg.text);
+                vhdlPaths.push_back(path);
+                vhdlLibs.push_back(pkg.library);
+                vendorVhdl_.push_back(path);
+            }
+        }
         RoundSink parseSink;
         auto ok = vhdl::loadSources(vhdlPaths, vhdlLibs, parseSink, files_);
         if (!ok.ok())
@@ -197,17 +267,30 @@ public:
         std::error_code ec;
         std::filesystem::create_directories(tmpDir_, ec);
         const auto wrapperPath = tmpDir_ / "opencdc_mixed_wrapper.v";
-        vin.sourceFiles.push_back(wrapperPath);
+        const auto userVerilog = vin.sourceFiles;
         const std::string wrapperUtf8 = toUtf8(std::filesystem::weakly_canonical(wrapperPath, ec));
+        const std::string primDirUtf8 = toUtf8(std::filesystem::weakly_canonical(primitiveDir(), ec));
+        const auto& prims = PrimitiveLibrary::instance();
+        std::set<std::string> foreign = vhdlEntities;
+        for (const auto& n : prims.names())
+            foreign.insert(lower(n));
 
         std::vector<Diagnostic> lastDiags;
         std::shared_ptr<ir::Design> finalDesign;
         bool converged = false;
         for (int round = 0; round < kMaxRounds && !converged; ++round) {
             writeWrapper(wrapperPath);
+            vin.sourceFiles = userVerilog;
+            vin.sourceFiles.push_back(wrapperPath);
+            for (const auto& m : models_) {
+                const auto path = primitiveDir() / (m + ".v");
+                writeIfChanged(path, prims.verilogModel(m));
+                vin.sourceFiles.push_back(path);
+            }
+            const std::size_t knownModels = models_.size();
             RoundSink rs;
             detail::VerilogMixedOptions mo;
-            mo.foreignModules = vhdlEntities;
+            mo.foreignModules = foreign;
             std::map<std::string, std::vector<std::string>> params;
             mo.moduleParams = &params;
             const bool verilogTop = !input_.top.empty() && !vhdlEntities.contains(lower(input_.top));
@@ -223,13 +306,18 @@ public:
                 cleanup();
                 return vout.error();
             }
+            for (auto& [m, ps] : params)
+                verilogParams_[m] = ps;
             if (round == 0) {
-                verilogParams_ = params;
                 for (const auto& d : vout.value().summary.definitions)
                     if (d.name != kWrapper) {
                         verilogDefs_.push_back(d);
                         verilogModules_[lower(d.name)] = d.name;
                     }
+                // modelled vendor primitives the user does not define (VHDL entities win for VHDL)
+                for (const auto& n : prims.names())
+                    if (!verilogModules_.contains(lower(n)) && !vhdlEntities.contains(lower(n)))
+                        primitiveModules_[lower(n)] = n;
                 for (const auto& f : vout.value().summary.parsedFiles)
                     if (toUtf8(f) != wrapperUtf8)
                         parsedVerilog_.push_back(f);
@@ -267,6 +355,8 @@ public:
             o.generics = verilogTop ? std::vector<std::pair<std::string, std::string>>{} : input_.topParameters;
             o.design = design;
             o.foreignModules = verilogModules_;
+            for (const auto& [k, n] : primitiveModules_)
+                o.foreignModules.emplace(k, n);
             o.resolveForeign = [this](const std::string& module, const std::vector<ir::InstanceParam>& p) {
                 return resolve(module, p);
             };
@@ -290,6 +380,12 @@ public:
                     bind(*design, b, ci, id, elab.foreignPorts(id), rs);
                 }
             }
+            // vendor primitives needed by Verilog instances and by VHDL requests
+            for (std::size_t b = 0; b < slangBodies; ++b)
+                for (const auto& c : design->bodies[b].children)
+                    if (!c.body.valid())
+                        if (auto it = primitiveModules_.find(lower(c.definition)); it != primitiveModules_.end())
+                            models_.insert(it->second);
             // VHDL tops
             std::vector<ir::ModuleId> tops;
             if (!verilogTop) {
@@ -307,8 +403,11 @@ public:
                 if (verilogTop || (input_.top.empty() && !requestedModules.contains(design->body(n.body).name)))
                     tops.insert(tops.begin(), n.body);
             }
+            for (const auto& r : requests_)
+                if (auto it = primitiveModules_.find(lower(r.module)); it != primitiveModules_.end())
+                    models_.insert(it->second);
             lastDiags = std::move(rs.diags);
-            if (requests_.size() == knownRequests) {
+            if (requests_.size() == knownRequests && models_.size() == knownModels) {
                 converged = true;
                 const bool errors =
                     std::ranges::any_of(lastDiags, [](const Diagnostic& d) { return d.isError(); });
@@ -325,7 +424,16 @@ public:
         for (auto& d : lastDiags) {
             if (d.location.file == wrapperUtf8)
                 continue;
+            if (!d.isError() && d.location.file.starts_with(primDirUtf8))
+                continue; // notes about the vendor models themselves
             sink_.report(std::move(d));
+        }
+        if (finalDesign && !models_.empty()) {
+            std::string list;
+            for (const auto& m : models_)
+                list += (list.empty() ? "" : ", ") + m;
+            sink_.report({"FE-PRIMITIVES", Severity::Info,
+                          "built-in models used for vendor primitives: " + list, {}, {}});
         }
         cleanup();
 
@@ -348,25 +456,33 @@ public:
 private:
     /// Body of Verilog module `module` with VHDL generic-map values `p`.
     ir::ModuleId resolve(const std::string& module, std::vector<ir::InstanceParam> p) {
-        // VHDL formals are case-insensitive: use the Verilog spelling
-        if (auto it = verilogParams_.find(module); it != verilogParams_.end())
-            for (auto& x : p)
-                for (const auto& name : it->second)
-                    if (!x.name.empty() && lower(name) == lower(x.name))
-                        x.name = name;
+        // identity: module and parameter values, names in any case
+        std::string key = module;
+        for (const auto& x : p)
+            key += "|" + lower(x.name) + "=" + verilogValue(x);
+        for (std::size_t k = 0; k < requests_.size(); ++k)
+            if (requests_[k].text == key)
+                return k < resolved_.size() ? resolved_[k] : ir::ModuleId{};
+        requests_.push_back({module, std::move(p), key});
+        return {};
+    }
+
+    /// "#(...)" of a request; VHDL formals take the Verilog spelling (known
+    /// once the module has been compiled).
+    std::string paramText(const Request& r) const {
         std::string text;
-        const bool named = std::ranges::all_of(p, [](const auto& x) { return !x.name.empty(); });
-        for (const auto& x : p) {
+        const bool named = std::ranges::all_of(r.params, [](const auto& x) { return !x.name.empty(); });
+        for (const auto& x : r.params) {
+            std::string name = x.name;
+            if (auto it = verilogParams_.find(r.module); it != verilogParams_.end())
+                for (const auto& n : it->second)
+                    if (lower(n) == lower(name))
+                        name = n;
             if (!text.empty())
                 text += ", ";
-            text += named ? "." + x.name + "(" + verilogValue(x) + ")" : verilogValue(x);
+            text += named ? "." + name + "(" + verilogValue(x) + ")" : verilogValue(x);
         }
-        text = text.empty() ? std::string() : "#(" + text + ")";
-        for (std::size_t k = 0; k < requests_.size(); ++k)
-            if (requests_[k].module == module && requests_[k].text == text)
-                return k < resolved_.size() ? resolved_[k] : ir::ModuleId{};
-        requests_.push_back({module, std::move(p), text});
-        return {};
+        return text.empty() ? std::string() : "#(" + text + ")";
     }
 
     void writeWrapper(const std::filesystem::path& path) const {
@@ -374,7 +490,7 @@ private:
         out << "// generated by OpenCDC: Verilog modules instantiated from VHDL\n";
         out << "module " << kWrapper << ";\n";
         for (std::size_t k = 0; k < requests_.size(); ++k)
-            out << "  " << requests_[k].module << " " << requests_[k].text << " r" << k << " ();\n";
+            out << "  " << requests_[k].module << " " << paramText(requests_[k]) << " r" << k << " ();\n";
         out << "endmodule\n";
     }
 
@@ -445,18 +561,60 @@ private:
     std::map<std::string, std::vector<std::string>> verilogParams_;
     std::vector<DefinitionInfo> verilogDefs_;
     std::vector<std::filesystem::path> parsedVerilog_;
+    std::map<std::string, std::string> primitiveModules_; ///< modelled primitives: lower-case -> name
+    std::set<std::string> models_;                        ///< primitive models in the compilation
+    std::vector<std::filesystem::path> vendorVhdl_;       ///< vendor component packages added
 };
 
 class AutoFrontend final : public IFrontend {
 public:
     Result<FrontendOutput> elaborate(const FrontendInput& input, DiagnosticSink& sink) override {
         const auto vhdl = std::ranges::count_if(input.sourceFiles, isVhdlFile);
-        if (vhdl == 0)
-            return makeSlangFrontend()->elaborate(input, sink);
-        if (static_cast<std::size_t>(vhdl) == input.sourceFiles.size())
+        if (vhdl == 0) {
+            // Verilog only: instances of modelled vendor primitives are
+            // elaborated again with the models.
+            RoundSink first;
+            auto r = makeSlangFrontend()->elaborate(input, first);
+            if (r.ok() && !r.value().design && primitivesMissing(first.diags)) {
+                MixedLinker linker(input, sink);
+                return linker.run();
+            }
+            for (auto& d : first.diags)
+                sink.report(std::move(d));
+            return r;
+        }
+        if (static_cast<std::size_t>(vhdl) == input.sourceFiles.size() && !usesVendorLibrary(input))
             return makeVhdlFrontend()->elaborate(input, sink);
         MixedLinker linker(input, sink);
         return linker.run();
+    }
+
+private:
+    /// Some unknown module is a modelled vendor primitive (the linker then
+    /// reports the remaining unknown modules itself).
+    static bool primitivesMissing(const std::vector<Diagnostic>& diags) {
+        static const std::regex nameRe("'([^']+)'");
+        for (const auto& d : diags) {
+            std::smatch m;
+            if (d.code == "FE-SLANG-UnknownModule" && std::regex_search(d.message, m, nameRe) &&
+                PrimitiveLibrary::instance().find(m[1].str()))
+                return true;
+        }
+        return false;
+    }
+
+    static bool usesVendorLibrary(const FrontendInput& input) {
+        static const std::regex libRe(R"((^|[^A-Za-z0-9_])library\s+[^;]*\b(unisim|xpm|altera_mf)\b)",
+                                      std::regex::icase);
+        for (const auto& f : input.sourceFiles) {
+            std::ifstream in(f, std::ios::binary);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            const std::string text = ss.str();
+            if (std::regex_search(text, libRe))
+                return true;
+        }
+        return false;
     }
 };
 

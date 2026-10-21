@@ -493,10 +493,11 @@ public:
     void run() {
         auto& paths = st_.result->paths;
         std::vector<std::uint32_t> toggleLasts;
+        checkSplitGray();
         for (std::size_t i = 0; i < paths.size(); ++i) {
             CdcPath& p = paths[i];
             if (p.pin != Pin::Data || !isChainType(p.syncType) || !st_.isRegister(p.srcNode) ||
-                st_.isConstantDataFlop(p.srcNode))
+                st_.isConstantDataFlop(p.srcNode) || p.syncType == SyncType::Gray)
                 continue;
             if (p.width > 1 && (checkGray(i), p.syncType == SyncType::Gray))
                 continue;
@@ -696,49 +697,89 @@ private:
     }
 
     void checkGray(std::size_t i) {
-        CdcPath& p = st_.result->paths[i];
-        const std::uint32_t n = p.srcBitHi - p.srcBitLo + 1;
+        const CdcPath& p = st_.result->paths[i];
+        checkGrayBits(p.srcNode, p.srcBitLo, p.srcBitHi - p.srcBitLo + 1, {i});
+    }
+
+    /// Bits [lo, lo + n) of source register `src` are Gray-encoded: the
+    /// paths `idx` (one multi-bit path, or one path per bit through separate
+    /// synchronizers) become Gray crossings.
+    void checkGrayBits(std::size_t src, std::uint32_t lo, std::uint32_t n, const std::vector<std::size_t>& idx) {
         if (n < 2 || n > 64)
             return;
         std::vector<BitRef> d;
         std::vector<Leaf> holds;
         for (std::uint32_t k = 0; k < n; ++k) {
-            auto b = dataBit(p.srcNode, p.srcBitLo + k);
+            auto b = dataBit(src, lo + k);
             if (!b)
                 return;
             d.push_back(*b);
-            holds.push_back(qLeaf(p.srcNode, p.srcBitLo + k));
+            holds.push_back(qLeaf(src, lo + k));
         }
         std::vector<Leaf> bases;
         if (grayOf(d, holds, bases, 0) != GrayResult::Gray)
             return;
-        const auto& chains = st_.chains[i];
-        const bool equalStages = std::ranges::all_of(
-            chains, [&](const Chain& c) { return c.stages.size() == chains.front().stages.size(); });
+        std::size_t stages = 0;
+        bool equalStages = true;
+        for (const auto i : idx)
+            for (const auto& c : st_.chains[i]) {
+                if (stages == 0)
+                    stages = c.stages.size();
+                equalStages = equalStages && c.stages.size() == stages;
+            }
         // Switching between two different binary values (g <= c ? gray(x) : gray(y))
         // can change several bits at once even if x and y each step by one.
         const bool oneBase = std::ranges::all_of(bases, [&](const Leaf& x) { return x.sameEntity(bases.front()); });
         const bool step = oneBase && stepsByOne(bases.front());
-        if (!oneBase)
-            p.notes.push_back("the Gray register is loaded from " + std::to_string(bases.size()) +
-                              " different binary values; switching between them can change several bits at once");
-        p.syncType = SyncType::Gray;
-        p.conditions.push_back({"the source register is Gray-encoded (g = b ^ (b >> 1))", true});
-        p.conditions.push_back({"every bit has a synchronizer chain of the same length", equalStages});
-        std::erase_if(p.unverified, [](const std::string& s) { return s.find("(CDC-008)") != std::string::npos; });
-        const bool ok = std::ranges::all_of(p.conditions, [](const Condition& c) { return c.satisfied; });
-        if (!ok) {
-            p.syncStatus = SyncStatus::StructureRecognized;
+        for (const auto i : idx) {
+            CdcPath& p = st_.result->paths[i];
+            if (!oneBase)
+                p.notes.push_back("the Gray register is loaded from " + std::to_string(bases.size()) +
+                                  " different binary values; switching between them can change several bits at once");
+            if (idx.size() > 1)
+                p.notes.push_back("bit " + std::to_string(p.srcBitLo) + " of a " + std::to_string(n) +
+                                  "-bit Gray value whose bits have separate synchronizers");
+            p.syncType = SyncType::Gray;
+            p.conditions.push_back({"the source register is Gray-encoded (g = b ^ (b >> 1))", true});
+            p.conditions.push_back({"every bit has a synchronizer chain of the same length", equalStages});
+            std::erase_if(p.unverified, [](const std::string& u) { return u.find("(CDC-008)") != std::string::npos; });
+            const bool ok = std::ranges::all_of(p.conditions, [](const Condition& c) { return c.satisfied; });
+            if (!ok) {
+                p.syncStatus = SyncStatus::StructureRecognized;
+            }
+            else if (step) {
+                p.syncStatus = SyncStatus::NecessaryConditionsVerified;
+                p.notes.push_back("the binary value is produced by an increment/decrement by at most one, so the "
+                                  "Gray value changes by at most one bit per source clock");
+            }
+            else {
+                p.syncStatus = SyncStatus::ProtocolUnverified;
+                p.unverified.push_back("the binary value encoded in Gray must change by at most one per source "
+                                       "clock (could not be proven from its logic)");
+            }
         }
-        else if (step) {
-            p.syncStatus = SyncStatus::NecessaryConditionsVerified;
-            p.notes.push_back("the binary value is produced by an increment/decrement by at most one, so the Gray "
-                              "value changes by at most one bit per source clock");
+    }
+
+    /// Single-bit chains of one multi-bit source register into one clock
+    /// (generate loops of 2FF cells, XPM / dcfifo pointer synchronizers).
+    void checkSplitGray() {
+        auto& paths = st_.result->paths;
+        std::map<std::tuple<std::size_t, std::uint32_t, int>, std::vector<std::size_t>> groups;
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            const CdcPath& p = paths[i];
+            const bool levelChain = p.syncType == SyncType::TwoFlop || p.syncType == SyncType::ThreeFlop ||
+                                    p.syncType == SyncType::MultiFlop;
+            if (p.pin == Pin::Data && levelChain && p.width == 1 && st_.isRegister(p.srcNode) &&
+                !st_.isConstantDataFlop(p.srcNode) && st_.sg.nodes()[p.srcNode].width > 1)
+                groups[{p.srcNode, p.dstClock.clock.value, static_cast<int>(p.dstClock.edge)}].push_back(i);
         }
-        else {
-            p.syncStatus = SyncStatus::ProtocolUnverified;
-            p.unverified.push_back("the binary value encoded in Gray must change by at most one per source clock "
-                                   "(could not be proven from its logic)");
+        for (const auto& [key, group] : groups) {
+            std::set<std::uint32_t> bits;
+            for (const auto i : group)
+                bits.insert(paths[i].srcBitLo);
+            if (bits.size() < 2 || *bits.rbegin() - *bits.begin() + 1 != bits.size())
+                continue; // the Gray property needs a contiguous bit range
+            checkGrayBits(std::get<0>(key), *bits.begin(), static_cast<std::uint32_t>(bits.size()), group);
         }
     }
 
@@ -1090,11 +1131,13 @@ void analyzeConvergence(State& st) {
 
     // One multi-bit source register split over separate single-bit
     // synchronizers (CDC-008): group per (source, destination clock).
+    // Bits of a Gray value with separate synchronizers form a group too: they
+    // are one value, not reconvergence (and not CDC-008, which needs level chains).
     std::map<std::tuple<std::uint32_t, std::uint32_t, int>, std::vector<std::size_t>> split;
     for (std::size_t i = 0; i < paths.size(); ++i) {
         const CdcPath& p = paths[i];
         const bool levelChain = p.syncType == SyncType::TwoFlop || p.syncType == SyncType::ThreeFlop ||
-                                p.syncType == SyncType::MultiFlop;
+                                p.syncType == SyncType::MultiFlop || p.syncType == SyncType::Gray;
         if (p.pin == Pin::Data && levelChain && p.width == 1 && st.isRegister(p.srcNode) &&
             nodes[p.srcNode].width > 1 && !st.isConstantDataFlop(p.srcNode))
             split[{p.srcNode, p.dstClock.clock.value, static_cast<int>(p.dstClock.edge)}].push_back(i);
@@ -1395,6 +1438,19 @@ void buildStructures(State& st) {
             paths[pathId].structure = s;
     };
 
+    // Bits of one Gray value with separate synchronizers belong together.
+    std::map<std::tuple<std::size_t, std::uint32_t, int>, std::vector<std::size_t>> graySiblings;
+    for (std::size_t i = 0; i < paths.size(); ++i)
+        if (paths[i].syncType == SyncType::Gray)
+            graySiblings[{paths[i].srcNode, paths[i].dstClock.clock.value, static_cast<int>(paths[i].dstClock.edge)}]
+                .push_back(i);
+    auto siblings = [&](std::size_t i) -> std::vector<std::size_t> {
+        const CdcPath& p = paths[i];
+        if (p.syncType != SyncType::Gray)
+            return {i};
+        return graySiblings[{p.srcNode, p.dstClock.clock.value, static_cast<int>(p.dstClock.edge)}];
+    };
+
     // Handshakes and FIFOs first: they include their request/acknowledge paths.
     std::map<std::tuple<SyncType, std::size_t, std::size_t>, std::size_t> protocol;
     for (std::size_t i = 0; i < paths.size(); ++i) {
@@ -1419,8 +1475,10 @@ void buildStructures(State& st) {
             it = protocol.emplace(key, s).first;
         }
         attach(it->second, i);
-        attach(it->second, r);
-        attach(it->second, k);
+        for (const auto x : siblings(r))
+            attach(it->second, x);
+        for (const auto x : siblings(k))
+            attach(it->second, x);
         res.structures[it->second].registers.push_back(p.dstName);
     }
     for (std::size_t i = 0; i < paths.size(); ++i) {
@@ -1433,7 +1491,15 @@ void buildStructures(State& st) {
             if (auto q = st.qualifierPath.find(i); q != st.qualifierPath.end())
                 res.structures[s].notes.push_back("qualifier synchronized from '" + paths[q->second].srcName + "'");
         }
-        attach(s, i);
+        const auto sib = siblings(i);
+        if (sib.size() > 1) {
+            res.structures[s].name = p.srcName;
+            res.structures[s].notes.push_back(std::to_string(sib.size()) +
+                                              " bits with separate synchronizers form one Gray value");
+        }
+        for (const auto x : sib)
+            if (paths[x].structure == kNoIndex)
+                attach(s, x);
     }
 }
 

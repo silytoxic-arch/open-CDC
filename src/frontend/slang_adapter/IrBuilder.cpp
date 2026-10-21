@@ -472,6 +472,10 @@ void BodyBuilder::lowerInstance(const sast::InstanceSymbol& inst) {
     ci.definition = std::string(inst.getDefinition().name);
     ci.body = cid;
     ci.loc = loc(inst.location);
+    if (const auto* scope = inst.getParentScope()) {
+        for (const auto* attr : scope->getCompilation().getAttributes(inst))
+            ci.attrs.push_back({std::string(attr->name), attributeText(attr->getValue())});
+    }
 
     for (const auto* pc : inst.getPortConnections()) {
         if (pc->port.kind != sast::SymbolKind::Port) {
@@ -529,6 +533,10 @@ void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
     ci.name = relativeName(u);
     ci.definition = std::string(u.definitionName);
     ci.loc = loc(u.location);
+    if (const auto* scope = u.getParentScope()) {
+        for (const auto* attr : scope->getCompilation().getAttributes(u))
+            ci.attrs.push_back({std::string(attr->name), attributeText(attr->getValue())});
+    }
     std::string key = ci.definition;
     std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (owner_.foreignDefinitions().contains(key)) { // VHDL names are case-insensitive

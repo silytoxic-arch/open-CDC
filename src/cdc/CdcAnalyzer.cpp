@@ -487,6 +487,17 @@ private:
         const auto* a = n.findAttr("ASYNC_REG");
         if (!a)
             a = n.findAttr("async_reg");
+        if (!a) {
+            // on the instance of a primitive flip-flop: (* ASYNC_REG *) FDRE u (...)
+            const auto& node = st_.view.design().instance(inst);
+            if (node.parent.valid()) {
+                const auto& pb = st_.view.bodyOf(node.parent);
+                if (node.childIndex < pb.children.size())
+                    for (const auto& at : pb.children[node.childIndex].attrs)
+                        if (at.name == "ASYNC_REG" || at.name == "async_reg")
+                            a = &at;
+            }
+        }
         if (!a)
             return false;
         // "TRUE" (Verilog string), "true" / TRUE (VHDL string or boolean): anything but false/0/no

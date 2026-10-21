@@ -82,6 +82,50 @@ TEST_CASE("Gray: an extra source register stage keeps the Gray property", "[cdc]
     CHECK(r.hits("CDC-008") == 0);
 }
 
+TEST_CASE("Gray: bits of a Gray counter synchronized by separate 2FF cells", "[cdc][gray]") {
+    // generate loop of single-bit synchronizer modules (xpm_cdc_gray, dcfifo pointers)
+    auto r = analyze("module sync2(input clk, input d, output q);\n"
+                     "  reg a, b; always @(posedge clk) begin a <= d; b <= a; end\n"
+                     "  assign q = b;\n"
+                     "endmodule\n"
+                     "module top(input clk_a, input clk_b, input inc, output reg [3:0] y);\n"
+                     "  reg [3:0] bin, gray; wire [3:0] s;\n"
+                     "  wire [3:0] bin_next = bin + {3'b000, inc};\n"
+                     "  always @(posedge clk_a) begin bin <= bin_next; gray <= (bin_next >> 1) ^ bin_next; end\n"
+                     "  genvar i;\n"
+                     "  generate for (i = 0; i < 4; i = i + 1) begin : g\n"
+                     "    sync2 u (.clk(clk_b), .d(gray[i]), .q(s[i]));\n"
+                     "  end endgenerate\n"
+                     "  always @(posedge clk_b) y <= s + 4'd1;\n"
+                     "endmodule\n");
+    const auto& p0 = r.path("top.gray", "top.g[0].u.a");
+    const auto& p3 = r.path("top.gray", "top.g[3].u.a");
+    CHECK(p0.syncType == SyncType::Gray);
+    CHECK(p3.syncType == SyncType::Gray);
+    CHECK(p0.syncStatus == SyncStatus::NecessaryConditionsVerified);
+    CHECK(p0.structure == p3.structure);
+    CHECK(r.hits("CDC-008") == 0);
+    CHECK(r.hits("CDC-005") == 0);
+}
+
+TEST_CASE("Gray negative: bits of a binary counter with separate 2FF cells stay CDC-008", "[cdc][gray][CDC-008]") {
+    auto r = analyze("module sync2(input clk, input d, output q);\n"
+                     "  reg a, b; always @(posedge clk) begin a <= d; b <= a; end\n"
+                     "  assign q = b;\n"
+                     "endmodule\n"
+                     "module top(input clk_a, input clk_b, output reg [3:0] y);\n"
+                     "  reg [3:0] cnt; wire [3:0] s;\n"
+                     "  always @(posedge clk_a) cnt <= cnt + 4'd1;\n"
+                     "  genvar i;\n"
+                     "  generate for (i = 0; i < 4; i = i + 1) begin : g\n"
+                     "    sync2 u (.clk(clk_b), .d(cnt[i]), .q(s[i]));\n"
+                     "  end endgenerate\n"
+                     "  always @(posedge clk_b) y <= s + 4'd1;\n"
+                     "endmodule\n");
+    CHECK(r.path("top.cnt", "top.g[0].u.a").syncType == SyncType::TwoFlop);
+    CHECK(r.hits("CDC-008") == 4);
+}
+
 TEST_CASE("Gray negative: a register copy of a binary counter is not Gray", "[cdc][gray][CDC-008]") {
     auto r = analyze("module top(input clk_a, input clk_b, output reg [3:0] y);\n"
                      "  reg [3:0] cnt, cnt_q, s1, s2;\n"

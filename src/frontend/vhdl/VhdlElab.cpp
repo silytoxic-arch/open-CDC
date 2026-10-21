@@ -1058,6 +1058,7 @@ void Elaborator::elaborateInstance(const Stmt& s, Scope& scope) {
     ci.definition = entity->name.text;
     ci.body = cid;
     ci.loc = srcLoc(s.loc);
+    ci.attrs = labelAttributes(scope, s.label.key);
     const auto& childPorts = design_->body(cid).ports;
     const auto& pieces = portPieces_[cid.index()];
     for (std::size_t k = 0; k < childPorts.size() && k < pieces.size(); ++k) {
@@ -1130,6 +1131,13 @@ std::string lower(std::string s) {
 }
 
 } // namespace
+
+std::vector<ir::Attribute> Elaborator::labelAttributes(const Scope& scope, const std::string& label) const {
+    for (const Scope* sc = &scope; sc; sc = sc->parent)
+        if (auto it = sc->labelAttrs.find(label); it != sc->labelAttrs.end())
+            return it->second;
+    return {};
+}
 
 std::set<std::string> Elaborator::instantiatedNames() const {
     std::set<std::string> out;
