@@ -120,22 +120,50 @@ std::string PrimitiveLibrary::generatorModel(const std::string& name, const std:
     if (it == generators_.end())
         return {};
     const Generator& g = *it;
-    auto width = [](int w) { return w > 1 ? "[" + std::to_string(w - 1) + ":0] " : std::string(); };
-    std::string t = "// OpenCDC model of " + g.name +
-                    ": every clock output is derived from " + g.clockIn +
-                    " (synchronous to it and to the other outputs; frequencies are not modelled).\n";
-    t += "module " + g.name;
-    if (!params.empty()) {
-        t += " #(";
-        bool first = true;
-        for (const auto& p : params) {
-            t += (first ? "" : ", ") + std::string("parameter ") + p + " = 0";
-            first = false;
-        }
-        t += ")";
+    const bool mmcm = g.name.starts_with("MMCM");
+    const std::string inPeriod = g.clockIn + "_PERIOD";
+    const std::string mult = mmcm ? "CLKFBOUT_MULT_F" : "CLKFBOUT_MULT";
+    // Parameters that set the output frequencies, with the UNISIM defaults;
+    // every other parameter the design writes is accepted and ignored.
+    std::vector<std::pair<std::string, std::string>> known = {
+        {"real " + inPeriod, "0.0"}, {"integer DIVCLK_DIVIDE", "1"}, {"real " + mult, "5.0"}};
+    auto divideOf = [&](const std::string& out) -> std::string {
+        // CLKOUT0B -> CLKOUT0; CLKOUT0 of an MMCM has a fractional divider
+        std::string base = out;
+        if (base.size() > 7 && base.back() == 'B')
+            base.pop_back();
+        if (base == "CLKFBOUT")
+            return "1.0";
+        if (mmcm && base == "CLKOUT0")
+            return "CLKOUT0_DIVIDE_F";
+        return base + "_DIVIDE";
+    };
+    for (const auto& [n, w] : g.outputs) {
+        if (!n.starts_with("CLKOUT") || n == "CLKOUTPHY")
+            continue;
+        const std::string d = divideOf(n);
+        const std::string decl = (d == "CLKOUT0_DIVIDE_F" ? "real " : "integer ") + d;
+        if (std::ranges::find(known, decl, &std::pair<std::string, std::string>::first) == known.end())
+            known.emplace_back(decl, d == "CLKOUT0_DIVIDE_F" ? "1.0" : "1");
     }
-    t += " (";
+    auto width = [](int w) { return w > 1 ? "[" + std::to_string(w - 1) + ":0] " : std::string(); };
+    std::string t = "// OpenCDC model of " + g.name + ": every clock output is derived from " + g.clockIn +
+                    "; its period is the input period x " + (mmcm ? "DIVCLK_DIVIDE x divide / CLKFBOUT_MULT_F"
+                                                                    : "DIVCLK_DIVIDE x divide / CLKFBOUT_MULT") +
+                    ". LOCKED has no clock domain.\n";
+    t += "module " + g.name + " #(";
     bool first = true;
+    for (const auto& [decl, def] : known) {
+        t += (first ? "" : ", ") + std::string("parameter ") + decl + " = " + def;
+        first = false;
+    }
+    for (const auto& p : params) {
+        const bool isKnown = std::ranges::any_of(known, [&](const auto& k) { return k.first.ends_with(" " + p); });
+        if (!isKnown)
+            t += ", parameter " + p + " = 0";
+    }
+    t += ") (";
+    first = true;
     for (const auto& [n, w] : g.inputs) {
         t += (first ? "input " : ", input ") + width(w) + n;
         first = false;
@@ -145,6 +173,10 @@ std::string PrimitiveLibrary::generatorModel(const std::string& name, const std:
     t += ");\n";
     for (const auto& [n, w] : g.outputs) {
         if (n.starts_with("CLK") && n != "CLKFBSTOPPED" && n != "CLKINSTOPPED") {
+            const std::string ratio = n == "CLKOUTPHY" ? "(1.0 * DIVCLK_DIVIDE) / " + mult
+                                                       : "(1.0 * DIVCLK_DIVIDE * " + divideOf(n) + ") / " + mult;
+            t += "    (* OPENCDC_CLOCK_PIN = \"" + n + "\", OPENCDC_CLOCK_RATIO = " + ratio +
+                 ", OPENCDC_CLOCK_INPUT_PERIOD = " + inPeriod + " *)\n";
             t += "    reg " + n + "_q = 1'b0;\n";
             t += "    always @(posedge " + g.clockIn + ") " + n + "_q <= ~" + n + "_q;\n";
             t += "    assign " + n + " = " + n + "_q;\n";

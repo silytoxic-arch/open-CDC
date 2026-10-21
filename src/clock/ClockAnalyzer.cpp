@@ -1,6 +1,7 @@
 #include "clock/ClockAnalyzer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <map>
 #include <unordered_map>
@@ -77,6 +78,7 @@ public:
         collectKnownRoots();
         traceAllRegisters();
         resolveGeneratedMasters();
+        resolveDividerPeriods();
         computeRelations();
         reportSummary();
         return model_;
@@ -157,8 +159,36 @@ private:
         c.source = d.bit;
         c.sourceName = c.name;
         c.definedAt = netLoc(d.bit);
+        // Built-in clock generator models (MMCM/PLL) describe their outputs:
+        // the period relative to the input clock, the input period from the
+        // instance parameters, and the output pin name.
+        const ir::Net& net = view_.bodyOf(d.bit.inst).net(d.bit.net);
+        auto attrNumber = [&](std::string_view key) -> std::optional<double> {
+            const auto* a = net.findAttr(key);
+            if (!a)
+                return std::nullopt;
+            std::string v = a->value;
+            std::erase(v, '"');
+            try {
+                std::size_t used = 0;
+                const double x = std::stod(v, &used);
+                return used > 0 && std::isfinite(x) ? std::optional(x) : std::nullopt;
+            }
+            catch (const std::exception&) {
+                return std::nullopt;
+            }
+        };
+        const auto ratio = attrNumber("OPENCDC_CLOCK_RATIO");
+        const auto inPeriod = attrNumber("OPENCDC_CLOCK_INPUT_PERIOD");
+        if (const auto* pin = net.findAttr("OPENCDC_CLOCK_PIN"); pin && c.name.size() >= net.name.size()) {
+            std::string v = pin->value;
+            std::erase(v, '"');
+            c.name = c.name.substr(0, c.name.size() - net.name.size()) + v;
+        }
         const ClockId id = addClock(std::move(c));
         divider_.emplace(d.bit, id); // before tracing the master: breaks self-clocking loops
+        if (ratio && *ratio > 0)
+            ratio_[id.value] = {*ratio, inPeriod && *inPeriod > 0 ? *inPeriod : 0.0};
 
         const auto& reg = view_.bodyOf(d.bit.inst).registers.at(d.index);
         auto clkBit = view_.bitOf(d.bit.inst, reg.clock.signal, 0);
@@ -540,6 +570,30 @@ private:
         // Derived clocks without constraints inherit nothing but the master link.
     }
 
+    /// Periods of generator outputs: master period x ratio, or the input
+    /// period written on the instance (CLKIN1_PERIOD) when the master has none.
+    void resolveDividerPeriods() {
+        for (std::size_t round = 0; round < ratio_.size() + 1; ++round) {
+            bool changed = false;
+            for (const auto& [idv, r] : ratio_) {
+                auto& c = model_->clocks[idv];
+                if (c.periodNs)
+                    continue;
+                std::optional<double> base;
+                if (c.master.valid() && model_->clocks[c.master.index()].periodNs)
+                    base = model_->clocks[c.master.index()].periodNs;
+                else if (r.second > 0)
+                    base = r.second;
+                if (base) {
+                    c.periodNs = *base * r.first;
+                    changed = true;
+                }
+            }
+            if (!changed)
+                break;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Relations
     // ------------------------------------------------------------------
@@ -700,6 +754,7 @@ private:
     std::unordered_map<BitRef, std::vector<ClockId>, BitRefHash> sourceClocks_;
     std::unordered_map<BitRef, ClockId, BitRefHash> primary_;
     std::unordered_map<BitRef, ClockId, BitRefHash> divider_;
+    std::map<std::uint32_t, std::pair<double, double>> ratio_; ///< clock -> (period ratio, input period)
     std::unordered_map<BitRef, ClockId, BitRefHash> blackBox_;
     std::unordered_set<BitRef, BitRefHash> knownRoots_;
     std::unordered_map<BitRef, Trace, BitRefHash> memo_;

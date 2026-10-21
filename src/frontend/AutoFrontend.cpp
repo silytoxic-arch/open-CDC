@@ -29,6 +29,7 @@
 #include <sstream>
 #include <map>
 #include <set>
+#include <tuple>
 
 namespace opencdc::frontend {
 
@@ -438,8 +439,18 @@ public:
                                  "mixed-language elaboration did not converge (Verilog <-> VHDL nesting deeper than " +
                                      std::to_string(kMaxRounds) + " levels?)",
                                  {}, {}});
+        // Unconnected outputs of vendor primitives are normal (an MMCM has 20).
+        std::set<std::tuple<std::string, std::uint32_t, std::uint32_t>> primitiveSites;
+        if (finalDesign)
+            for (const auto& b : finalDesign->bodies)
+                for (const auto& c : b.children)
+                    if (models_.contains(c.definition) || primitiveModules_.contains(lower(c.definition)))
+                        primitiveSites.emplace(c.loc.file, c.loc.line, c.loc.column);
         for (auto& d : lastDiags) {
             if (d.location.file == wrapperUtf8)
+                continue;
+            if (d.code == "FE-SLANG-UnconnectedOutputPort" &&
+                primitiveSites.contains({d.location.file, d.location.line, d.location.column}))
                 continue;
             if (!d.isError() && d.location.file.starts_with(primDirUtf8))
                 continue; // notes about the vendor models themselves

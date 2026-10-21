@@ -326,3 +326,67 @@ TEST_CASE("Primitives: MMCM LOCKED is asynchronous to every clock", "[primitives
     CHECK(raw->syncType == SyncType::None);
     CHECK(run->hits("CDC-006") == 1);
 }
+
+TEST_CASE("Primitives: MMCM/PLL output periods follow the multiply and divide parameters", "[primitives]") {
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input d, input e, output reg q, output reg qp);\n"
+                       "  wire c0, c1, p2;\n"
+                       "  MMCME2_ADV #(.CLKFBOUT_MULT_F(10.0), .DIVCLK_DIVIDE(1), .CLKOUT0_DIVIDE_F(5.0),\n"
+                       "    .CLKOUT1_DIVIDE(20), .BANDWIDTH(\"OPTIMIZED\")) m (.CLKIN1(clk_a), .CLKOUT0(c0),\n"
+                       "    .CLKOUT1(c1), .RST(1'b0), .PWRDWN(1'b0));\n"
+                       "  PLLE2_BASE #(.CLKFBOUT_MULT(8), .DIVCLK_DIVIDE(2), .CLKOUT2_DIVIDE(4), .CLKIN1_PERIOD(7.0))\n"
+                       "    p (.CLKIN1(clk_b), .CLKOUT2(p2), .RST(1'b0), .PWRDWN(1'b0));\n"
+                       "  reg a, pa, s1, sp;\n"
+                       "  always @(posedge c0) a <= d & e;\n" // one-cycle pulses in the 5 ns domain
+                       "  always @(posedge clk_b) begin s1 <= a; q <= s1; end\n"
+                       "  always @(posedge c1) pa <= d & e;\n" // 20 ns domain: long enough for clk_b
+                       "  always @(posedge p2) begin sp <= pa; qp <= sp; end\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    REQUIRE(run->r->clocks);
+    auto period = [&](std::string_view name) -> std::optional<double> {
+        for (const auto& c : run->r->clocks->clocks)
+            if (c.name == name)
+                return c.periodNs;
+        FAIL("no clock " << name);
+        return std::nullopt;
+    };
+    CHECK(period("top.m.CLKOUT0") == 5.0);  // 10 x 1 x 5 / 10
+    CHECK(period("top.m.CLKOUT1") == 20.0); // 10 x 1 x 20 / 10
+    CHECK(period("top.p.CLKOUT2") == 7.0);  // master clk_b is 7 ns: 7 x 2 x 4 / 8
+    CHECK(run->count("FE-SLANG-UnconnectedOutputPort") == 0);
+    const auto* fast = run->path("top.a", "top.s1");
+    REQUIRE(fast);
+    CHECK(std::ranges::any_of(fast->hits, [](const auto& h) { return h.ruleId == "CDC-007"; })); // 5 < 1.5 x 7
+    const auto* slow = run->path("top.pa", "top.sp");
+    REQUIRE(slow);
+    CHECK(std::ranges::none_of(slow->hits, [](const auto& h) { return h.ruleId == "CDC-007"; })); // 20 >= 1.5 x 7
+}
+
+TEST_CASE("Primitives: generator input period from CLKIN1_PERIOD when the input clock has none", "[primitives]") {
+    auto run = std::make_unique<Run>();
+    engine::ProjectConfig cfg;
+    cfg.name = "prim";
+    cfg.top = "top";
+    cfg.sources = {run->dir.write("t.v", "module top(input clk, input d, output reg q);\n"
+                                         "  wire c0;\n"
+                                         "  MMCME2_BASE #(.CLKIN1_PERIOD(8.0), .CLKFBOUT_MULT_F(4.0), .CLKOUT0_DIVIDE_F(2.0))\n"
+                                         "    m (.CLKIN1(clk), .CLKOUT0(c0), .RST(1'b0), .PWRDWN(1'b0));\n"
+                                         "  always @(posedge c0) q <= d;\n"
+                                         "endmodule\n")};
+    cfg.sourceLibraries = {""};
+    engine::AnalysisSession session;
+    NullProgressSink progress;
+    CancellationToken cancel;
+    run->r = session.run(cfg, progress, cancel);
+    REQUIRE(run->r);
+    REQUIRE(run->r->clocks);
+    bool found = false;
+    for (const auto& c : run->r->clocks->clocks)
+        if (c.name == "top.m.CLKOUT0") {
+            found = true;
+            CHECK(c.periodNs == 4.0); // 8 x 1 x 2 / 4
+        }
+    CHECK(found);
+}
