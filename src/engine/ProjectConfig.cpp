@@ -259,7 +259,7 @@ namespace {
 
 std::string relativeText(const std::filesystem::path& p, const std::filesystem::path& baseDir) {
     std::filesystem::path out = p;
-    if (!baseDir.empty() && p.is_absolute()) {
+    if (!baseDir.empty() && p.has_root_path()) { // rooted (on Windows "/x" is rooted, not absolute)
         const auto rel = p.lexically_normal().lexically_relative(baseDir.lexically_normal());
         if (!rel.empty() && !rel.has_root_path())
             out = rel;
