@@ -20,11 +20,13 @@ ParseResult parseOk(const std::string& text) {
 }
 
 const DesignUnit& unit(const ParseResult& r, UnitKind k, std::size_t nth = 0) {
+    // Single exit through REQUIRE: code after a FAIL is unreachable for MSVC (C4702).
+    const DesignUnit* found = nullptr;
     for (const auto& u : r.file.units)
-        if (u.kind == k && nth-- == 0)
-            return u;
-    FAIL("no such design unit");
-    return r.file.units.front();
+        if (!found && u.kind == k && nth-- == 0)
+            found = &u;
+    REQUIRE(found != nullptr);
+    return *found;
 }
 
 std::string show(const Expr& e); // compact rendering for checks
