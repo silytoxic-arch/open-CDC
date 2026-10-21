@@ -34,7 +34,7 @@ struct AnalysisOptions {
 ///   "version":     1,
 ///   "name":        "my_design",
 ///   "top":         "top",                       (optional)
-///   "language":    "verilog-2001",              (optional; verilog-2001 | verilog-2005 | systemverilog-2017)
+///   "language":    "verilog-2001",              (optional; verilog-2001 | verilog-2005 | systemverilog-2017; default verilog-2001, or systemverilog-2017 when a source is .sv/.svh)
 ///   "sources":     ["rtl/top.v", "rtl/sync.v",
 ///                   {"file": "rtl/olo_base_cc_bits.vhd", "library": "olo"}],
 ///                  (.vhd/.vhdl files are VHDL; a source may name its VHDL library, default "work")

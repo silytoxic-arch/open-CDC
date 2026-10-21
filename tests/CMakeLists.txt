@@ -22,7 +22,8 @@ add_executable(opencdc_tests
     frontend/test_primitives.cpp
     vhdl/test_vhdl_parser.cpp
     vhdl/test_vhdl_elab.cpp
-    vhdl/test_vhdl_mixed.cpp)
+    vhdl/test_vhdl_mixed.cpp
+    vhdl/test_vhdl_records.cpp)
 
 target_link_libraries(opencdc_tests PRIVATE
     opencdc_vhdl

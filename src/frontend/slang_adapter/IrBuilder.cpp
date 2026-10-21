@@ -297,6 +297,22 @@ std::uint32_t BodyBuilder::widthOf(const sast::ValueSymbol& s) const {
     return typeWidth(s.getType());
 }
 
+namespace {
+void collectFields(const sast::Type& t, const std::string& prefix, std::uint32_t base, std::vector<ir::NetField>& out) {
+    if (t.kind != sast::SymbolKind::PackedStructType)
+        return;
+    for (const auto& f : t.as<sast::PackedStructType>().membersOfType<sast::FieldSymbol>()) {
+        const auto& ft = f.getType().getCanonicalType();
+        ir::NetField nf;
+        nf.name = prefix + std::string(f.name);
+        nf.offset = base + static_cast<std::uint32_t>(f.bitOffset);
+        nf.width = static_cast<std::uint32_t>(ft.getBitWidth());
+        out.push_back(nf);
+        collectFields(ft, nf.name + ".", nf.offset, out);
+    }
+}
+} // namespace
+
 std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
     if (auto it = netOf_.find(&s); it != netOf_.end())
         return it->second;
@@ -321,6 +337,8 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
                 n.lsb = r.right;
             }
         }
+        if (t.kind == sast::SymbolKind::PackedStructType)
+            collectFields(t, "", 0, n.fields);
     }
     else if (t.isUnpackedArray() && t.isFixedSize()) {
         const auto* elem = t.getArrayElementType();

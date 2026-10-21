@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <functional>
 
 namespace opencdc::vhdl {
 
@@ -288,38 +289,116 @@ void Elaborator::elaborateForeignInstance(const Stmt& s, Scope& scope, const std
         return;
     }
     ci.body = cid;
-    const auto& ports = design_->body(cid).ports;
+    const ir::ModuleBody& cb = design_->body(cid);
+    const auto& ports = cb.ports;
     std::vector<ir::SigSpec> actual(ports.size());
     std::vector<bool> given(ports.size(), false);
+
+    // Formal of an association: the whole port, a field of a packed struct
+    // port (p.f, nested p.f.g), an element p(i) or a slice p(h downto l).
+    struct Formal {
+        std::size_t port = 0;
+        std::uint32_t offset = 0; ///< normalized bits within the port
+        std::uint32_t width = 0;
+        std::string field;        ///< struct field path; empty = the port itself
+        bool indexed = false;     ///< an index or slice was applied
+    };
+    auto staticInt = [&](const Expr& e) -> std::optional<std::int64_t> {
+        SVal v = eval(e, pctx, std_.integer);
+        if (!v.valid() || !v.known() || !v.type->baseType().isIntegerLike()) {
+            error("VHDL-PORT-MAP", "the index of a formal of Verilog module '" + module + "' is not static", e.loc);
+            return std::nullopt;
+        }
+        return v.value->i;
+    };
+    std::function<std::optional<Formal>(const Expr&)> formalOf = [&](const Expr& f) -> std::optional<Formal> {
+        if (f.kind == ExprKind::Simple) {
+            for (std::size_t i = 0; i < ports.size(); ++i)
+                if (lower(ports[i].name) == f.ident.key)
+                    return Formal{i, 0, cb.net(ports[i].net).width, {}, false};
+            error("VHDL-PORT-MAP", "Verilog module '" + module + "' has no port '" + f.ident.text + "'", f.loc);
+            return std::nullopt;
+        }
+        if (f.kind == ExprKind::Selected && f.prefix) {
+            auto base = formalOf(*f.prefix);
+            if (!base)
+                return std::nullopt;
+            const ir::Net& net = cb.net(ports[base->port].net);
+            const std::string path = base->field.empty() ? f.ident.key : base->field + "." + f.ident.key;
+            if (!base->indexed)
+                for (const auto& fd : net.fields)
+                    if (lower(fd.name) == path)
+                        return Formal{base->port, fd.offset, fd.width, path, false};
+            error("VHDL-PORT-MAP", "port '" + ports[base->port].name + "' of Verilog module '" + module +
+                                       "' has no field '" + path + "'",
+                  f.loc);
+            return std::nullopt;
+        }
+        if (f.kind == ExprKind::Call && f.prefix && f.args.size() == 1 && f.args[0].actual) {
+            auto base = formalOf(*f.prefix);
+            if (!base)
+                return std::nullopt;
+            const ir::Net& net = cb.net(ports[base->port].net);
+            // declared range of the whole port; a field is [width-1:0]
+            const bool whole = base->field.empty() && !base->indexed;
+            const std::int64_t msb = whole ? net.msb : static_cast<std::int64_t>(base->width) - 1;
+            const std::int64_t lsb = whole ? net.lsb : 0;
+            auto rel = [&](std::int64_t i) -> std::optional<std::uint32_t> {
+                const std::int64_t o = msb >= lsb ? i - lsb : lsb - i;
+                if (o < 0 || o >= static_cast<std::int64_t>(base->width)) {
+                    error("VHDL-PORT-MAP", "index " + std::to_string(i) + " is outside port '" +
+                                               ports[base->port].name + "' of Verilog module '" + module + "'",
+                          f.loc);
+                    return std::nullopt;
+                }
+                return static_cast<std::uint32_t>(o);
+            };
+            const Expr& a = *f.args[0].actual;
+            if (a.kind == ExprKind::Range && a.lhs && a.rhs) {
+                auto l = staticInt(*a.lhs);
+                auto r = l ? staticInt(*a.rhs) : std::nullopt;
+                if (!r)
+                    return std::nullopt;
+                auto ol = rel(*l);
+                auto orr = ol ? rel(*r) : std::nullopt;
+                if (!orr)
+                    return std::nullopt;
+                const std::uint32_t lo = std::min(*ol, *orr);
+                const std::uint32_t hi = std::max(*ol, *orr);
+                return Formal{base->port, base->offset + lo, hi - lo + 1, {}, true};
+            }
+            auto i = staticInt(a);
+            auto o = i ? rel(*i) : std::nullopt;
+            if (!o)
+                return std::nullopt;
+            return Formal{base->port, base->offset + *o, 1, {}, true};
+        }
+        unsupported("IR-UNSUPPORTED-PORT", "formal of Verilog module '" + module + "' in an unsupported form", f.loc);
+        return std::nullopt;
+    };
+
     std::size_t pos = 0;
     for (const auto& a : s.portMap) {
-        std::optional<std::size_t> k;
+        std::optional<Formal> fm;
         if (!a.formal) {
             if (pos < ports.size())
-                k = pos;
+                fm = Formal{pos, 0, cb.net(ports[pos].net).width, {}, false};
+            else
+                error("VHDL-PORT-MAP", "too many port associations for Verilog module '" + module + "'", a.loc);
             ++pos;
         }
-        else if (a.formal->kind == ExprKind::Simple) {
-            for (std::size_t i = 0; i < ports.size(); ++i)
-                if (lower(ports[i].name) == a.formal->ident.key)
-                    k = i;
-        }
         else {
-            unsupported("IR-UNSUPPORTED-PORT", "partial association of a port of Verilog module '" + module + "'",
-                        a.loc);
-            continue;
+            fm = formalOf(*a.formal);
         }
-        if (!k) {
-            error("VHDL-PORT-MAP", "Verilog module '" + module + "' has no port '" +
-                                       (a.formal ? a.formal->ident.text : std::to_string(pos)) + "'",
-                  a.loc);
+        if (!fm)
             continue;
-        }
         if (!a.actual || a.actual->kind == ExprKind::Open)
             continue;
         const Expr* act = a.actual->kind == ExprKind::Inertial ? a.actual->lhs.get() : a.actual.get();
-        const auto& port = ports[*k];
-        const std::uint32_t w = design_->body(cid).net(port.net).width;
+        const auto& port = ports[fm->port];
+        const std::uint32_t pw = cb.net(port.net).width;
+        const std::uint32_t w = fm->width;
+        const bool partial = w != pw;
         ir::SigSpec bits;
         if (port.dir == ir::PortDir::In) {
             const Type* expected = w == 1 ? std_.stdLogic : types.constrainedArray(std_.stdLogicVector,
@@ -359,9 +438,18 @@ void Elaborator::elaborateForeignInstance(const Stmt& s, Scope& scope, const std
                      a.loc);
             if (bits.width() > w)
                 bits = bits.extract(0, w);
+            else if (bits.width() < w)
+                bits.append(ir::SigSpec::allX(w - bits.width())); // constant bits drive nothing
         }
-        actual[*k] = bits;
-        given[*k] = true;
+        if (!partial) {
+            actual[fm->port] = bits;
+        }
+        else {
+            if (!given[fm->port])
+                actual[fm->port] = ir::SigSpec::allX(pw);
+            actual[fm->port] = actual[fm->port].replaced(fm->offset, bits);
+        }
+        given[fm->port] = true;
     }
     for (std::size_t k = 0; k < ports.size(); ++k) {
         ir::PortBinding pb;

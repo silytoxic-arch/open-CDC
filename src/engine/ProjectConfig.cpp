@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 
@@ -221,6 +222,16 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
 
     if (cfg.name.empty())
         cfg.name = "unnamed";
+    // No "language": SystemVerilog sources (.sv/.svh) select IEEE 1800-2017.
+    if (root.find("language") == root.end()) {
+        const bool sv = std::ranges::any_of(cfg.sources, [](const std::filesystem::path& f) {
+            auto ext = f.extension().string();
+            std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return ext == ".sv" || ext == ".svh";
+        });
+        if (sv)
+            cfg.language = frontend::LanguageStd::SystemVerilog2017;
+    }
     return cfg;
 }
 

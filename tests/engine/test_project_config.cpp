@@ -136,3 +136,16 @@ TEST_CASE("The smoke example project loads", "[engine][project]") {
     for (const auto& s : r.value().sources)
         CHECK(fs::is_regular_file(s));
 }
+
+TEST_CASE("parseProjectJson selects SystemVerilog for .sv sources unless a language is given", "[engine][project]") {
+    auto sv = parseProjectJson(R"({"format": "opencdc-project", "version": 1, "sources": ["a.v", "b.SV"]})", kBase);
+    REQUIRE(sv.ok());
+    CHECK(sv.value().language == frontend::LanguageStd::SystemVerilog2017);
+    auto v = parseProjectJson(R"({"format": "opencdc-project", "version": 1, "sources": ["a.v", "x.vhd"]})", kBase);
+    REQUIRE(v.ok());
+    CHECK(v.value().language == frontend::LanguageStd::Verilog2001);
+    auto given = parseProjectJson(
+        R"({"format": "opencdc-project", "version": 1, "language": "verilog-2005", "sources": ["b.sv"]})", kBase);
+    REQUIRE(given.ok());
+    CHECK(given.value().language == frontend::LanguageStd::Verilog2005);
+}

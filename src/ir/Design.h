@@ -35,6 +35,14 @@ struct Attribute {
 };
 
 /// A named signal inside one module body.
+/// Field of a packed struct net: bits [offset, offset+width) (normalized, 0 =
+/// LSB). Nested fields are listed too, with dotted names ("hdr.len").
+struct NetField {
+    std::string name;
+    std::uint32_t offset = 0;
+    std::uint32_t width = 0;
+};
+
 struct Net {
     std::string name;            ///< relative to the body, generate scopes included: "g_bit[2].tmp"
     std::uint32_t width = 1;
@@ -49,6 +57,7 @@ struct Net {
     std::optional<ConstBits> init; ///< declaration initializer (FPGA power-up value)
     std::vector<Attribute> attrs;
     SourceLocation loc;
+    std::vector<NetField> fields; ///< packed struct layout (used to bind VHDL element associations)
 
     /// Declared index of normalized bit `offset` (e.g. 3 for bit offset 3 of [7:0]).
     [[nodiscard]] std::int32_t indexOf(std::uint32_t offset) const noexcept;
