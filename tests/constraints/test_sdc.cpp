@@ -87,6 +87,31 @@ TEST_CASE("Tcl syntax: braces, quotes, continuation, comments, variables, nestin
     CHECK(p.set.clocks[2].name == "clk_b"); // default name = object name
 }
 
+TEST_CASE("CRLF line endings (files written on Windows) parse like LF", "[constraints]") {
+    const std::string lf = "# comment \\\n"
+                           "  continued comment\n"
+                           "create_clock -period 4 -name a [get_ports clk]\n"
+                           "create_clock -period 5 -name b [get_ports clk_b]\n"
+                           "set_clock_groups -asynchronous \\\n"
+                           "    -group [get_clocks a] \\\n"
+                           "    -group [get_clocks b]\n"
+                           "create_clock -period 6 -name c [get_ports rst_n]\n";
+    std::string crlf;
+    for (const char ch : lf)
+        crlf += ch == '\n' ? std::string("\r\n") : std::string(1, ch);
+    for (const std::string* text : {&lf, static_cast<const std::string*>(&crlf)}) {
+        FakeResolver r;
+        auto p = parse(*text, r);
+        CHECK(p.countCode("CON-PARSE") == 0);
+        CHECK(p.diags.empty());
+        REQUIRE(p.set.clocks.size() == 3);
+        REQUIRE(p.set.groups.size() == 1);
+        CHECK(p.set.groups[0].groups == std::vector<std::vector<std::string>>{{"a"}, {"b"}});
+        CHECK(p.set.clocks[2].name == "c");
+        CHECK(p.set.clocks[2].loc.line == 8); // line numbers are unchanged
+    }
+}
+
 TEST_CASE("Bus bit selects are not command substitutions", "[constraints]") {
     FakeResolver r;
     auto p = parse("create_clock -period 5 [get_ports data[0]]\n"

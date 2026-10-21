@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -45,15 +46,19 @@ inline BuiltDesign buildDesign(std::string_view verilog, std::string top = "",
 /// (instance, register index) of the register whose Q is printed as `hierQ`,
 /// e.g. "top.u_sync.meta" or "top.cnt[3:0]".
 inline std::pair<ir::InstanceId, std::size_t> findRegister(const ir::Design& d, std::string_view hierQ) {
-    for (std::size_t i = 0; i < d.instances.size(); ++i) {
+    // No return after a FAIL: MSVC reports it as unreachable code (C4702),
+    // GCC/Clang would want one. A single exit through REQUIRE suits both.
+    std::optional<std::pair<ir::InstanceId, std::size_t>> found;
+    for (std::size_t i = 0; i < d.instances.size() && !found; ++i) {
         const auto& node = d.instances[i];
         const auto& body = d.body(node.body);
-        for (std::size_t r = 0; r < body.registers.size(); ++r)
+        for (std::size_t r = 0; r < body.registers.size() && !found; ++r)
             if (node.hierPath + "." + ir::formatSig(body, body.registers[r].q) == hierQ)
-                return {ir::InstanceId{static_cast<std::uint32_t>(i)}, r};
+                found.emplace(ir::InstanceId{static_cast<std::uint32_t>(i)}, r);
     }
-    FAIL("no register " << hierQ);
-    return {};
+    INFO("register " << hierQ);
+    REQUIRE(found.has_value());
+    return *found;
 }
 
 } // namespace opencdc::test

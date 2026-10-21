@@ -44,11 +44,10 @@ struct Extract {
         return std::ranges::any_of(diags, [](const Diagnostic& d) { return d.isError(); });
     }
     [[nodiscard]] const ir::ModuleBody& body(std::string_view name) const {
-        for (const auto& b : design->bodies)
-            if (b.name == name)
-                return b;
-        FAIL("no module body " << name);
-        return design->bodies.front();
+        const auto it = std::ranges::find(design->bodies, name, &ir::ModuleBody::name);
+        INFO("module body " << name);
+        REQUIRE(it != design->bodies.end()); // single exit: no unreachable return after FAIL (MSVC C4702)
+        return *it;
     }
 };
 

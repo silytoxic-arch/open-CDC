@@ -308,7 +308,7 @@ struct Value {
 /// Splits a script into commands and words (no substitution yet).
 class Tokenizer {
 public:
-    Tokenizer(std::string_view text, std::uint32_t firstLine) : s_(text), line_(firstLine) {}
+    Tokenizer(std::string_view text, std::uint32_t firstLine) : s_(withLf(text)), line_(firstLine) {}
 
     /// Returns false at end of input. `error` is set on malformed input.
     bool next(Command& cmd, std::string& error) {
@@ -480,7 +480,18 @@ private:
         return true;
     }
 
-    std::string_view s_;
+    /// CRLF -> LF. Constraint files written on Windows end lines with CRLF;
+    /// Tcl's backslash-newline continuation must still work there.
+    static std::string withLf(std::string_view text) {
+        std::string out;
+        out.reserve(text.size());
+        for (std::size_t k = 0; k < text.size(); ++k)
+            if (!(text[k] == '\r' && k + 1 < text.size() && text[k + 1] == '\n'))
+                out += text[k];
+        return out;
+    }
+
+    std::string s_;
     std::size_t i_ = 0;
     std::uint32_t line_;
 };
