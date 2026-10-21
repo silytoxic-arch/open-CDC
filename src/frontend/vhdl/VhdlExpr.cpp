@@ -291,6 +291,8 @@ SVal Elaborator::initialValue(const Object& o, Loc l) {
                 std::uint64_t n = 1;
                 for (const auto& r : t.indexRanges)
                     n *= r->length();
+                if (n > kMaxObjectBits)
+                    return std::nullopt;
                 auto e = left(*t.element);
                 if (!e)
                     return std::nullopt;

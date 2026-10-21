@@ -20,7 +20,8 @@ add_executable(opencdc_tests
     engine/test_report.cpp
     frontend/test_slang_frontend.cpp
     vhdl/test_vhdl_parser.cpp
-    vhdl/test_vhdl_elab.cpp)
+    vhdl/test_vhdl_elab.cpp
+    vhdl/test_vhdl_mixed.cpp)
 
 target_link_libraries(opencdc_tests PRIVATE
     opencdc_vhdl

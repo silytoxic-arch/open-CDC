@@ -1,0 +1,15 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "smoke_mixed",
+  "top": "top",
+  "sources": [
+    "../../smoke/rtl/sync_2ff.v",
+    {"file": "../../vhdl/smoke/rtl/smoke_pkg.vhd", "library": "smoke_lib"},
+    "../../vhdl/smoke/rtl/tx_domain.vhd",
+    "../../vhdl/smoke/rtl/rx_domain.vhd",
+    "../../smoke/rtl/top.v"
+  ],
+  "includeDirs": ["../../smoke/rtl/include"],
+  "constraints": ["../../smoke/constraints/clocks.sdc"]
+}

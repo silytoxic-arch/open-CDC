@@ -1,0 +1,14 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "cdc_advanced_mixed",
+  "top": "cdc_advanced",
+  "sources": [
+    "../../vhdl/cdc_advanced/rtl/sync_cells.vhd",
+    "../../cdc_advanced/rtl/gray_fifo.v",
+    "../../cdc_advanced/rtl/handshake.v",
+    "../../vhdl/cdc_advanced/rtl/cdc_advanced.vhd"
+  ],
+  "constraints": ["../../cdc_advanced/constraints/cdc_advanced.sdc"],
+  "options": {"minSyncStages": 2, "reconvergenceDepth": 2}
+}

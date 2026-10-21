@@ -174,9 +174,9 @@ TEST_CASE("Design flattening offsets and instance tree", "[ir][design]") {
     top.name = "top";
     const NetId tclk = top.addNet(makeNet("clk", 1, NetKind::Wire, PortDir::In));
     const NetId tw = top.addNet(makeNet("w", 4));
-    top.children.push_back({"u0", leafId, "leaf", {{"clk", PortDir::In, lclk, top.netSig(tclk)}, {"q", PortDir::Out, lq, SigSpec::net(tw, 2)}}, {}});
-    top.children.push_back({"g[1].u1", leafId, "leaf", {{"clk", PortDir::In, lclk, top.netSig(tclk)}, {"q", PortDir::Out, lq, SigSpec::net(tw, 2, 2)}}, {}});
-    top.children.push_back({"u_bb", ModuleId{}, "missing", {}, {}});
+    top.children.push_back({"u0", leafId, "leaf", {{"clk", PortDir::In, lclk, top.netSig(tclk)}, {"q", PortDir::Out, lq, SigSpec::net(tw, 2)}}, {}, {}});
+    top.children.push_back({"g[1].u1", leafId, "leaf", {{"clk", PortDir::In, lclk, top.netSig(tclk)}, {"q", PortDir::Out, lq, SigSpec::net(tw, 2, 2)}}, {}, {}});
+    top.children.push_back({"u_bb", ModuleId{}, "missing", {}, {}, {}});
     const ModuleId topId = d.addBody(std::move(top));
 
     d.addTop(topId);

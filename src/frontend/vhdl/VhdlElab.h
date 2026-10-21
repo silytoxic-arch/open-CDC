@@ -13,6 +13,7 @@
 // first use, so files may be listed in any order.
 
 #include "core/Diagnostic.h"
+#include "core/Result.h"
 #include "frontend/Frontend.h"
 #include "frontend/vhdl/VhdlAst.h"
 #include "frontend/vhdl/VhdlTypes.h"
@@ -21,8 +22,10 @@
 
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <numeric>
+#include <set>
 #include <tuple>
 #include <map>
 #include <memory>
@@ -314,6 +317,18 @@ struct ElabOptions {
     std::uint32_t maxInlineDepth = 64;
     /// Generic overrides of the top entity (name, VHDL expression).
     std::vector<std::pair<std::string, std::string>> generics;
+
+    // ---- mixed-language designs ----
+    /// Design to add the bodies to (shared with the Verilog frontend); null: a new one.
+    std::shared_ptr<ir::Design> design;
+    /// Modules of the other language: lower-case name -> name as written.
+    std::map<std::string, std::string> foreignModules;
+    /// Body of a foreign module for these parameter values; invalid if not
+    /// available yet (it is then requested for the next elaboration round).
+    std::function<ir::ModuleId(const std::string& module, const std::vector<ir::InstanceParam>& params)>
+        resolveForeign;
+    /// Entities that must not be inferred as tops (instantiated from Verilog).
+    std::set<std::string> excludeTops;
 };
 
 /// One unique elaborated body (entity + architecture + generic values).
@@ -328,6 +343,12 @@ struct BodyKey {
     }
 };
 
+/// Reads and parses VHDL files into their libraries (missing / empty
+/// library: "work"). Syntax messages go to `sink`; the value is false if
+/// any file has syntax errors.
+Result<bool> loadSources(const std::vector<std::filesystem::path>& paths, const std::vector<std::string>& libraries,
+                         DiagnosticSink& sink, std::vector<SourceFileEntry>& files);
+
 class Elaborator {
 public:
     Elaborator(std::vector<SourceFileEntry>& files, DiagnosticSink& sink, ElabOptions opts);
@@ -335,6 +356,28 @@ public:
 
     /// Elaborates the top entity and everything below it.
     std::shared_ptr<ir::Design> run(frontend::ElaborationSummary& summary);
+    /// Elaborates the selected or inferred top entities into the design
+    /// (without adding instance trees); returns their bodies.
+    std::vector<ir::ModuleId> elaborateTops();
+    [[nodiscard]] std::vector<frontend::DefinitionInfo> definitions() const;
+
+    // ---- mixed-language designs (VhdlMixed.cpp) ----------------------------
+    /// A VHDL port as seen from another language.
+    struct ForeignPort {
+        std::string name;
+        ir::PortDir dir = ir::PortDir::In;
+        std::uint32_t width = 0;
+        std::vector<std::pair<std::size_t, std::uint32_t>> pieces; ///< (child port index, offset)
+    };
+    /// True if `name` (any case) is an entity of the VHDL libraries.
+    [[nodiscard]] bool hasEntity(const std::string& name);
+    /// Body of entity `name` (default architecture) for parameter values
+    /// written in another language; invalid on errors.
+    ir::ModuleId foreignEntity(const std::string& name, const std::vector<ir::InstanceParam>& params,
+                               const SourceLocation& where);
+    [[nodiscard]] std::vector<ForeignPort> foreignPorts(ir::ModuleId id) const;
+    /// Entity keys instantiated anywhere in the VHDL sources.
+    [[nodiscard]] std::set<std::string> instantiatedNames() const;
 
     [[nodiscard]] bool hadErrors() const noexcept { return errors_ > 0; }
 
@@ -470,6 +513,7 @@ public:
     BodyState* body = nullptr;       ///< body under construction
     std::vector<Object> frameObjects; ///< subprogram locals (no storage); indices offset by kFrameBase
     static constexpr int kFrameBase = 1 << 24;
+    static constexpr std::uint32_t kMaxObjectBits = 1U << 24; ///< guards against absurd generic values
     Object& object(int idx);
     int addObject(Object o);
     int createStorageObject(const std::string& name, const Type* t, bool signal, Mode mode, Loc l,
@@ -504,6 +548,10 @@ public:
                          Loc instLoc);
     const DesignUnit* findEntity(const std::string& lib, const std::string& name, std::string* foundLib);
     const DesignUnit* defaultArchitecture(const std::string& lib, const DesignUnit& entity);
+    void elaborateForeignInstance(const Stmt& s, Scope& scope, const std::string& module);
+    SVal fromForeign(const ir::InstanceParam& p, const Type* t, Loc l);
+    std::optional<ir::InstanceParam> toForeign(const SVal& v);
+    const std::vector<ir::InstanceParam>* foreignParams_ = nullptr;
     std::map<std::size_t, std::vector<PortPiece>> portPieces_; ///< by ModuleId index
     std::map<std::size_t, std::vector<PortSpec>> portSpecs_;   ///< by ModuleId index
 

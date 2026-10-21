@@ -8,6 +8,7 @@ add_library(opencdc_vhdl STATIC
     VhdlFrontend.cpp
     VhdlLexer.cpp
     VhdlLexer.h
+    VhdlMixed.cpp
     VhdlNames.cpp
     VhdlParser.cpp
     VhdlParser.h

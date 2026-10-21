@@ -123,6 +123,13 @@ int Elaborator::createStorageObject(const std::string& name, const Type* t, bool
         body->objects.push_back(std::move(o));
         return idx;
     }
+    if (*W > kMaxObjectBits) {
+        error("VHDL-TOO-WIDE", "'" + name + "' has " + std::to_string(*W) + " bits (more than " +
+                                   std::to_string(kMaxObjectBits) + ")",
+              l);
+        body->objects.push_back(std::move(o));
+        return idx;
+    }
     std::function<SigSpec(const std::string&, const Type&, const std::optional<Value>&)> leaf =
         [&](const std::string& n, const Type& ty, const std::optional<Value>& iv) -> SigSpec {
         if (ty.kind == TypeKind::Record && !ty.fields.empty()) {
@@ -298,6 +305,28 @@ Scope* Elaborator::bindGenerics(const DesignUnit& entity, const std::string& lib
             overrideExprs.push_back(std::move(e));
         }
     }
+    // generic values from an instance in another language (mixed designs)
+    std::map<std::string, const ir::InstanceParam*> foreign;
+    if (foreignParams_) {
+        std::vector<std::string> order2;
+        for (const auto& g : entity.generics)
+            if (g.cls != InterfaceDecl::Class::Type)
+                for (const auto& n : g.names)
+                    order2.push_back(n.key);
+        std::size_t pos = 0;
+        for (const auto& fp : *foreignParams_) {
+            std::string key = fp.name;
+            std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (key.empty()) {
+                if (pos >= order2.size()) {
+                    error("VHDL-GENERIC-MAP", "too many parameters for entity '" + entity.name.text + "'", l);
+                    continue;
+                }
+                key = order2[pos++];
+            }
+            foreign[key] = &fp;
+        }
+    }
     std::set<std::string> known;
     for (const auto& g : entity.generics) {
         if (g.cls == InterfaceDecl::Class::Type) {
@@ -329,6 +358,14 @@ Scope* Elaborator::bindGenerics(const DesignUnit& entity, const std::string& lib
                 SVal val = eval(*actual, ac, s->type);
                 if (val.valid() && s->type)
                     val = convert(val, s->type, ac, actual->loc);
+                if (val.valid()) {
+                    if (s->type && s->type->isArray() && !s->type->isFullyConstrained())
+                        s->type = val.type;
+                    s->value = val;
+                }
+            }
+            else if (auto fit = foreign.find(n.key); !actual && fit != foreign.end()) {
+                SVal val = fromForeign(*fit->second, s->type, l);
                 if (val.valid()) {
                     if (s->type && s->type->isArray() && !s->type->isFullyConstrained())
                         s->type = val.type;
@@ -367,6 +404,9 @@ Scope* Elaborator::bindGenerics(const DesignUnit& entity, const std::string& lib
     for (const auto& [k, e] : actuals)
         if (!known.contains(k) && e)
             error("VHDL-GENERIC-MAP", "entity '" + entity.name.text + "' has no generic '" + k + "'", e->loc);
+    for (const auto& [k, fp] : foreign)
+        if (!known.contains(k))
+            error("VHDL-GENERIC-MAP", "entity '" + entity.name.text + "' has no generic '" + fp->name + "'", l);
     if (!params.empty())
         params = "#(" + params + ")";
     // a body with missing or non-static generics would only produce follow-up errors
@@ -737,6 +777,12 @@ void Elaborator::elaborateInstance(const Stmt& s, Scope& scope) {
                 warn("VHDL-ARCHITECTURE", "entity '" + entity->name.text + "' has no architecture", s.loc);
         }
     }
+    if (!entity && opts_.resolveForeign) {
+        if (auto it = opts_.foreignModules.find(unitKey); it != opts_.foreignModules.end()) {
+            elaborateForeignInstance(s, scope, it->second);
+            return;
+        }
+    }
     if (!entity || !arch) {
         ir::ChildInstance ci;
         ci.name = instName;
@@ -1078,15 +1124,39 @@ std::string lower(std::string s) {
 
 } // namespace
 
-std::shared_ptr<ir::Design> Elaborator::run(frontend::ElaborationSummary& summary) {
-    design_ = std::make_shared<ir::Design>();
+std::set<std::string> Elaborator::instantiatedNames() const {
+    std::set<std::string> out;
+    for (const auto& [ln, lib] : libraries)
+        for (const auto& [k, archs] : lib.architectures)
+            for (const DesignUnit* a : archs)
+                collectInstantiated(a->stmts, out);
+    return out;
+}
 
-    // definitions (entities)
+std::vector<frontend::DefinitionInfo> Elaborator::definitions() const {
+    std::vector<frontend::DefinitionInfo> out;
     for (const auto& [ln, lib] : libraries)
         for (const auto& [k, e] : lib.entities)
-            summary.definitions.push_back({e->name.text, "entity", srcLoc(e->loc)});
-    std::ranges::sort(summary.definitions, [](const auto& a, const auto& b) { return a.name < b.name; });
+            out.push_back({e->name.text, "entity", srcLoc(e->loc)});
+    std::ranges::sort(out, [](const auto& a, const auto& b) { return a.name < b.name; });
+    return out;
+}
 
+std::shared_ptr<ir::Design> Elaborator::run(frontend::ElaborationSummary& summary) {
+    design_ = opts_.design ? opts_.design : std::make_shared<ir::Design>();
+    summary.definitions = definitions();
+    for (const ir::ModuleId id : elaborateTops())
+        design_->addTop(id);
+    for (auto top : design_->tops)
+        summary.topInstances.push_back(makeInfo(*design_, top));
+    summary.instanceCount = design_->instances.size();
+    return design_;
+}
+
+std::vector<ir::ModuleId> Elaborator::elaborateTops() {
+    if (!design_)
+        design_ = opts_.design ? opts_.design : std::make_shared<ir::Design>();
+    std::vector<ir::ModuleId> result;
     // top selection
     struct Top {
         std::string lib;
@@ -1111,7 +1181,7 @@ std::shared_ptr<ir::Design> Elaborator::run(frontend::ElaborationSummary& summar
         if (!e || (!libName.empty() && found != libName)) {
             sink_.report({"VHDL-TOP", Severity::Error, "top entity '" + opts_.top + "' not found", {}, {}});
             ++errors_;
-            return design_;
+            return result;
         }
         const DesignUnit* a = nullptr;
         if (!archName.empty()) {
@@ -1128,7 +1198,7 @@ std::shared_ptr<ir::Design> Elaborator::run(frontend::ElaborationSummary& summar
             sink_.report({"VHDL-TOP", Severity::Error, "top entity '" + opts_.top + "' has no (such) architecture",
                           srcLoc(e->loc), {}});
             ++errors_;
-            return design_;
+            return result;
         }
         tops.push_back({found, e, a});
     }
@@ -1140,7 +1210,7 @@ std::shared_ptr<ir::Design> Elaborator::run(frontend::ElaborationSummary& summar
                     collectInstantiated(a->stmts, instantiated);
         for (const auto& [ln, lib] : libraries) {
             for (const auto& [k, e] : lib.entities) {
-                if (instantiated.contains(k))
+                if (instantiated.contains(k) || opts_.excludeTops.contains(k))
                     continue;
                 const DesignUnit* a = defaultArchitecture(ln, *e);
                 if (!a)
@@ -1169,12 +1239,9 @@ std::shared_ptr<ir::Design> Elaborator::run(frontend::ElaborationSummary& summar
         auto specs = portSpecs(*t.entity, gs);
         const ir::ModuleId id = bodyFor(*t.entity, *t.arch, t.lib, gs, specs, canon, params, t.entity->loc);
         if (id.valid())
-            design_->addTop(id);
+            result.push_back(id);
     }
-    for (auto top : design_->tops)
-        summary.topInstances.push_back(makeInfo(*design_, top));
-    summary.instanceCount = design_->instances.size();
-    return design_;
+    return result;
 }
 
 } // namespace opencdc::vhdl

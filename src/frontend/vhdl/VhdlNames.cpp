@@ -353,6 +353,12 @@ SVal Elaborator::evalAggregate(const Expr& e, Ctx& ctx, const Type* expected) {
         r = asc ? IntRange{lo, hi, true} : IntRange{hi, lo, false};
     }
     const std::uint64_t n = r.length();
+    if (n > kMaxObjectBits) {
+        error("VHDL-TOO-WIDE", "aggregate of " + std::to_string(n) + " elements (more than " +
+                                   std::to_string(kMaxObjectBits) + ")",
+              e.loc);
+        return SVal{};
+    }
     std::vector<SVal> slots(n);
     if (!anyNamed) {
         if (positional.size() > n || (positional.size() < n && !othersValue)) {

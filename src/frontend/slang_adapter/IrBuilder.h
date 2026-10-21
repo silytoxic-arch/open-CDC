@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -131,6 +132,7 @@ private:
     void lowerNetInitializer(const sast::ValueSymbol& sym);
     void lowerInstance(const sast::InstanceSymbol& inst);
     void lowerPrimitive(const sast::PrimitiveInstanceSymbol& prim);
+    void lowerUninstantiated(const sast::UninstantiatedDefSymbol& u);
     std::string relativeName(const sast::Symbol& sym) const;
     bool isModuleLevelStorage(const sast::ValueSymbol& sym) const;
 
@@ -183,6 +185,14 @@ private:
 class IrBuilder {
 public:
     IrBuilder(const slang::SourceManager& sm, DiagnosticSink& sink);
+    /// Definitions provided by another language (mixed designs): instances of
+    /// them are kept as unresolved children with their parameters and ports.
+    void setForeignDefinitions(std::set<std::string> names, bool mixed) {
+        foreign_ = std::move(names);
+        mixed_ = mixed;
+    }
+    [[nodiscard]] bool mixed() const noexcept { return mixed_; }
+    [[nodiscard]] const std::set<std::string>& foreignDefinitions() const noexcept { return foreign_; }
 
     std::shared_ptr<ir::Design> build(const sast::RootSymbol& root);
 
@@ -203,6 +213,8 @@ private:
     std::unordered_map<const sast::InstanceBodySymbol*, ir::ModuleId> built_;
     std::vector<std::unordered_map<const sast::Symbol*, ir::NetId>> netMaps_;
     int depth_ = 0;
+    std::set<std::string> foreign_;
+    bool mixed_ = false;
 };
 
 } // namespace opencdc::frontend::detail

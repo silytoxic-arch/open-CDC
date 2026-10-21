@@ -153,12 +153,25 @@ struct PortBinding {
     SigSpec actual;    ///< parent-side signal (empty = unconnected)
 };
 
+/// Parameter value written at an instance of a module/entity that its own
+/// frontend could not resolve (bound later to a body of another language).
+struct InstanceParam {
+    std::string name;                ///< empty: positional
+    std::optional<ConstBits> bits;   ///< integral / vector value
+    std::optional<std::string> str;  ///< string value
+    std::optional<double> real;      ///< real value
+    bool isSigned = false;
+};
+
 struct ChildInstance {
     std::string name;  ///< relative to the body: "u_sync" or "g_bit[2].u_sync"
     ModuleId body;     ///< invalid for unknown / unsupported modules
     std::string definition;
+    /// Unresolved instance (body invalid): ports are bound by name (empty
+    /// name: by position) with direction None and the actual as written.
     std::vector<PortBinding> ports;
     SourceLocation loc;
+    std::vector<InstanceParam> unresolvedParams;
 };
 
 /// One unique elaborated module body (a module with a specific parameter set).

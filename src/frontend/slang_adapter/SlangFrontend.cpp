@@ -2,6 +2,7 @@
 // Everything that crosses this boundary is converted to OpenCDC types.
 
 #include "frontend/Frontend.h"
+#include "frontend/MixedSupport.h"
 
 #include "core/PathUtil.h"
 #include "frontend/slang_adapter/IrBuilder.h"
@@ -156,6 +157,13 @@ private:
 };
 
 Result<FrontendOutput> SlangFrontend::elaborate(const FrontendInput& input, DiagnosticSink& sink) {
+    return detail::elaborateVerilog(input, sink, nullptr);
+}
+
+} // namespace
+
+Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, DiagnosticSink& sink,
+                                                const VerilogMixedOptions* mixed) {
     if (input.sourceFiles.empty()) {
         return Diagnostic{"FE-NO-SOURCES", Severity::Error, "no HDL source files were given", {}, {}};
     }
@@ -224,8 +232,14 @@ Result<FrontendOutput> SlangFrontend::elaborate(const FrontendInput& input, Diag
             compOptions.languageVersion = slang::LanguageVersion::v1800_2017;
             break;
     }
-    if (!input.top.empty())
+    if (mixed) {
+        compOptions.flags |= sast::CompilationFlags::IgnoreUnknownModules;
+        for (const auto& t : mixed->tops)
+            compOptions.topModules.emplace(t);
+    }
+    else if (!input.top.empty()) {
         compOptions.topModules.emplace(input.top);
+    }
     for (const auto& [name, value] : input.topParameters)
         compOptions.paramOverrides.push_back(name + "=" + value);
 
@@ -269,6 +283,12 @@ Result<FrontendOutput> SlangFrontend::elaborate(const FrontendInput& input, Diag
         const auto& def = sym->as<sast::DefinitionSymbol>();
         summary.definitions.push_back(
             {std::string(def.name), std::string(def.getKindString()), convertLocation(sourceManager, def.location)});
+        if (mixed && mixed->moduleParams) {
+            auto& names = (*mixed->moduleParams)[std::string(def.name)];
+            for (const auto& p : def.parameters)
+                if (!p.isLocalParam && !p.isTypeParam)
+                    names.emplace_back(p.name);
+        }
     }
     std::ranges::sort(summary.definitions, {}, &DefinitionInfo::name);
 
@@ -283,12 +303,12 @@ Result<FrontendOutput> SlangFrontend::elaborate(const FrontendInput& input, Diag
     }
     else {
         detail::IrBuilder builder(sourceManager, sink);
+        if (mixed)
+            builder.setForeignDefinitions(mixed->foreignModules, true);
         output.design = builder.build(root);
     }
     return output;
 }
-
-} // namespace
 
 std::unique_ptr<IFrontend> makeSlangFrontend() {
     return std::make_unique<SlangFrontend>();

@@ -567,6 +567,9 @@ TEST_CASE("VHDL examples give the same CDC results as the Verilog examples", "[v
         {"cdc_rules/cdc_rules.ocdc.json", "vhdl/cdc_rules/cdc_rules_vhdl.ocdc.json"},
         {"cdc_advanced/cdc_advanced.ocdc.json", "vhdl/cdc_advanced/cdc_advanced_vhdl.ocdc.json"},
         {"async_fifo/afifo.ocdc.json", "vhdl/async_fifo/afifo_vhdl.ocdc.json"},
+        // mixed: Verilog top -> VHDL -> Verilog, and VHDL top -> Verilog -> VHDL
+        {"smoke/smoke.ocdc.json", "mixed/smoke/smoke_mixed.ocdc.json"},
+        {"cdc_advanced/cdc_advanced.ocdc.json", "mixed/cdc_advanced/cdc_advanced_mixed.ocdc.json"},
     };
     for (const auto& [v, h] : pairs) {
         INFO(v << " vs " << h);

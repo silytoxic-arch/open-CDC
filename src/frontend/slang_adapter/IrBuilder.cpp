@@ -10,7 +10,10 @@
 #include <slang/ast/ASTVisitor.h>
 #include <slang/ast/EvalContext.h>
 #include <slang/ast/expressions/AssignmentExpressions.h>
+#include <slang/ast/expressions/AssertionExpr.h>
 #include <slang/ast/expressions/CallExpression.h>
+#include <slang/ast/expressions/LiteralExpressions.h>
+#include <slang/syntax/AllSyntax.h>
 #include <slang/ast/expressions/ConversionExpression.h>
 #include <slang/ast/expressions/LiteralExpressions.h>
 #include <slang/ast/expressions/MiscExpressions.h>
@@ -26,6 +29,8 @@
 #include <slang/numeric/SVInt.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <map>
 
 namespace opencdc::frontend::detail {
@@ -419,17 +424,7 @@ void BodyBuilder::lowerMember(const sast::Symbol& m) {
             for (const auto* e : m.as<sast::GenerateBlockArraySymbol>().entries)
                 lowerMember(*e);
             break;
-        case sast::SymbolKind::UninstantiatedDef: {
-            ChildInstance ci;
-            ci.name = relativeName(m);
-            ci.definition = "?";
-            ci.loc = loc(m.location);
-            body_.children.push_back(std::move(ci));
-            owner_.design().unsupported.push_back(
-                {"IR-UNRESOLVED-INSTANCE", body_.name, "instance '" + std::string(m.name) + "' of an unknown module",
-                 loc(m.location)});
-            break;
-        }
+        case sast::SymbolKind::UninstantiatedDef: lowerUninstantiated(m.as<sast::UninstantiatedDefSymbol>()); break;
         default: break; // parameters, genvars, functions, typedefs, ports ... carry no logic
     }
 }
@@ -522,6 +517,96 @@ void BodyBuilder::lowerInstance(const sast::InstanceSymbol& inst) {
             }
         }
         ci.ports.push_back(std::move(pb));
+    }
+    body_.children.push_back(std::move(ci));
+}
+
+void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
+    // Unknown module: either an error (reported by slang) or, in a mixed-
+    // language design, an entity of the other language. Keep the parameter
+    // values and port actuals as written so it can be bound later.
+    ChildInstance ci;
+    ci.name = relativeName(u);
+    ci.definition = std::string(u.definitionName);
+    ci.loc = loc(u.location);
+    std::string key = ci.definition;
+    std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (owner_.foreignDefinitions().contains(key)) { // VHDL names are case-insensitive
+        // parameter values: bound again from the syntax (slang binds them
+        // against an unknown destination type, which fails for operators)
+        std::vector<std::pair<std::string, const slang::syntax::ExpressionSyntax*>> pexprs;
+        if (const auto* syn = u.getSyntax(); syn && syn->parent &&
+                                             syn->parent->kind == slang::syntax::SyntaxKind::HierarchyInstantiation) {
+            const auto& his = syn->parent->as<slang::syntax::HierarchyInstantiationSyntax>();
+            if (his.parameters) {
+                for (const auto* pa : his.parameters->parameters) {
+                    if (pa->kind == slang::syntax::SyntaxKind::OrderedParamAssignment)
+                        pexprs.emplace_back(std::string(), pa->as<slang::syntax::OrderedParamAssignmentSyntax>().expr);
+                    else if (pa->kind == slang::syntax::SyntaxKind::NamedParamAssignment &&
+                             pa->as<slang::syntax::NamedParamAssignmentSyntax>().expr)
+                        pexprs.emplace_back(
+                            std::string(pa->as<slang::syntax::NamedParamAssignmentSyntax>().name.valueText()),
+                            pa->as<slang::syntax::NamedParamAssignmentSyntax>().expr);
+                }
+            }
+        }
+        for (const auto& [pname, psyn] : pexprs) {
+            InstanceParam ip;
+            ip.name = pname;
+            const auto* scope = u.getParentScope();
+            if (!psyn || !scope)
+                continue;
+            sast::ASTContext actx(*scope, sast::LookupLocation::after(u));
+            const auto& e = sast::Expression::bind(*psyn, actx);
+            sast::EvalContext ctx(actx);
+            const auto cv = e.eval(ctx);
+            if (cv.isInteger()) {
+                ip.bits = fromSVInt(cv.integer(), static_cast<std::uint32_t>(cv.integer().getBitWidth()));
+                ip.isSigned = cv.integer().isSigned();
+                if (e.kind == sast::ExpressionKind::StringLiteral)
+                    ip.str = std::string(e.as<sast::StringLiteral>().getValue());
+            }
+            else if (cv.isString()) {
+                ip.str = cv.str();
+            }
+            else if (cv.isReal()) {
+                ip.real = static_cast<double>(cv.real());
+            }
+            else {
+                unsupported("IR-UNSUPPORTED-PARAM",
+                            "non-constant parameter value at instance '" + ci.name + "' of '" + ci.definition + "'",
+                            u.location);
+                continue;
+            }
+            ci.unresolvedParams.push_back(std::move(ip));
+        }
+        const auto conns = u.getPortConnections();
+        const auto pnames = u.getPortNames();
+        for (std::size_t k = 0; k < conns.size(); ++k) {
+            PortBinding pb;
+            pb.port = k < pnames.size() ? std::string(pnames[k]) : std::string();
+            pb.dir = PortDir::None;
+            const auto* ae = conns[k];
+            if (ae && ae->kind == sast::AssertionExprKind::Simple) {
+                const auto& e = ae->as<sast::SimpleAssertionExpr>().expr;
+                if (e.kind != sast::ExpressionKind::EmptyArgument && !e.bad())
+                    pb.actual = lower(e);
+            }
+            else if (ae) {
+                unsupported("IR-UNSUPPORTED-PORT", "port connection of '" + ci.name + "' is not an expression",
+                            u.location);
+            }
+            ci.ports.push_back(std::move(pb));
+        }
+    }
+    else {
+        if (owner_.mixed()) // slang does not report unknown modules in mixed designs
+            owner_.report({"FE-UNKNOWN-MODULE", Severity::Error,
+                           "unknown module '" + ci.definition + "' (neither Verilog nor VHDL)", ci.loc, {}});
+        ci.definition = "?";
+        owner_.design().unsupported.push_back(
+            {"IR-UNRESOLVED-INSTANCE", body_.name, "instance '" + std::string(u.name) + "' of an unknown module",
+             loc(u.location)});
     }
     body_.children.push_back(std::move(ci));
 }
