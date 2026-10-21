@@ -130,4 +130,28 @@ package vcomponents is
   end component;
   component VCC port (P : out std_ulogic); end component;
   component GND port (G : out std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCME2_BASE port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCME2_ADV port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCME3_BASE port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCME3_ADV port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCME4_BASE port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCME4_ADV port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLLE2_BASE port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLLE2_ADV port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLLE3_BASE port (CLKIN : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLLE3_ADV port (CLKIN : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLLE4_BASE port (CLKIN : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLLE4_ADV port (CLKIN : in std_ulogic); end component;
 end package;

@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <regex>
 #include <sstream>
 #include <map>
@@ -282,12 +283,16 @@ public:
             writeWrapper(wrapperPath);
             vin.sourceFiles = userVerilog;
             vin.sourceFiles.push_back(wrapperPath);
+            std::string modelSignature;
             for (const auto& m : models_) {
-                const auto path = primitiveDir() / (m + ".v");
-                writeIfChanged(path, prims.verilogModel(m));
+                const std::string text =
+                    prims.isClockGenerator(m) ? prims.generatorModel(m, generatorParams_[m]) : prims.verilogModel(m);
+                // generator models depend on the parameters in use: one file per variant
+                const auto path = primitiveDir() / (m + "_" + std::to_string(std::hash<std::string>{}(text) % 100000) + ".v");
+                writeIfChanged(path, text);
                 vin.sourceFiles.push_back(path);
+                modelSignature += text;
             }
-            const std::size_t knownModels = models_.size();
             RoundSink rs;
             detail::VerilogMixedOptions mo;
             mo.foreignModules = foreign;
@@ -384,8 +389,12 @@ public:
             for (std::size_t b = 0; b < slangBodies; ++b)
                 for (const auto& c : design->bodies[b].children)
                     if (!c.body.valid())
-                        if (auto it = primitiveModules_.find(lower(c.definition)); it != primitiveModules_.end())
+                        if (auto it = primitiveModules_.find(lower(c.definition)); it != primitiveModules_.end()) {
                             models_.insert(it->second);
+                            for (const auto& p : c.unresolvedParams)
+                                if (!p.name.empty())
+                                    generatorParams_[it->second].insert(p.name);
+                        }
             // VHDL tops
             std::vector<ir::ModuleId> tops;
             if (!verilogTop) {
@@ -404,10 +413,18 @@ public:
                     tops.insert(tops.begin(), n.body);
             }
             for (const auto& r : requests_)
-                if (auto it = primitiveModules_.find(lower(r.module)); it != primitiveModules_.end())
+                if (auto it = primitiveModules_.find(lower(r.module)); it != primitiveModules_.end()) {
                     models_.insert(it->second);
+                    for (const auto& p : r.params)
+                        if (!p.name.empty())
+                            generatorParams_[it->second].insert(p.name);
+                }
+            std::string nextSignature;
+            for (const auto& m : models_)
+                nextSignature += prims.isClockGenerator(m) ? prims.generatorModel(m, generatorParams_[m])
+                                                           : prims.verilogModel(m);
             lastDiags = std::move(rs.diags);
-            if (requests_.size() == knownRequests && models_.size() == knownModels) {
+            if (requests_.size() == knownRequests && nextSignature == modelSignature) {
                 converged = true;
                 const bool errors =
                     std::ranges::any_of(lastDiags, [](const Diagnostic& d) { return d.isError(); });
@@ -563,6 +580,7 @@ private:
     std::vector<std::filesystem::path> parsedVerilog_;
     std::map<std::string, std::string> primitiveModules_; ///< modelled primitives: lower-case -> name
     std::set<std::string> models_;                        ///< primitive models in the compilation
+    std::map<std::string, std::set<std::string>> generatorParams_; ///< clock generator -> parameters in use
     std::vector<std::filesystem::path> vendorVhdl_;       ///< vendor component packages added
 };
 

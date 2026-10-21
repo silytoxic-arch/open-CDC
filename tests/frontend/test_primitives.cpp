@@ -74,7 +74,10 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
                           "altera_std_synchronizer"})
         CHECK(lib.find(n).has_value());
     CHECK(lib.find("fdre") == std::optional<std::string>("FDRE")); // VHDL spelling
-    CHECK_FALSE(lib.find("MMCME2_ADV").has_value());
+    CHECK(lib.find("MMCME2_ADV").has_value()); // clock generators are generated on demand
+    CHECK(lib.isClockGenerator("mmcme2_adv"));
+    CHECK_FALSE(lib.isClockGenerator("FDRE"));
+    CHECK_FALSE(lib.find("XYZ_NOT_A_PRIMITIVE").has_value());
     // a model brings the models it instantiates
     const auto bundle = lib.verilogModel("altera_std_synchronizer_bundle");
     CHECK(bundle.find("module altera_std_synchronizer #") != std::string::npos);
@@ -219,10 +222,85 @@ TEST_CASE("Primitives negative: other unknown modules are still errors", "[primi
     auto run = analyze("t.v",
                        "module top(input clk_a, input d, output q);\n"
                        "  FDRE s1 (.Q(q), .C(clk_a), .CE(1'b1), .D(d), .R(1'b0));\n"
-                       "  MMCME2_ADV pll ();\n"
+                       "  XYZ_NOT_A_PRIMITIVE pll ();\n"
                        "endmodule\n",
                        "top");
     CHECK_FALSE(run->r->cdc);
-    CHECK(run->count("FE-UNKNOWN-MODULE") == 1); // MMCME2_ADV; FDRE is modelled
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 1); // XYZ_NOT_A_PRIMITIVE; FDRE is modelled
     CHECK(run->count("FE-SLANG-UnknownModule") == 0);
+}
+
+namespace {
+constexpr const char* kMmcmTop =
+    "module top(input clk_a, input clk_b, input d, output reg q0, output reg q1, output reg qb);\n"
+    "  wire fb, c0u, c1u, c0, c1, locked;\n"
+    "  MMCME2_ADV #(.CLKFBOUT_MULT_F(10.0), .CLKIN1_PERIOD(10.0), .CLKOUT0_DIVIDE_F(5.0), .CLKOUT1_DIVIDE(20),\n"
+    "               .COMPENSATION(\"ZHOLD\")) mmcm (.CLKIN1(clk_a), .CLKIN2(1'b0), .CLKINSEL(1'b1), .CLKFBIN(fb),\n"
+    "     .CLKFBOUT(fb), .CLKOUT0(c0u), .CLKOUT1(c1u), .LOCKED(locked), .RST(1'b0), .PWRDWN(1'b0));\n"
+    "  BUFG b0 (.I(c0u), .O(c0));\n"
+    "  BUFG b1 (.I(c1u), .O(c1));\n"
+    "  reg a;\n"
+    "  always @(posedge c0) a <= d;\n"
+    "  always @(posedge c1) q1 <= a;\n"
+    "  always @(posedge c0) q0 <= a;\n"
+    "  always @(posedge clk_b) qb <= a;\n"
+    "endmodule\n";
+} // namespace
+
+TEST_CASE("Primitives: MMCM outputs are clocks derived from CLKIN1", "[primitives]") {
+    auto run = analyze("t.v", kMmcmTop, "top");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->path("top.a", "top.q1") == nullptr); // CLKOUT0 -> CLKOUT1: same MMCM, synchronous
+    CHECK(run->path("top.a", "top.q0") == nullptr);
+    const auto* p = run->path("top.a", "top.qb"); // derived from clk_a -> clk_b: asynchronous
+    REQUIRE(p);
+    CHECK(p->syncType == SyncType::SingleFlop); // unsynchronized: one flop, used directly
+    CHECK(p->status != AnalysisStatus::Safe);
+    CHECK(run->r->cdc->paths.size() == 1);
+}
+
+TEST_CASE("Primitives negative: outputs of MMCMs on independent inputs are asynchronous", "[primitives]") {
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input d, output reg q);\n"
+                       "  wire ca, cb;\n"
+                       "  MMCME2_BASE #(.CLKFBOUT_MULT_F(8.0)) ma (.CLKIN1(clk_a), .CLKOUT0(ca), .RST(1'b0), .PWRDWN(1'b0));\n"
+                       "  PLLE2_ADV #(.CLKFBOUT_MULT(4)) mb (.CLKIN1(clk_b), .CLKOUT2(cb), .RST(1'b0), .PWRDWN(1'b0));\n"
+                       "  reg a;\n"
+                       "  always @(posedge ca) a <= d;\n"
+                       "  always @(posedge cb) q <= a;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    const auto* p = run->path("top.a", "top.q");
+    REQUIRE(p);
+    CHECK(p->syncType == SyncType::SingleFlop); // unsynchronized: one flop, used directly
+    CHECK(p->status != AnalysisStatus::Safe);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+}
+
+TEST_CASE("Primitives: MMCM from VHDL through unisim", "[primitives][vhdl]") {
+    auto run = analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "library unisim; use unisim.vcomponents.all;\n"
+                       "entity top is port (clk_a, clk_b, d : in std_logic; q0, qb : out std_logic); end;\n"
+                       "architecture rtl of top is\n"
+                       "  signal fb, c0u, c1u, c0, c1, a : std_logic;\n"
+                       "begin\n"
+                       "  m : MMCME2_ADV generic map (CLKFBOUT_MULT_F => 10.0, CLKOUT0_DIVIDE_F => 5.0, CLKOUT1_DIVIDE => 20)\n"
+                       "    port map (CLKIN1 => clk_a, CLKIN2 => '0', CLKINSEL => '1', CLKFBIN => fb, CLKFBOUT => fb,\n"
+                       "              CLKOUT0 => c0u, CLKOUT1 => c1u, RST => '0', PWRDWN => '0');\n"
+                       "  b0 : BUFG port map (I => c0u, O => c0);\n"
+                       "  b1 : BUFG port map (I => c1u, O => c1);\n"
+                       "  process (c0) begin if rising_edge(c0) then a <= d; end if; end process;\n"
+                       "  process (c1) begin if rising_edge(c1) then q0 <= a; end if; end process;\n"
+                       "  process (clk_b) begin if rising_edge(clk_b) then qb <= a; end if; end process;\n"
+                       "end;\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->path("top.a", "top.q0") == nullptr);
+    const auto* p = run->path("top.a", "top.qb");
+    REQUIRE(p);
+    CHECK(run->r->cdc->paths.size() == 1);
 }
