@@ -265,6 +265,7 @@ ModuleBody BodyBuilder::build() {
     declarePorts();
     declareScope(sym_);
     lowerScope(sym_);
+    finishVirtualPorts();
     ed_.finish(owner_.sink(), [this](const std::vector<std::uint32_t>& remap) {
         for (auto& [sym, id] : netOf_)
             id = NetId{remap[id.index()]};
@@ -313,15 +314,58 @@ void collectFields(const sast::Type& t, const std::string& prefix, std::uint32_t
 }
 } // namespace
 
+namespace {
+/// Elements of an interface instance array (nested arrays flattened) with
+/// their index suffix: {"[0]", ia[0]}, {"[1]", ia[1]}.
+std::vector<std::pair<std::string, const sast::Symbol*>> interfaceArrayElements(const sast::Symbol& array) {
+    std::vector<std::pair<std::string, const sast::Symbol*>> out;
+    // the trailing "[i][j]" of an element's path
+    auto indexSuffix = [](const std::string& path) {
+        std::size_t start = path.size();
+        while (start > 0 && path[start - 1] == ']') {
+            const auto open = path.rfind('[', start - 1);
+            if (open == std::string::npos)
+                break;
+            start = open;
+        }
+        return path.substr(start);
+    };
+    std::vector<const sast::Symbol*> work{&array};
+    while (!work.empty()) {
+        const auto* a = work.back();
+        work.pop_back();
+        for (const auto* e : a->as<sast::InstanceArraySymbol>().elements) {
+            if (e->kind == sast::SymbolKind::InstanceArray)
+                work.push_back(e);
+            else if (e->kind == sast::SymbolKind::Instance)
+                out.emplace_back(indexSuffix(e->getHierarchicalPath()), e);
+        }
+    }
+    return out;
+}
+} // namespace
+
 std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
     if (auto it = netOf_.find(&s); it != netOf_.end())
         return it->second;
     if (!isModuleLevelStorage(s))
         return std::nullopt;
 
+    // members of interfaces: flattened here, or reached through an interface port
+    std::optional<std::string> virtualName;
+    if (auto r = ifaceRef(s)) {
+        const std::string ipath = r->inst->getHierarchicalPath();
+        if (prefix_.empty() || !(ipath + ".").starts_with(prefix_)) {
+            auto it = portOfIface_.find(r->inst);
+            if (it == portOfIface_.end())
+                return std::nullopt; // another instance's interface: a plain hierarchical reference
+            virtualName = it->second + "." + r->rel;
+        }
+    }
+
     const auto& t = s.getType().getCanonicalType();
     Net n;
-    n.name = relativeName(s);
+    n.name = virtualName ? *virtualName : relativeName(s);
     n.kind = s.kind == sast::SymbolKind::Net ? NetKind::Wire : NetKind::Variable;
     n.loc = loc(s.location);
     if (t.isIntegral()) {
@@ -370,14 +414,197 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
 
     const NetId id = body_.addNet(std::move(n));
     netOf_.emplace(&s, id);
+    if (virtualName)
+        virtualPorts_.push_back({id, *virtualName});
     return id;
+}
+
+std::optional<BodyBuilder::IfaceRef> BodyBuilder::ifaceRef(const sast::Symbol& s) const {
+    for (const sast::Scope* sc = s.getParentScope(); sc; sc = sc->asSymbol().getParentScope()) {
+        const auto& owner = sc->asSymbol();
+        if (owner.kind != sast::SymbolKind::InstanceBody)
+            continue;
+        const auto& body = owner.as<sast::InstanceBodySymbol>();
+        if (!body.parentInstance || !body.parentInstance->isInterface())
+            return std::nullopt;
+        const std::string ipath = body.parentInstance->getHierarchicalPath() + ".";
+        const std::string spath = s.getHierarchicalPath();
+        if (!spath.starts_with(ipath))
+            return std::nullopt;
+        return IfaceRef{body.parentInstance, spath.substr(ipath.size())};
+    }
+    return std::nullopt;
+}
+
+const sast::ValueSymbol* BodyBuilder::ifaceTarget(const sast::ValueSymbol& sym) {
+    const sast::ValueSymbol* s = &sym;
+    if (s->kind == sast::SymbolKind::ModportPort) {
+        const auto& mp = s->as<sast::ModportPortSymbol>();
+        if (!mp.internalSymbol || !mp.internalSymbol->isValue())
+            return nullptr; // modport expressions are not modelled
+        s = &mp.internalSymbol->as<sast::ValueSymbol>();
+        modportDir_.emplace(s, convertDir(mp.direction));
+    }
+    if (s->kind != sast::SymbolKind::Net && s->kind != sast::SymbolKind::Variable)
+        return nullptr;
+    if (!ifaceRef(*s))
+        return nullptr;
+    return netFor(*s) ? s : nullptr;
+}
+
+void BodyBuilder::lowerInterfaceInstance(const sast::InstanceSymbol& inst) {
+    // the interface's signals and logic become part of this body ("ia.data")
+    declareScope(inst.body);
+    lowerScope(inst.body);
+    for (const auto* pc : inst.getPortConnections()) {
+        if (pc->port.kind != sast::SymbolKind::Port) {
+            unsupported("IR-UNSUPPORTED-PORT", "interface port of interface instance '" + relativeName(inst) + "'",
+                        inst.location);
+            continue;
+        }
+        const auto& ps = pc->port.as<sast::PortSymbol>();
+        const auto* expr = pc->getExpression();
+        if (!ps.internalSymbol || !ps.internalSymbol->isValue() || !expr ||
+            expr->kind == sast::ExpressionKind::EmptyArgument)
+            continue;
+        auto net = netFor(ps.internalSymbol->as<sast::ValueSymbol>());
+        if (!net)
+            continue;
+        if (ps.direction == sast::ArgumentDirection::In) {
+            const SigSpec v = lower(*expr).resized(body_.net(*net).width, false);
+            body_.connections.push_back({body_.netSig(*net), v, ConnKind::Assign, loc(inst.location)});
+        }
+        else {
+            const sast::Expression* lv = expr;
+            if (expr->kind == sast::ExpressionKind::Assignment && expr->as<sast::AssignmentExpression>().isLValueArg())
+                lv = &expr->as<sast::AssignmentExpression>().left();
+            if (auto targets = lvalue(*lv))
+                assignTargets(*targets, body_.netSig(*net), false, inst.location);
+        }
+    }
+}
+
+namespace {
+/// Member `rel` ("data", "g.x") of an interface instance.
+const sast::ValueSymbol* interfaceMember(const sast::InstanceSymbol& inst, const std::string& rel) {
+    const sast::Scope* scope = &inst.body;
+    std::size_t pos = 0;
+    while (scope) {
+        const auto dot = rel.find('.', pos);
+        const std::string seg = rel.substr(pos, dot == std::string::npos ? std::string::npos : dot - pos);
+        const sast::Symbol* sym = scope->find(seg);
+        if (!sym)
+            return nullptr;
+        if (dot == std::string::npos)
+            return sym->isValue() ? &sym->as<sast::ValueSymbol>() : nullptr;
+        scope = sym->isScope() ? &sym->as<sast::Scope>() : nullptr;
+        pos = dot + 1;
+    }
+    return nullptr;
+}
+} // namespace
+
+void BodyBuilder::bindInterfacePort(const sast::PortConnection& pc, ChildInstance& ci, ModuleId cid) {
+    const auto& ip = pc.port.as<sast::InterfacePortSymbol>();
+    const auto conn = pc.getIfaceConn();
+    if (!conn.first || !cid.valid() ||
+        (conn.first->kind != sast::SymbolKind::Instance && conn.first->kind != sast::SymbolKind::InstanceArray)) {
+        unsupported("IR-UNSUPPORTED-PORT", "interface port '" + std::string(ip.name) + "' of '" + ci.name + "'",
+                    pc.port.location);
+        return;
+    }
+    // "" -> the instance, or "[i]" -> element i of an interface array
+    std::vector<std::pair<std::string, const sast::Symbol*>> elems;
+    if (conn.first->kind == sast::SymbolKind::Instance)
+        elems.emplace_back("", conn.first);
+    else
+        elems = interfaceArrayElements(*conn.first);
+    const std::string name(ip.name);
+    for (const auto& p : owner_.design().body(cid).ports) {
+        if (!p.name.starts_with(name))
+            continue;
+        const sast::InstanceSymbol* inst = nullptr;
+        std::string rel;
+        for (const auto& [suffix, e] : elems) {
+            const std::string head = name + suffix + ".";
+            if (p.name.starts_with(head)) {
+                inst = &e->as<sast::InstanceSymbol>();
+                rel = p.name.substr(head.size());
+                break;
+            }
+        }
+        if (!inst)
+            continue;
+        const auto* member = interfaceMember(*inst, rel);
+        auto net = member ? netFor(*member) : std::nullopt;
+        PortBinding pb;
+        pb.port = p.name;
+        pb.dir = p.dir;
+        pb.childNet = p.net;
+        if (!net) {
+            unsupported("IR-UNSUPPORTED-PORT", "interface member '" + p.name + "' of '" + ci.name + "'",
+                        pc.port.location);
+        }
+        else {
+            pb.actual = body_.netSig(*net);
+            if (p.dir != PortDir::In)
+                drivenByChild_.insert(net->value);
+        }
+        ci.ports.push_back(std::move(pb));
+    }
+}
+
+void BodyBuilder::finishVirtualPorts() {
+    if (virtualPorts_.empty())
+        return;
+    std::unordered_set<std::uint32_t> written = drivenByChild_;
+    auto mark = [&](const SigSpec& sig) {
+        for (const auto& ch : sig.chunks())
+            if (!ch.isConst())
+                written.insert(ch.net.value);
+    };
+    for (const auto& c : body_.connections)
+        mark(c.lhs);
+    for (const auto& r : body_.registers)
+        mark(r.q);
+    for (const auto& l : body_.latches)
+        mark(l.q);
+    for (const auto& ch : body_.children)
+        for (const auto& pb : ch.ports)
+            if (pb.dir == PortDir::Out)
+                mark(pb.actual);
+    for (const auto& vp : virtualPorts_) {
+        // modport direction when one applies, otherwise how this body uses it
+        PortDir dir = written.contains(vp.net.value) ? PortDir::Out : PortDir::In;
+        for (const auto& [sym, d] : modportDir_) {
+            auto it = netOf_.find(sym);
+            if (it != netOf_.end() && it->second == vp.net && d != PortDir::InOut)
+                dir = d;
+        }
+        body_.net(vp.net).dir = dir;
+        body_.ports.push_back({vp.name, dir, vp.net});
+    }
 }
 
 void BodyBuilder::declarePorts() {
     for (const auto* p : sym_.getPortList()) {
-        if (p->kind != sast::SymbolKind::Port) {
-            unsupported("IR-UNSUPPORTED-PORT", "port '" + std::string(p->name) + "' (interface or multi-port)",
+        if (p->kind == sast::SymbolKind::InterfacePort) {
+            const auto conn = p->as<sast::InterfacePortSymbol>().getConnection();
+            if (conn.first && conn.first->kind == sast::SymbolKind::Instance) {
+                portOfIface_.emplace(conn.first, std::string(p->name));
+                continue; // ports per used member: finishVirtualPorts()
+            }
+            if (conn.first && conn.first->kind == sast::SymbolKind::InstanceArray) {
+                for (const auto& [suffix, elem] : interfaceArrayElements(*conn.first))
+                    portOfIface_.emplace(elem, std::string(p->name) + suffix);
+                continue;
+            }
+            unsupported("IR-UNSUPPORTED-PORT", "interface port '" + std::string(p->name) + "' (unconnected)",
                         p->location);
+            continue;
+        }
+        if (p->kind != sast::SymbolKind::Port) {
+            unsupported("IR-UNSUPPORTED-PORT", "port '" + std::string(p->name) + "' (multi-port)", p->location);
             continue;
         }
         const auto& ps = p->as<sast::PortSymbol>();
@@ -477,6 +704,10 @@ void BodyBuilder::lowerNetInitializer(const sast::ValueSymbol& s) {
 }
 
 void BodyBuilder::lowerInstance(const sast::InstanceSymbol& inst) {
+    if (inst.isInterface()) {
+        lowerInterfaceInstance(inst);
+        return;
+    }
     if (!inst.isModule()) {
         unsupported("IR-UNSUPPORTED-INSTANCE",
                     "instance '" + std::string(inst.name) + "' of interface/program '" +
@@ -496,8 +727,12 @@ void BodyBuilder::lowerInstance(const sast::InstanceSymbol& inst) {
     }
 
     for (const auto* pc : inst.getPortConnections()) {
+        if (pc->port.kind == sast::SymbolKind::InterfacePort) {
+            bindInterfacePort(*pc, ci, cid);
+            continue;
+        }
         if (pc->port.kind != sast::SymbolKind::Port) {
-            unsupported("IR-UNSUPPORTED-PORT", "interface port connection on '" + ci.name + "'", inst.location);
+            unsupported("IR-UNSUPPORTED-PORT", "multi-port connection on '" + ci.name + "'", inst.location);
             continue;
         }
         const auto& ps = pc->port.as<sast::PortSymbol>();
@@ -790,9 +1025,12 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
                 }
             }
         }
-        case EK::HierarchicalValue:
+        case EK::HierarchicalValue: {
+            if (const auto* t = ifaceTarget(e.as<sast::HierarchicalValueExpression>().symbol))
+                return read(*t).resized(w, false);
             return opaque(e, "hierarchical reference '" +
                                  std::string(e.as<sast::HierarchicalValueExpression>().symbol.name) + "'");
+        }
         case EK::UnaryOp: return lowerUnary(e);
         case EK::BinaryOp: return lowerBinary(e);
         case EK::ConditionalOp: {
@@ -1067,6 +1305,16 @@ std::optional<std::vector<LTarget>> BodyBuilder::lvalue(const sast::Expression& 
 bool BodyBuilder::lvalueInto(const sast::Expression& e, std::vector<LTarget>& out) {
     using EK = sast::ExpressionKind;
     switch (e.kind) {
+        case EK::HierarchicalValue: {
+            const auto* t = ifaceTarget(e.as<sast::HierarchicalValueExpression>().symbol);
+            if (!t)
+                return false;
+            const auto w = widthOf(*t);
+            if (w == 0)
+                return false;
+            out.push_back(wholeTarget(t, w));
+            return true;
+        }
         case EK::NamedValue: {
             const auto& s = e.as<sast::NamedValueExpression>().symbol;
             if (s.kind != sast::SymbolKind::Net && s.kind != sast::SymbolKind::Variable &&

@@ -212,6 +212,7 @@ tests/        Catch2 unit tests, CLI end-to-end tests, headless GUI tests, insta
 tools/bench/  benchmark design generator (gen_bench.py)
 tools/ci/     verify-windows.ps1: one-step Windows build/test/package check;
               vhdl-corpus.sh: VHDL regression on pinned open-source projects (run by CI)
+              sv-corpus.sh: SystemVerilog regression (PULP AXI CDC through interfaces, run by CI)
 tools/vhdl/   opencdc-vhdl-parse / opencdc-vhdl-elab development tools
 examples/     real Verilog test designs; vhdl/ and mixed/ versions of them
 ```

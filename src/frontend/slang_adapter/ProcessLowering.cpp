@@ -534,6 +534,21 @@ SigSpec BodyBuilder::inlineFunction(const sast::Expression& e) {
 // Processes
 // ============================================================================
 
+namespace {
+bool onlyAssertions(const sast::Statement& s) {
+    switch (s.kind) {
+        case sast::StatementKind::ConcurrentAssertion:
+        case sast::StatementKind::ImmediateAssertion:
+        case sast::StatementKind::Empty: return true;
+        case sast::StatementKind::Block: return onlyAssertions(s.as<sast::BlockStatement>().body);
+        case sast::StatementKind::List:
+            return std::ranges::all_of(s.as<sast::StatementList>().list,
+                                       [](const sast::Statement* x) { return onlyAssertions(*x); });
+        default: return false;
+    }
+}
+} // namespace
+
 void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
     using PK = sast::ProceduralBlockKind;
     const auto l = pb.location;
@@ -547,8 +562,13 @@ void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
         case PK::AlwaysFF: break;
     }
 
+    // concurrent assertions (assert property ...) are elaborated as always
+    // blocks: verification code, no hardware
+    if (onlyAssertions(body))
+        return;
     if (body.kind != sast::StatementKind::Timed) {
-        unsupported("IR-UNSUPPORTED-PROCESS", "always block without an event control", l);
+        unsupported("IR-UNSUPPORTED-PROCESS",
+                    "always block without an event control (" + std::string(sast::toString(body.kind)) + ")", l);
         return;
     }
     const auto& timed = body.as<sast::TimedStatement>();

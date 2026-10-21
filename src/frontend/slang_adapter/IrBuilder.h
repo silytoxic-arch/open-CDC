@@ -136,6 +136,21 @@ private:
     std::string relativeName(const sast::Symbol& sym) const;
     bool isModuleLevelStorage(const sast::ValueSymbol& sym) const;
 
+    // SystemVerilog interfaces (IrBuilder.cpp): an interface instance is
+    // flattened into the body that declares it ("ia.data"); a module with an
+    // interface port gets one port per interface member it uses ("b.data").
+    struct IfaceRef {
+        const sast::InstanceSymbol* inst = nullptr; ///< the interface instance
+        std::string rel;                            ///< member path inside it
+    };
+    [[nodiscard]] std::optional<IfaceRef> ifaceRef(const sast::Symbol& sym) const;
+    /// The variable/net a value reference designates when it is reachable here
+    /// (modport ports resolved to the interface member), or nullptr.
+    const sast::ValueSymbol* ifaceTarget(const sast::ValueSymbol& sym);
+    void lowerInterfaceInstance(const sast::InstanceSymbol& inst);
+    void bindInterfacePort(const sast::PortConnection& pc, ir::ChildInstance& ci, ir::ModuleId cid);
+    void finishVirtualPorts();
+
     // expressions (IrBuilder.cpp)
     ir::SigSpec lowerImpl(const sast::Expression& e);
     ir::SigSpec lowerUnary(const sast::Expression& e);
@@ -179,6 +194,14 @@ private:
     ProcState* proc_ = nullptr;                                 ///< non-null inside procedural code
     int inlineDepth_ = 0;
     const sast::ValueSymbol* retVar_ = nullptr;                 ///< return variable of the function being inlined
+    std::unordered_map<const sast::Symbol*, std::string> portOfIface_; ///< interface instance -> port name
+    struct VirtualPort {
+        ir::NetId net;
+        std::string name;
+    };
+    std::vector<VirtualPort> virtualPorts_;
+    std::unordered_map<const sast::Symbol*, ir::PortDir> modportDir_; ///< interface member -> modport direction
+    std::unordered_set<std::uint32_t> drivenByChild_;                 ///< nets driven through a child's interface port
 };
 
 /// Drives the conversion of the whole design.
