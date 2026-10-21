@@ -62,6 +62,52 @@ TEST_CASE("Gray: encoder present but the step size cannot be proven", "[cdc][gra
     CHECK_FALSE(hasHit(p, "CDC-008")); // Gray-coded: not an incoherency finding
 }
 
+TEST_CASE("Gray: an extra source register stage keeps the Gray property", "[cdc][gray]") {
+    // open-logic olo_base_fifo_async: the Gray pointer register feeds a
+    // second source-domain register (olo_base_cc_bits RegIn) before the chain.
+    auto r = analyze("module top(input clk_a, input clk_b, input inc, input rst, output [3:0] y);\n"
+                     "  reg [3:0] bin, gray, gray_q, s1, s2;\n"
+                     "  wire [3:0] bin_next = bin + {3'b000, inc};\n"
+                     "  always @(posedge clk_a) begin\n"
+                     "    if (rst) begin bin <= 0; gray <= 0; end\n"
+                     "    else begin bin <= bin_next; gray <= (bin_next >> 1) ^ bin_next; end\n"
+                     "    gray_q <= gray;\n"
+                     "  end\n"
+                     "  always @(posedge clk_b) begin s1 <= gray_q; s2 <= s1; end\n"
+                     "  assign y = s2;\n"
+                     "endmodule\n");
+    const auto& p = r.path("top.gray_q", "top.s1");
+    CHECK(p.syncType == SyncType::Gray);
+    CHECK(p.syncStatus == SyncStatus::NecessaryConditionsVerified);
+    CHECK(r.hits("CDC-008") == 0);
+}
+
+TEST_CASE("Gray negative: a register copy of a binary counter is not Gray", "[cdc][gray][CDC-008]") {
+    auto r = analyze("module top(input clk_a, input clk_b, output reg [3:0] y);\n"
+                     "  reg [3:0] cnt, cnt_q, s1, s2;\n"
+                     "  always @(posedge clk_a) begin cnt <= cnt + 4'd1; cnt_q <= cnt; end\n"
+                     "  always @(posedge clk_b) begin s1 <= cnt_q; s2 <= s1; y <= s2 + 4'd1; end\n"
+                     "endmodule\n");
+    const auto& p = r.path("top.cnt_q", "top.s1");
+    CHECK(p.syncType == SyncType::TwoFlop);
+    CHECK(hasHit(p, "CDC-008"));
+}
+
+TEST_CASE("Gray negative: a bit-reversed copy of a Gray register is not Gray-encoded", "[cdc][gray][CDC-008]") {
+    auto r = analyze("module top(input clk_a, input clk_b, input inc, output reg [3:0] y);\n"
+                     "  reg [3:0] bin, gray, rev, s1, s2;\n"
+                     "  wire [3:0] bin_next = bin + {3'b000, inc};\n"
+                     "  always @(posedge clk_a) begin\n"
+                     "    bin <= bin_next; gray <= (bin_next >> 1) ^ bin_next;\n"
+                     "    rev <= {gray[0], gray[1], gray[2], gray[3]};\n"
+                     "  end\n"
+                     "  always @(posedge clk_b) begin s1 <= rev; s2 <= s1; y <= s2 + 4'd1; end\n"
+                     "endmodule\n");
+    const auto& p = r.path("top.rev", "top.s1");
+    CHECK(p.syncType == SyncType::TwoFlop);
+    CHECK(hasHit(p, "CDC-008"));
+}
+
 TEST_CASE("Gray negative: a binary counter is not Gray", "[cdc][gray][CDC-008]") {
     auto r = analyze("module top(input clk_a, input clk_b, output reg [3:0] y);\n"
                      "  reg [3:0] cnt, s1, s2;\n"

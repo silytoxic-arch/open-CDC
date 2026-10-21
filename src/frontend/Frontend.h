@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace opencdc::frontend {
@@ -36,6 +37,12 @@ struct FrontendInput {
     std::vector<MacroDefine> defines;
     std::string top; ///< empty: let the elaborator infer top-level modules
     LanguageStd language = LanguageStd::Verilog2001;
+    /// VHDL: logical library of each source file (parallel to sourceFiles;
+    /// missing or empty entries mean "work").
+    std::vector<std::string> sourceLibraries;
+    /// Overrides of top-level Verilog parameters / VHDL generics: (name, value
+    /// written in the source language, e.g. "8" or "\"TRUE\"").
+    std::vector<std::pair<std::string, std::string>> topParameters;
 };
 
 /// A module (or primitive/interface/program) definition found in the sources.
@@ -69,8 +76,8 @@ struct FrontendOutput {
     std::shared_ptr<const ir::Design> design;
 };
 
-/// Abstract HDL frontend. Only the slang adapter implements it today; a VHDL
-/// frontend will implement the same interface later.
+/// Abstract HDL frontend, implemented by the slang adapter (Verilog) and the
+/// VHDL frontend.
 class IFrontend {
 public:
     IFrontend() = default;
@@ -88,5 +95,11 @@ public:
 };
 
 [[nodiscard]] std::unique_ptr<IFrontend> makeSlangFrontend();
+/// VHDL-93/2008 frontend (own implementation).
+[[nodiscard]] std::unique_ptr<IFrontend> makeVhdlFrontend();
+/// Chooses by file extension: VHDL (.vhd/.vhdl), Verilog/SystemVerilog, or both.
+[[nodiscard]] std::unique_ptr<IFrontend> makeDefaultFrontend();
+/// True for VHDL source files (.vhd, .vhdl, .vho).
+[[nodiscard]] bool isVhdlFile(const std::filesystem::path& p);
 
 } // namespace opencdc::frontend

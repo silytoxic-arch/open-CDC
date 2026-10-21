@@ -4,6 +4,7 @@
 #include "ir/Dump.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -486,7 +487,15 @@ private:
         const auto* a = n.findAttr("ASYNC_REG");
         if (!a)
             a = n.findAttr("async_reg");
-        return a && a->value != "\"FALSE\"" && a->value != "\"false\"";
+        if (!a)
+            return false;
+        // "TRUE" (Verilog string), "true" / TRUE (VHDL string or boolean): anything but false/0/no
+        std::string v = a->value;
+        if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+            v = v.substr(1, v.size() - 2);
+        for (auto& c : v)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return v != "false" && v != "0" && v != "no";
     }
 
     // ------------------------------------------------------------------

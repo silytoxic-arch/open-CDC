@@ -35,9 +35,12 @@ struct AnalysisOptions {
 ///   "name":        "my_design",
 ///   "top":         "top",                       (optional)
 ///   "language":    "verilog-2001",              (optional; verilog-2001 | verilog-2005 | systemverilog-2017)
-///   "sources":     ["rtl/top.v", "rtl/sync.v"],
+///   "sources":     ["rtl/top.v", "rtl/sync.v",
+///                   {"file": "rtl/olo_base_cc_bits.vhd", "library": "olo"}],
+///                  (.vhd/.vhdl files are VHDL; a source may name its VHDL library, default "work")
 ///   "includeDirs": ["rtl/include"],             (optional)
 ///   "defines":     {"WIDTH": "8", "USE_FIFO": null},  (optional; null = define without value)
+///   "parameters":  {"DEPTH": 16, "MODE": "\"FAST\""},  (optional; top-level parameter / generic overrides)
 ///   "constraints": ["constraints/clocks.sdc"],  (optional; SDC/XDC subset)
 ///   "waivers":     ["waivers.json"],            (optional; see engine/WaiverFile.h)
 ///   "options":     {"unknownClockRelation": "report",   (optional; report | assume_async | assume_sync)
@@ -50,8 +53,11 @@ struct ProjectConfig {
     std::string top;
     frontend::LanguageStd language = frontend::LanguageStd::Verilog2001;
     std::vector<std::filesystem::path> sources;     ///< absolute
+    std::vector<std::string> sourceLibraries;       ///< VHDL library per source ("" = work), parallel to sources
     std::vector<std::filesystem::path> includeDirs; ///< absolute
     std::vector<frontend::MacroDefine> defines;
+    /// Top-level parameter (Verilog) / generic (VHDL) overrides, value in HDL syntax.
+    std::vector<std::pair<std::string, std::string>> parameters;
     std::vector<std::filesystem::path> constraints; ///< absolute
     std::vector<std::filesystem::path> waivers;     ///< absolute
     AnalysisOptions options;

@@ -551,6 +551,27 @@ private:
 
     enum class GrayResult : std::uint8_t { Fail, Passive, Gray };
 
+    /// The bits `d` are consecutive Q bits of one register (wires only, or
+    /// behind a hold mux): returns that register and the bit offset.
+    std::optional<std::pair<std::size_t, std::uint32_t>> registerCopy(const std::vector<BitRef>& d,
+                                                                      const std::vector<Leaf>& holds) {
+        const auto first = xt_.leaves(d[0], holds[0]);
+        if (first.size() != 1 || first[0].kind != DriverKind::Register)
+            return std::nullopt;
+        for (std::uint32_t k = 1; k < d.size(); ++k) {
+            const auto lk = xt_.leaves(d[k], holds[k]);
+            Leaf want = first[0];
+            want.bit += k;
+            if (lk.size() != 1 || !(lk[0] == want))
+                return std::nullopt;
+        }
+        const std::size_t g = st_.view.globalRegister(InstanceId{first[0].inst}, first[0].index);
+        const Leaf q0 = qLeaf(g, 0);
+        if (q0.net != first[0].net || first[0].bit < q0.bit)
+            return std::nullopt;
+        return std::make_pair(g, first[0].bit - q0.bit);
+    }
+
     /// The bits `d` are Gray-encoded: directly, or through a word-wide mux
     /// whose arms are each Gray-encoded, constant, or the held value
     /// (g <= c ? bin2gray(x) : bin2gray(y)). Passive: only constants and the
@@ -563,6 +584,21 @@ private:
         }
         if (depth > 8)
             return GrayResult::Fail;
+        // Pipeline stage: the bits are a plain copy of another register, in
+        // order (g2 <= g1, e.g. an extra source register in front of a
+        // synchronizer). A delayed copy keeps the one-bit-per-step property.
+        if (auto src = registerCopy(d, holds)) {
+            std::vector<BitRef> innerD;
+            std::vector<Leaf> innerHolds;
+            for (std::uint32_t k = 0; k < d.size(); ++k) {
+                auto b = dataBit(src->first, src->second + k);
+                if (!b)
+                    return GrayResult::Fail;
+                innerD.push_back(*b);
+                innerHolds.push_back(qLeaf(src->first, src->second + k));
+            }
+            return grayOf(innerD, innerHolds, bases, depth + 1);
+        }
         const auto d0 = st_.view.driver(d[0]);
         if (d0.kind != DriverKind::Cell)
             return GrayResult::Fail;

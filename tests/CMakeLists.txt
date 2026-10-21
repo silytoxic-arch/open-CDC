@@ -19,7 +19,8 @@ add_executable(opencdc_tests
     engine/test_waivers.cpp
     engine/test_report.cpp
     frontend/test_slang_frontend.cpp
-    vhdl/test_vhdl_parser.cpp)
+    vhdl/test_vhdl_parser.cpp
+    vhdl/test_vhdl_elab.cpp)
 
 target_link_libraries(opencdc_tests PRIVATE
     opencdc_vhdl
@@ -129,3 +130,6 @@ endif()
 add_executable(opencdc-vhdl-parse ${PROJECT_SOURCE_DIR}/tools/vhdl/vhdl_parse.cpp)
 target_link_libraries(opencdc-vhdl-parse PRIVATE opencdc_vhdl)
 opencdc_set_warnings(opencdc-vhdl-parse)
+add_executable(opencdc-vhdl-elab ${PROJECT_SOURCE_DIR}/tools/vhdl/vhdl_elab.cpp)
+target_link_libraries(opencdc-vhdl-elab PRIVATE opencdc_frontend)
+opencdc_set_warnings(opencdc-vhdl-elab)

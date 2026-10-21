@@ -1,0 +1,9 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "cdc_rules_vhdl",
+  "top": "cdc_rules",
+  "sources": ["rtl/cdc_rules.vhd"],
+  "constraints": ["../../cdc_rules/constraints/cdc_rules.sdc"],
+  "options": {"unknownClockRelation": "report", "minSyncStages": 2}
+}

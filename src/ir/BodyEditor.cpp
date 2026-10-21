@@ -25,6 +25,8 @@ void appendKey(std::string& key, const SigSpec& s) {
 } // namespace
 
 SigSpec BodyEditor::emit(Cell c) {
+    if (c.width == 0)
+        return {};
     if (auto simplified = simplifyCell(c))
         return simplified->resized(c.width, false);
     // Structural hashing: an identical cell already exists -> reuse its output.
@@ -61,6 +63,8 @@ SigSpec BodyEditor::toBool(const SigSpec& s, const SourceLocation& origin) {
 }
 
 SigSpec BodyEditor::addUnique(Cell c) {
+    if (c.width == 0)
+        return {};
     SigSpec out = body_.addCell(std::move(c));
     driverCell_[body_.cells.back().output.value] = body_.cells.size() - 1;
     return out;

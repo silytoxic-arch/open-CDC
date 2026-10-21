@@ -95,7 +95,7 @@ const std::vector<std::pair<std::string, std::string>>& pendingStages() {
 
 } // namespace
 
-AnalysisSession::AnalysisSession() : AnalysisSession(frontend::makeSlangFrontend()) {}
+AnalysisSession::AnalysisSession() : AnalysisSession(frontend::makeDefaultFrontend()) {}
 
 AnalysisSession::AnalysisSession(std::unique_ptr<frontend::IFrontend> frontend)
     : frontend_(std::move(frontend)) {}

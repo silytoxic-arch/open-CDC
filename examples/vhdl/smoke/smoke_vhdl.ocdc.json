@@ -1,0 +1,14 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "smoke_vhdl",
+  "top": "top",
+  "sources": [
+    {"file": "rtl/smoke_pkg.vhd", "library": "smoke_lib"},
+    "rtl/sync_2ff.vhd",
+    "rtl/tx_domain.vhd",
+    "rtl/rx_domain.vhd",
+    "rtl/top.vhd"
+  ],
+  "constraints": ["../../smoke/constraints/clocks.sdc"]
+}

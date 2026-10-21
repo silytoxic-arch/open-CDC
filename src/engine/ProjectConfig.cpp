@@ -61,6 +61,8 @@ frontend::FrontendInput ProjectConfig::toFrontendInput() const {
     in.defines = defines;
     in.top = top;
     in.language = language;
+    in.sourceLibraries = sourceLibraries;
+    in.topParameters = parameters;
     return in;
 }
 
@@ -110,8 +112,33 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
         cfg.language = *lang;
     }
 
-    if (auto err = readPathArray(root, "sources", baseDir, cfg.sources, true); !err.empty())
-        return projectError("PRJ-SCHEMA", err);
+    if (auto it = root.find("sources"); it == root.end()) {
+        return projectError("PRJ-SCHEMA", "missing required field 'sources'");
+    }
+    else if (!it->is_array()) {
+        return projectError("PRJ-SCHEMA", "field 'sources' must be an array");
+    }
+    else {
+        // "file.v" or {"file": "x.vhd", "library": "olo"} (VHDL logical library)
+        for (const auto& item : *it) {
+            if (item.is_string()) {
+                cfg.sources.push_back(resolve(baseDir, item.get<std::string>()));
+                cfg.sourceLibraries.emplace_back();
+                continue;
+            }
+            if (!item.is_object() || !item.contains("file") || !item["file"].is_string())
+                return projectError("PRJ-SCHEMA",
+                                    "entries of 'sources' must be strings or objects {\"file\": ..., \"library\": ...}");
+            cfg.sources.push_back(resolve(baseDir, item["file"].get<std::string>()));
+            std::string lib;
+            if (auto l = item.find("library"); l != item.end()) {
+                if (!l->is_string())
+                    return projectError("PRJ-SCHEMA", "'library' of a source entry must be a string");
+                lib = l->get<std::string>();
+            }
+            cfg.sourceLibraries.push_back(std::move(lib));
+        }
+    }
     if (cfg.sources.empty())
         return projectError("PRJ-SCHEMA", "field 'sources' must list at least one file");
     if (auto err = readPathArray(root, "includeDirs", baseDir, cfg.includeDirs, false); !err.empty())
@@ -133,6 +160,19 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
                 cfg.defines.push_back({name, std::to_string(value.get<long long>())});
             else
                 return projectError("PRJ-SCHEMA", "define '" + name + "' must be a string, integer or null");
+        }
+    }
+
+    if (auto it = root.find("parameters"); it != root.end()) {
+        if (!it->is_object())
+            return projectError("PRJ-SCHEMA", "field 'parameters' must be an object of name -> string|integer");
+        for (const auto& [name, value] : it->items()) {
+            if (value.is_string())
+                cfg.parameters.emplace_back(name, value.get<std::string>());
+            else if (value.is_number_integer())
+                cfg.parameters.emplace_back(name, std::to_string(value.get<long long>()));
+            else
+                return projectError("PRJ-SCHEMA", "parameter '" + name + "' must be a string or an integer");
         }
     }
 

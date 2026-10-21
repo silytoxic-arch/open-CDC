@@ -226,6 +226,8 @@ Result<FrontendOutput> SlangFrontend::elaborate(const FrontendInput& input, Diag
     }
     if (!input.top.empty())
         compOptions.topModules.emplace(input.top);
+    for (const auto& [name, value] : input.topParameters)
+        compOptions.paramOverrides.push_back(name + "=" + value);
 
     slang::Bag options;
     options.set(ppOptions);
