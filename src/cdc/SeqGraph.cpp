@@ -117,11 +117,16 @@ SeqGraph::SeqGraph(const graph::DesignView& view, DiagnosticSink& sink) : view_(
             add(a.signal, 0);
     }
 
-    if (combLoops_ > 0)
+    if (combLoops_ > 0) {
+        std::string eg;
+        for (const auto& l : loopSamples_)
+            eg += (eg.empty() ? "e.g. " : ", ") + l;
         sink_.report({"GR-COMB-LOOP", Severity::Warning,
                       std::to_string(combLoops_) +
-                          " combinational loop(s) found; the cones of the affected cells are cut at the loop",
+                          " combinational loop(s) found; the cones of the affected cells are cut at the loop" +
+                          (eg.empty() ? std::string() : " (" + eg + ")"),
                       {}, {}});
+    }
     memo_.clear(); // only needed while building
 }
 
@@ -153,18 +158,33 @@ std::uint32_t SeqGraph::nodeFor(const Driver& d) {
     return id;
 }
 
-void SeqGraph::accumulate(std::vector<ConeEntry>& acc, ConeEntry e) {
-    // Few distinct nodes per cone in practice: merge in place, no sorting.
-    if (acc.size() <= 16) {
+void SeqGraph::accumulate(std::vector<ConeEntry>& acc, ConeEntry e,
+                          std::unordered_map<std::uint32_t, std::size_t>& where) {
+    // Few distinct nodes per cone in practice: merge in place, no sorting;
+    // large cones (wide cells) use an index.
+    auto merge = [&](ConeEntry& a) {
+        a.lo = std::min(a.lo, e.lo);
+        a.hi = std::max(a.hi, e.hi);
+        a.flags |= e.flags;
+    };
+    if (acc.size() <= 16 && where.empty()) {
         for (auto& a : acc) {
             if (a.node == e.node) {
-                a.lo = std::min(a.lo, e.lo);
-                a.hi = std::max(a.hi, e.hi);
-                a.flags |= e.flags;
+                merge(a);
                 return;
             }
         }
+        acc.push_back(e);
+        if (acc.size() > 16)
+            for (std::size_t i = 0; i < acc.size(); ++i)
+                where.emplace(acc[i].node, i);
+        return;
     }
+    if (auto it = where.find(e.node); it != where.end()) {
+        merge(acc[it->second]);
+        return;
+    }
+    where.emplace(e.node, acc.size());
     acc.push_back(e);
 }
 
@@ -202,7 +222,28 @@ std::uint32_t SeqGraph::intern(std::vector<ConeEntry>& entries) {
 
 SeqGraph::CellKey SeqGraph::keyFor(InstanceId inst, std::size_t cell, std::uint32_t bit) const {
     const auto kind = view_.bodyOf(inst).cells[cell].kind;
-    return {inst.value, static_cast<std::uint32_t>(cell), isPerBit(kind) ? bit : kAll};
+    const auto& c = view_.bodyOf(inst).cells[cell];
+    // Very wide bitwise cells (whole-memory write logic) are tracked as one
+    // unit: one cone for all their bits instead of one per bit.
+    return {inst.value, static_cast<std::uint32_t>(cell), isPerBit(kind) && c.width <= kWideCell ? bit : kAll};
+}
+
+std::vector<SeqGraph::CellInput> SeqGraph::allCellInputs(InstanceId inst, std::size_t cellIndex) const {
+    const Cell& c = view_.bodyOf(inst).cells[cellIndex];
+    if (!isPerBit(c.kind))
+        return cellInputs(inst, cellIndex, 0);
+    std::vector<CellInput> out;
+    constexpr std::uint8_t L = ConeEntry::kLogic;
+    constexpr std::uint8_t S = ConeEntry::kLogic | ConeEntry::kSelect;
+    for (std::size_t i = 0; i < c.inputs.size(); ++i) {
+        std::uint8_t flags = c.kind == CellKind::Not ? 0 : L;
+        if ((c.kind == CellKind::Mux && i == 2) || (c.kind == CellKind::DynInsert && i == 1))
+            flags = S;
+        for (std::uint32_t b = 0; b < c.inputs[i].width(); ++b)
+            if (auto bit = view_.bitOf(inst, c.inputs[i], b))
+                out.push_back({*bit, flags});
+    }
+    return out;
 }
 
 std::vector<SeqGraph::CellInput> SeqGraph::cellInputs(InstanceId inst, std::size_t cellIndex, std::uint32_t outBit) const {
@@ -296,7 +337,8 @@ BitInput SeqGraph::computeCell(const CellKey& root) {
             m.state = 1;
             std::vector<ResolvedInput> inputs;
             bool pushed = false;
-            for (const auto& ci : cellInputs(InstanceId{k.inst}, k.cell, k.bit == kAll ? 0 : k.bit)) {
+            for (const auto& ci : k.bit == kAll ? allCellInputs(InstanceId{k.inst}, k.cell)
+                                                : cellInputs(InstanceId{k.inst}, k.cell, k.bit)) {
                 const Driver d = view_.driver(ci.bit);
                 if (d.kind == DriverKind::Cell) {
                     const CellKey dk = keyFor(d.bit.inst, d.index, d.bit.bit);
@@ -337,6 +379,13 @@ BitInput SeqGraph::combine(const CellKey& k, const std::vector<ResolvedInput>& i
         const Memo& m = memo_[keyFor(d.bit.inst, d.index, d.bit.bit)];
         if (m.state != 2) {
             ++combLoops_; // back edge: the dependency is still being computed
+            if (loopSamples_.size() < 3) {
+                const auto& node = view_.design().instance(d.bit.inst);
+                const auto& b = view_.bodyOf(d.bit.inst);
+                const auto& cell = b.cells[d.index];
+                loopSamples_.push_back(node.hierPath + "." + b.net(cell.output).name + " (" +
+                                       toString(cell.origin) + ")");
+            }
             return {};
         }
         return m.value;
@@ -351,12 +400,13 @@ BitInput SeqGraph::combine(const CellKey& k, const std::vector<ResolvedInput>& i
         return v;
     }
     std::vector<ConeEntry> acc;
+    std::unordered_map<std::uint32_t, std::size_t> where;
     ConeEntry scratch;
     for (const auto& ri : inputs) {
         const BitInput v = valueOf(ri.driver);
         for (auto e : entries(v, scratch)) {
             e.flags |= ri.in.flags;
-            accumulate(acc, e);
+            accumulate(acc, e, where);
         }
     }
     BitInput out;

@@ -2,16 +2,18 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool. Current status is **stage 7, engineering (reports, waivers, performance, packaging)**: all planned stages are done.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 8, VHDL and mixed-language support**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–7)
+## What works today (stages 1–8)
 
 | Feature | Status |
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
+| VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM and surf | ✅ |
+| Mixed Verilog/VHDL designs in both directions, with parameters/generics and ports converted across the border | ✅ |
 | Module list and elaborated instance hierarchy | ✅ |
 | Frontend diagnostics with file/line, including unsupported or erroneous code | ✅ |
 | CLI `opencdc analyze`, with a JSON result | ✅ |
@@ -151,6 +153,23 @@ Input ports take part in CDC analysis only when `set_input_delay -clock <clk>` a
 
 Paths are relative to the project file. All sources form one compilation unit, in the order listed, as in FPGA vendor tools. `language` is one of `verilog-2001` (default), `verilog-2005` or `systemverilog-2017`. In Verilog modes, SystemVerilog keywords such as `logic` and `bit` are accepted as identifiers.
 
+#### VHDL and mixed designs
+
+Files ending in `.vhd` or `.vhdl` are VHDL (VHDL-2008, which also accepts VHDL-93 code). A source entry can name the VHDL library the file is compiled into; the default is `work`:
+
+```json
+"sources": [
+  {"file": "olo/olo_base_pkg_math.vhd", "library": "olo"},
+  {"file": "olo/olo_base_cc_bits.vhd",  "library": "olo"},
+  "rtl/top.v"
+],
+"parameters": {"Width_g": 8, "MODE": "\"FAST\""}
+```
+
+`parameters` overrides generics (VHDL) or parameters (Verilog) of the top level; values are written in the syntax of the top's language. VHDL and Verilog files can be mixed freely: Verilog can instantiate VHDL entities and VHDL can instantiate Verilog modules (as a component or with `entity work.name`), nested to any depth. Names are matched case-insensitively across the border, and port width differences follow the Verilog rule. Black boxes (for example vendor primitives without a model) are reported as `IR-UNRESOLVED-INSTANCE`.
+
+Examples: `examples/vhdl/` has VHDL versions of all four examples, `examples/mixed/` has mixed versions; both give the same CDC results as the Verilog originals.
+
 ## Repository layout
 
 ```
@@ -165,13 +184,16 @@ src/cdc/      sequential dependency graph, crossing detection, synchronizer reco
               advanced analysis (reset/protocol synchronizers, reconvergence)
 src/rules/    rule interface, registry, CDC-001 … CDC-010 (specs: docs/rules/), waiver matching
 src/schematic/ CDC schematic model, layered layout and SVG output (no Qt)
-src/frontend/ IFrontend interface + slang adapter (the only place slang is used),
-              including the IR builder (expression lowering, symbolic execution of always blocks)
+src/frontend/ IFrontend interface, language selection and mixed-language linking;
+              slang adapter (the only place slang is used) with the Verilog IR builder;
+              vhdl/: own VHDL parser, elaborator and IR builder
 src/engine/   project files, waiver files, AnalysisSession facade, JSON / HTML / CSV reports
 src/cli/      opencdc command line tool
 src/gui/      opencdc-gui (Qt6 Widgets)
 tests/        Catch2 unit tests, CLI end-to-end tests, headless GUI tests, install test, benchmark census
 tools/bench/  benchmark design generator (gen_bench.py)
-tools/ci/     verify-windows.ps1: one-step Windows build/test/package check
-examples/     real Verilog test designs
+tools/ci/     verify-windows.ps1: one-step Windows build/test/package check;
+              vhdl-corpus.sh: VHDL regression on pinned open-source projects (run by CI)
+tools/vhdl/   opencdc-vhdl-parse / opencdc-vhdl-elab development tools
+examples/     real Verilog test designs; vhdl/ and mixed/ versions of them
 ```

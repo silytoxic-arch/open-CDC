@@ -87,7 +87,7 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
     std::ostream& os = std::cout;
     os << "OpenCDC Analyzer " << kVersionString << "\n";
     os << "Project : " << result->project.name << "\n";
-    os << "Language: " << frontend::toString(result->project.language) << "\n";
+    os << "Language: " << result->project.languageSummary() << "\n";
 
     if (result->elaboration) {
         const auto& e = *result->elaboration;

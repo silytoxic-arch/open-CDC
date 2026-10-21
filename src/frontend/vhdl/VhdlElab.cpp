@@ -350,6 +350,10 @@ Scope* Elaborator::bindGenerics(const DesignUnit& entity, const std::string& lib
             if (!v || v->empty())
                 continue;
             Symbol* s = v->back();
+            // declared type: an unconstrained generic took the constraint of its default
+            const Type* declared = g.subtype ? subtype(*g.subtype, ctx) : s->type;
+            if (declared && declared->isArray() && !declared->isFullyConstrained())
+                s->type = declared;
             const Expr* actual = nullptr;
             if (auto it = actuals.find(n.key); it != actuals.end())
                 actual = it->second;
@@ -388,10 +392,12 @@ Scope* Elaborator::bindGenerics(const DesignUnit& entity, const std::string& lib
                 error("VHDL-GENERIC", "generic '" + n.text + "' of '" + entity.name.text + "' has no value", l);
                 continue;
             }
+            if (s->type && s->type->isArray() && !s->type->isFullyConstrained())
+                s->type = s->value.type; // default value kept
             if (!s->value.known()) {
                 error("VHDL-GENERIC", "the value of generic '" + n.text + "' of '" + entity.name.text +
                                           "' is not static",
-                      actual ? actual->loc : l);
+                      actual && parent ? actual->loc : l);
                 continue;
             }
             const std::string text = formatValue(*s->value.type, *s->value.value);
@@ -403,7 +409,8 @@ Scope* Elaborator::bindGenerics(const DesignUnit& entity, const std::string& lib
     }
     for (const auto& [k, e] : actuals)
         if (!known.contains(k) && e)
-            error("VHDL-GENERIC-MAP", "entity '" + entity.name.text + "' has no generic '" + k + "'", e->loc);
+            error("VHDL-GENERIC-MAP", "entity '" + entity.name.text + "' has no generic '" + k + "'",
+                  parent ? e->loc : l); // top-level overrides have no source location
     for (const auto& [k, fp] : foreign)
         if (!known.contains(k))
             error("VHDL-GENERIC-MAP", "entity '" + entity.name.text + "' has no generic '" + fp->name + "'", l);

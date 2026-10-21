@@ -329,7 +329,9 @@ void Elaborator::createBuiltins() {
     L.fn("rising_edge", Builtin::RisingEdge, {sul}, std_.boolean, {"s"});
     L.fn("falling_edge", Builtin::FallingEdge, {sul}, std_.boolean, {"s"});
     L.fn("to_bit", Builtin::ToBit, {sul, std_.bit}, std_.bit, {"s", "xmap"});
+    L.fn("to_bit", Builtin::ToBit, {sul}, std_.bit, {"s"}); // xmap has a default
     L.fn("to_bitvector", Builtin::ToBitVector, {sulv, std_.bit}, std_.bitVector, {"s", "xmap"});
+    L.fn("to_bitvector", Builtin::ToBitVector, {sulv}, std_.bitVector, {"s"});
     L.fn("to_stdulogic", Builtin::ToStdULogic, {std_.bit}, sul, {"b"});
     L.fn("to_stdlogicvector", Builtin::ToStdLogicVector, {std_.bitVector}, slv, {"b"});
     L.fn("to_stdlogicvector", Builtin::ToStdLogicVector, {sulv}, slv, {"s"});
@@ -338,6 +340,7 @@ void Elaborator::createBuiltins() {
     L.fn("to_slv", Builtin::ToStdLogicVector, {std_.bitVector}, slv, {"b"});
     L.fn("to_sulv", Builtin::ToStdULogicVector, {std_.bitVector}, sulv, {"b"});
     L.fn("to_bv", Builtin::ToBitVector, {sulv, std_.bit}, std_.bitVector, {"s", "xmap"});
+    L.fn("to_bv", Builtin::ToBitVector, {sulv}, std_.bitVector, {"s"});
     for (const char* n : {"to_x01", "to_x01z", "to_ux01"}) {
         const Builtin b = std::string(n) == "to_x01" ? Builtin::ToX01 : std::string(n) == "to_x01z" ? Builtin::ToX01Z : Builtin::ToUX01;
         L.fn(n, b, {sul}, sul);
@@ -428,6 +431,8 @@ void Elaborator::createBuiltins() {
         N.fn("std_match", Builtin::StdMatch, {Sg, Sg}, bl);
         N.fn("to_01", Builtin::To01, {U, elem}, U, {"s", "xmap"});
         N.fn("to_01", Builtin::To01, {Sg, elem}, Sg, {"s", "xmap"});
+        N.fn("to_01", Builtin::To01, {U}, U, {"s"});
+        N.fn("to_01", Builtin::To01, {Sg}, Sg, {"s"});
         N.fn("find_leftmost", Builtin::FindLeftmost, {U, elem}, in);
         N.fn("find_rightmost", Builtin::FindRightmost, {U, elem}, in);
         N.fn("find_leftmost", Builtin::FindLeftmost, {Sg, elem}, in);

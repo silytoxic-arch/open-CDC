@@ -375,10 +375,24 @@ void MainWindow::showProjectInfo() {
     auto* root = new QTreeWidgetItem(projectTree_, {qs(project_->name), qs(project_->projectFile)});
     root->setExpanded(true);
 
+    new QTreeWidgetItem(root, {tr("Language"), qs(project_->languageSummary())});
     auto* sources = new QTreeWidgetItem(root, {tr("Sources"), QString::number(project_->sources.size())});
-    for (const auto& s : project_->sources) {
-        auto* item = new QTreeWidgetItem(sources, {qs(s.filename()), qs(s)});
+    for (std::size_t i = 0; i < project_->sources.size(); ++i) {
+        const auto& s = project_->sources[i];
+        QString name = qs(s.filename());
+        if (frontend::isVhdlFile(s)) {
+            const std::string lib = i < project_->sourceLibraries.size() && !project_->sourceLibraries[i].empty()
+                                        ? project_->sourceLibraries[i]
+                                        : std::string("work");
+            name += QStringLiteral("  [VHDL, library %1]").arg(qs(lib));
+        }
+        auto* item = new QTreeWidgetItem(sources, {name, qs(s)});
         setLocation(item, {toUtf8(s), 1, 1});
+    }
+    if (!project_->parameters.empty()) {
+        auto* pars = new QTreeWidgetItem(root, {tr("Top parameters / generics"), QString()});
+        for (const auto& [n, v] : project_->parameters)
+            new QTreeWidgetItem(pars, {qs(n), qs(v)});
     }
     sources->setExpanded(true);
 

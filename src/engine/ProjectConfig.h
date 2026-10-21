@@ -63,6 +63,8 @@ struct ProjectConfig {
     AnalysisOptions options;
 
     [[nodiscard]] frontend::FrontendInput toFrontendInput() const;
+    /// HDLs of the sources: "verilog-2001", "vhdl" or "verilog-2001 + vhdl".
+    [[nodiscard]] std::string languageSummary() const;
 };
 
 inline constexpr const char* kProjectFormatName = "opencdc-project";

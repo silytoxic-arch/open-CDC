@@ -111,6 +111,33 @@ TEST_CASE("Constant folding of arithmetic, comparison and logic", "[ir][fold]") 
     CHECK(simplifyCell(red)->asConst()->toUint() == 1u);
 }
 
+TEST_CASE("Bitwise identities with a constant operand", "[ir][fold]") {
+    const NetId a{0};
+    Cell c;
+    c.width = 4;
+    c.kind = CellKind::And;
+    c.inputs = {SigSpec::net(a, 4), SigSpec::constant(0xF, 4)};
+    CHECK(simplifyCell(c) == SigSpec::net(a, 4));
+    c.inputs = {SigSpec::constant(0, 4), SigSpec::net(a, 4)};
+    CHECK(simplifyCell(c) == SigSpec::constant(0, 4));
+    c.kind = CellKind::Or;
+    CHECK(simplifyCell(c) == SigSpec::net(a, 4));
+    c.inputs = {SigSpec::net(a, 4), SigSpec::constant(0xF, 4)};
+    CHECK(simplifyCell(c) == SigSpec::constant(0xF, 4));
+    c.kind = CellKind::Xor;
+    c.inputs = {SigSpec::net(a, 4), SigSpec::constant(0, 4)};
+    CHECK(simplifyCell(c) == SigSpec::net(a, 4));
+    // negative: partial masks, X constants and inverting identities stay
+    c.kind = CellKind::And;
+    c.inputs = {SigSpec::net(a, 4), SigSpec::constant(0x5, 4)};
+    CHECK_FALSE(simplifyCell(c).has_value());
+    c.inputs = {SigSpec::net(a, 4), SigSpec::allX(4)};
+    CHECK_FALSE(simplifyCell(c).has_value());
+    c.kind = CellKind::Xor;
+    c.inputs = {SigSpec::net(a, 4), SigSpec::constant(0xF, 4)};
+    CHECK_FALSE(simplifyCell(c).has_value());
+}
+
 TEST_CASE("Mux and dynamic select simplification", "[ir][fold]") {
     const NetId a{0};
     const NetId b{1};

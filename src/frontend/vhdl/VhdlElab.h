@@ -281,6 +281,8 @@ struct Target {
     std::uint32_t regionOffset = 0;
     std::uint32_t regionWidth = 0;
     IntRange range;                ///< dynamic: index range of the region
+    bool sub = false;              ///< dynamic: only part of the element ([subOffset, +width))
+    std::uint32_t subOffset = 0;
 };
 
 // ---------------------------------------------------------------------------

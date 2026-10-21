@@ -212,30 +212,36 @@ TEST_CASE("Handshake negative: no acknowledge, data stays qualified data", "[cdc
 
 namespace {
 
-std::string fifo(bool readPointerBack) {
+std::string fifo(bool readPointerBack, int aw = 2) {
+    // aw address bits; pointers have aw + 1 bits
+    const std::string A = std::to_string(aw);
+    const std::string P = std::to_string(aw + 1);
+    const std::string zeros = std::to_string(aw) + "'d0";
     std::string v =
         "module top(input clk_a, input clk_b, input we, input [7:0] wd, input re, output reg [7:0] rd,\n"
         "           output full);\n"
-        "  reg [7:0] mem [0:3];\n"
-        "  reg [2:0] wbin, wgray, rbin, rgray;\n"
-        "  reg [2:0] w2r1, w2r2, r2w1, r2w2;\n"
-        "  wire [2:0] wbin_n = wbin + {2'b00, we};\n"
-        "  wire [2:0] rbin_n = rbin + {2'b00, re & (rgray != w2r2)};\n"
+        "  reg [7:0] mem [0:" + std::to_string((1 << aw) - 1) + "];\n"
+        "  reg [" + A + ":0] wbin, wgray, rbin, rgray;\n"
+        "  reg [" + A + ":0] w2r1, w2r2, r2w1, r2w2;\n"
+        "  wire [" + A + ":0] wbin_n = wbin + {" + zeros + ", we};\n"
+        "  wire [" + A + ":0] rbin_n = rbin + {" + zeros + ", re & (rgray != w2r2)};\n"
         "  always @(posedge clk_a) begin\n"
-        "    if (we) mem[wbin[1:0]] <= wd;\n"
+        "    if (we) mem[wbin[" + std::to_string(aw - 1) + ":0]] <= wd;\n"
         "    wbin <= wbin_n; wgray <= wbin_n ^ (wbin_n >> 1);\n"
         "  end\n"
         "  always @(posedge clk_b) begin\n"
         "    rbin <= rbin_n; rgray <= rbin_n ^ (rbin_n >> 1);\n"
         "    w2r1 <= wgray; w2r2 <= w2r1;\n"
-        "    if (rgray != w2r2) rd <= mem[rbin[1:0]];\n"
+        "    if (rgray != w2r2) rd <= mem[rbin[" + std::to_string(aw - 1) + ":0]];\n"
         "  end\n";
     if (readPointerBack)
         v += "  always @(posedge clk_a) begin r2w1 <= rgray; r2w2 <= r2w1; end\n"
-             "  assign full = wgray == {~r2w2[2:1], r2w2[0]};\n";
+             "  assign full = wgray == {~r2w2[" + A + ":" + std::to_string(aw - 1) + "], r2w2[" +
+             std::to_string(aw - 2) + ":0]};\n";
     else
         v += "  assign full = 1'b0;\n";
     v += "endmodule\n";
+    (void)P;
     return v;
 }
 
@@ -255,6 +261,18 @@ TEST_CASE("Asynchronous FIFO: memory read qualified by Gray pointers in both dir
     CHECK(s->paths.size() == 3);
     CHECK(r.hits("CDC-003") == 0);
     CHECK(r.hits("CDC-008") == 0);
+}
+
+TEST_CASE("Asynchronous FIFO with a large memory (wide write logic tracked as one unit)", "[cdc][fifo]") {
+    // 1024 x 8 bits: the memory's next-state cells are wider than SeqGraph::kWideCell
+    auto r = analyze(fifo(true, 10));
+    const auto& m = r.path("top.mem", "top.rd");
+    CHECK(m.syncType == SyncType::AsyncFifo);
+    CHECK(m.width == 8);
+    CHECK(r.path("top.wgray", "top.w2r1").syncType == SyncType::Gray);
+    CHECK(r.hits("CDC-003") == 0);
+    CHECK(r.hits("CDC-008") == 0);
+    CHECK(r.countCode("GR-COMB-LOOP") == 0);
 }
 
 TEST_CASE("Asynchronous FIFO negative: no read pointer back to the write clock", "[cdc][fifo]") {

@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -64,6 +65,16 @@ frontend::FrontendInput ProjectConfig::toFrontendInput() const {
     in.sourceLibraries = sourceLibraries;
     in.topParameters = parameters;
     return in;
+}
+
+std::string ProjectConfig::languageSummary() const {
+    const auto vhdl = std::ranges::count_if(sources, frontend::isVhdlFile);
+    const std::string verilog(frontend::toString(language));
+    if (vhdl == 0)
+        return verilog;
+    if (static_cast<std::size_t>(vhdl) == sources.size())
+        return "vhdl";
+    return verilog + " + vhdl";
 }
 
 Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::filesystem::path& baseDir) {

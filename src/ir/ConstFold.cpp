@@ -157,6 +157,28 @@ std::optional<SigSpec> simplifyCell(const Cell& c) {
         return foldUnary(c, *a, c.inputs[0].width());
     }
     if (n == 2) {
+        // identities of the bitwise operators: x & 1..1 = x, x & 0 = 0, x | 0 = x, x | 1..1 = 1..1, x ^ 0 = x
+        if ((c.kind == CellKind::And || c.kind == CellKind::Or || c.kind == CellKind::Xor) &&
+            c.inputs.at(0).width() == c.width && c.inputs.at(1).width() == c.width) {
+            for (int k = 0; k < 2; ++k) {
+                const auto cb = c.inputs[static_cast<std::size_t>(k)].asConst();
+                if (!cb || !cb->isFullyDefined())
+                    continue;
+                const auto& other = c.inputs[static_cast<std::size_t>(1 - k)];
+                const bool zero = cb->isZero();
+                const bool ones = std::ranges::all_of(cb->bits(), [](Logic b) { return b == Logic::L1; });
+                if (c.kind == CellKind::And && zero)
+                    return c.inputs[static_cast<std::size_t>(k)];
+                if (c.kind == CellKind::And && ones)
+                    return other;
+                if (c.kind == CellKind::Or && zero)
+                    return other;
+                if (c.kind == CellKind::Or && ones)
+                    return c.inputs[static_cast<std::size_t>(k)];
+                if (c.kind == CellKind::Xor && zero)
+                    return other;
+            }
+        }
         auto a = constUint(c.inputs.at(0));
         auto b = constUint(c.inputs.at(1));
         if (!a || !b)

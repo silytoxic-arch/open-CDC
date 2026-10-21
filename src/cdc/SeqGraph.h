@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -138,7 +139,11 @@ private:
 
     std::uint32_t nodeFor(const graph::Driver& d);
     std::uint32_t intern(std::vector<ConeEntry>& entries);
-    static void accumulate(std::vector<ConeEntry>& acc, ConeEntry e);
+    static void accumulate(std::vector<ConeEntry>& acc, ConeEntry e,
+                           std::unordered_map<std::uint32_t, std::size_t>& where);
+    /// Inputs of all output bits of a cell (wide cells tracked as one unit).
+    [[nodiscard]] std::vector<CellInput> allCellInputs(ir::InstanceId inst, std::size_t cell) const;
+    static constexpr std::uint32_t kWideCell = 4096;
     CellKey keyFor(ir::InstanceId inst, std::size_t cell, std::uint32_t bit) const;
     /// Resolves a driver to a BitInput, computing cell cones as needed.
     BitInput resolve(const graph::Driver& d);
@@ -166,6 +171,7 @@ private:
     std::vector<PinRange> pins_;  ///< per global register
     std::vector<std::pair<ir::InstanceId, std::size_t>> regLocal_;
     std::size_t combLoops_ = 0;
+    std::vector<std::string> loopSamples_; ///< a few loop cells for the diagnostic
 };
 
 } // namespace opencdc::cdc

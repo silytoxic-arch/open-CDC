@@ -100,6 +100,23 @@ TEST_CASE("VHDL: clocked process with asynchronous active-low reset", "[vhdl][el
     CHECK(r.has("reg q <= d @(posedge clk) arst(!rst_n -> 4'b0000)"));
 }
 
+TEST_CASE("VHDL: asynchronous reset disabled by a generic", "[vhdl][elab]") {
+    const std::string src = lib("entity t is generic (RST_ASYNC_G : boolean := false);\n"
+                                "  port (clk, rst, d : in std_logic; q : out std_logic); end;\n"
+                                "architecture rtl of t is begin\n"
+                                "  process (clk, rst) begin\n"
+                                "    if RST_ASYNC_G and rst = '1' then q <= '0';\n"
+                                "    elsif rising_edge(clk) then q <= d; end if;\n"
+                                "  end process;\n"
+                                "end;\n");
+    auto off = elaborate(src, "t");
+    REQUIRE(off.design);
+    CHECK(off.has("reg q <= d @(posedge clk)\n"));
+    auto on = elaborate(src, "t", {{"RST_ASYNC_G", "true"}});
+    REQUIRE(on.design);
+    CHECK(on.has("reg q <= d @(posedge clk) arst(rst -> 1'b0)"));
+}
+
 TEST_CASE("VHDL: clock edge forms ('event, falling edge, wait until)", "[vhdl][elab]") {
     auto r = elaborate(lib("entity t is port (clk, a, b, c, rst : in std_logic; x, y, z : out std_logic); end;\n"
                            "architecture rtl of t is begin\n"
@@ -435,6 +452,50 @@ TEST_CASE("VHDL: array of vectors is a memory; dynamic write and read", "[vhdl][
     CHECK(r.has("wire [8 x 8] mem"));
     CHECK(r.has("dyn_insert"));
     CHECK(r.has("dyn_select"));
+}
+
+TEST_CASE("VHDL: byte-enable write into a part of a dynamically indexed element", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (clk : in std_logic; we : in std_logic_vector(1 downto 0);\n"
+                           "  a : in unsigned(1 downto 0); d : in std_logic_vector(15 downto 0);\n"
+                           "  q : out std_logic_vector(15 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type mem_t is array (0 to 3) of std_logic_vector(15 downto 0);\n"
+                           "  type rec_t is record lo, hi : std_logic_vector(7 downto 0); end record;\n"
+                           "  type rmem_t is array (0 to 3) of rec_t;\n"
+                           "begin\n"
+                           "  process (clk)\n"
+                           "    variable mem : mem_t;\n"
+                           "    variable rmem : rmem_t;\n"
+                           "  begin\n"
+                           "    if rising_edge(clk) then\n"
+                           "      for i in 0 to 1 loop\n"
+                           "        if we(i) = '1' then mem(to_integer(a))(8*i+7 downto 8*i) := d(8*i+7 downto 8*i); end if;\n"
+                           "      end loop;\n"
+                           "      rmem(to_integer(a)).hi := d(15 downto 8);\n"
+                           "      q <= mem(to_integer(a)) xor (rmem(to_integer(a)).hi & rmem(to_integer(a)).lo);\n"
+                           "    end if;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.design->unsupported.empty());
+    CHECK(r.has("dyn_insert"));
+    CHECK(r.has("reg p"));
+}
+
+TEST_CASE("VHDL negative: two variable indexes in one target", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (clk : in std_logic; i, j : in natural range 0 to 3; d : in std_logic;\n"
+                           "  q : out std_logic_vector(3 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type m_t is array (0 to 3) of std_logic_vector(3 downto 0);\n"
+                           "  signal m : m_t;\n"
+                           "begin\n"
+                           "  process (clk) begin if rising_edge(clk) then m(i)(j) <= d; end if; end process;\n"
+                           "  q <= m(0);\n"
+                           "end;\n"),
+                       "t");
+    CHECK(r.count("IR-UNSUPPORTED-TARGET") == 1);
 }
 
 TEST_CASE("VHDL: loops with exit and procedures with out parameters", "[vhdl][elab]") {

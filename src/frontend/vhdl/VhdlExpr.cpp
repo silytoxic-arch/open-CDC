@@ -427,6 +427,11 @@ std::vector<Candidate> Elaborator::predefinedCandidates(Op op, const std::vector
             for (const Type* a : types.arrays())
                 if (a->element && &a->element->baseType() == e)
                     addT(a);
+        // "0" & "1": only string literals / aggregates: any array of a character type
+        if (ts.empty() && std::ranges::all_of(sets, [](const TypeSet& s) { return s.anyString || s.anyAggregate; }))
+            for (const Type* a : types.arrays())
+                if (a->isStringLike())
+                    addT(a);
     }
     std::vector<Candidate> out;
     auto add = [&](std::vector<const Type*> p, const Type* r) {
@@ -628,9 +633,8 @@ bool Elaborator::resolveOverload(std::vector<Candidate>& cands, const std::vecto
         // universal operands: the universal operator wins over implicit conversion (LRM 9.3.6)
         std::vector<Candidate> univ;
         for (const auto& c : ok)
-            if (!c.params.empty() && std::ranges::all_of(c.params, [](const Type* t) {
-                    return t->kind == TypeKind::UniversalInteger || t->kind == TypeKind::UniversalReal;
-                }))
+            if (c.result && (c.result->kind == TypeKind::UniversalInteger ||
+                             c.result->kind == TypeKind::UniversalReal)) // also "**"(universal, integer)
                 univ.push_back(c);
         if (univ.size() == 1)
             ok = std::move(univ);

@@ -77,6 +77,9 @@ jobs:
       - name: Test
         run: ctest --preset linux-gcc-ci-release
 
+      - name: VHDL corpus (pinned open-source projects)
+        run: tools/ci/vhdl-corpus.sh build/linux-gcc-ci/bin/Release "${{ runner.temp }}/vhdl-corpus"
+
       - name: Package
         run: cpack --config build/linux-gcc-ci/CPackConfig.cmake -C Release -B dist
 

@@ -1207,10 +1207,6 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                 error("VHDL-SELECT", "selecting '" + e.ident.text + "' from a non-record target", e.loc);
                 return false;
             }
-            if (t.dynamic) {
-                unsupported("IR-UNSUPPORTED-TARGET", "record field of a dynamically indexed element as target", e.loc);
-                return false;
-            }
             auto it = std::ranges::find(t.type->fields, e.ident.key, &FieldInfo::key);
             if (it == t.type->fields.end()) {
                 error("VHDL-SELECT", "record '" + t.type->name + "' has no field '" + e.ident.text + "'", e.loc);
@@ -1219,7 +1215,14 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
             std::uint32_t off = 0;
             for (auto f = it + 1; f != t.type->fields.end(); ++f)
                 off += bitWidth(*f->type).value_or(0);
-            t.offset += off;
+            if (t.dynamic) {
+                // field of a dynamically indexed element (mem(i).f)
+                t.sub = true;
+                t.subOffset += off;
+            }
+            else {
+                t.offset += off;
+            }
             t.type = it->type;
             t.width = bitWidth(*t.type).value_or(0);
             out.push_back(t);
@@ -1236,10 +1239,8 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                 error("VHDL-INDEX", "indexing a non-array target", e.loc);
                 return false;
             }
-            if (t.dynamic) {
-                unsupported("IR-UNSUPPORTED-TARGET", "nested indexing below a variable index as assignment target", e.loc);
-                return false;
-            }
+            // part of a dynamically indexed element (mem(i)(7 downto 0)): static offsets inside the element
+            std::uint32_t& off = t.dynamic ? t.subOffset : t.offset;
             const auto ew = bitWidth(*T->element).value_or(0);
             if (e.args.size() == 1 && isRangeChoice(*e.args[0].actual)) {
                 auto r = discreteRange(*e.args[0].actual, ctx);
@@ -1254,7 +1255,8 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                 }
                 const auto p1 = ar.positionOf(r->right);
                 const auto p0 = ar.positionOf(r->left);
-                t.offset += static_cast<std::uint32_t>((ar.length() - 1 - p1) * ew);
+                off += static_cast<std::uint32_t>((ar.length() - 1 - p1) * ew);
+                t.sub = t.sub || t.dynamic;
                 t.width = static_cast<std::uint32_t>((p1 - p0 + 1) * ew);
                 t.type = types.constrainedArray(T, {*r});
                 out.push_back(t);
@@ -1282,7 +1284,8 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                 }
                 const auto n = std::accumulate(T->indexRanges.begin(), T->indexRanges.end(), std::uint64_t{1},
                                                [](std::uint64_t a, const auto& r) { return a * r->length(); });
-                t.offset += static_cast<std::uint32_t>((n - 1 - flat) * ew);
+                off += static_cast<std::uint32_t>((n - 1 - flat) * ew);
+                t.sub = t.sub || t.dynamic;
                 t.width = ew;
                 t.type = T->element;
                 out.push_back(t);
@@ -1291,6 +1294,10 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
             }
             if (idx.size() != 1) {
                 unsupported("IR-UNSUPPORTED-TARGET", "multi-dimensional target with a variable index", e.loc);
+                return false;
+            }
+            if (t.dynamic) {
+                unsupported("IR-UNSUPPORTED-TARGET", "two variable indexes in one assignment target", e.loc);
                 return false;
             }
             Target d = t;

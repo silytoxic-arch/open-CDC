@@ -393,7 +393,8 @@ void writeJson(const AnalysisResult& r, std::ostream& os, int indent) {
     small["project"] = {{"name", r.project.name},
                         {"file", toUtf8(r.project.projectFile)},
                         {"top", r.project.top},
-                        {"language", frontend::toString(r.project.language)}};
+                        {"language", frontend::toString(r.project.language)},
+                        {"hdl", r.project.languageSummary()}};
     small["startedAtUtc"] = r.startedAtUtc;
     small["elapsedSeconds"] = r.elapsedSeconds;
 

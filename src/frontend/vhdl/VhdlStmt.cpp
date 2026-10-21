@@ -192,9 +192,33 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
         nb = base.replaced(t.offset, vb);
     }
     else {
+        SigSpec elem = vb.resized(t.elemWidth, false);
+        if (t.sub) {
+            // part of the element: read the element, replace the part, write it back
+            if (vb.width() != t.width) {
+                error("VHDL-LENGTH", "value has " + std::to_string(vb.width()) + " bit(s), target part of '" + o.name +
+                                         "' has " + std::to_string(t.width),
+                      l);
+                return;
+            }
+            ir::Cell s;
+            s.kind = ir::CellKind::DynSelect;
+            s.inputs = {base.extract(t.regionOffset, t.regionWidth), t.index};
+            s.width = t.elemWidth;
+            s.elemWidth = t.elemWidth;
+            s.isSigned = t.indexSigned;
+            s.rangeLeft = static_cast<std::int32_t>(t.range.left);
+            s.rangeRight = static_cast<std::int32_t>(t.range.right);
+            s.origin = srcLoc(l);
+            if (!body || !body->ed) {
+                error("VHDL-NOT-STATIC", "variable index in a constant context", l);
+                return;
+            }
+            elem = body->ed->emit(std::move(s)).replaced(t.subOffset, vb);
+        }
         ir::Cell c;
         c.kind = ir::CellKind::DynInsert;
-        c.inputs = {base.extract(t.regionOffset, t.regionWidth), t.index, vb.resized(t.elemWidth, false)};
+        c.inputs = {base.extract(t.regionOffset, t.regionWidth), t.index, elem};
         c.width = t.regionWidth;
         c.elemWidth = t.elemWidth;
         c.isSigned = t.indexSigned;
@@ -990,8 +1014,11 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
             for (std::uint32_t i = 0; i < W && i < anyMask.size(); ++i) {
                 if (!anyMask[i])
                     continue;
+                // Bits written on every path: plain logic. For a variable this
+                // holds too: its earlier value is only read where some bit is
+                // read before being written (then the expression loops back).
                 const bool full = allMask && i < allMask->size() && (*allMask)[i];
-                if (full && o.isSignal)
+                if (full)
                     comb[i] = true;
                 else
                     latch[i] = true;
@@ -1039,6 +1066,14 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
             }
         }
     }
+    // "if RST_ASYNC_G and rst = '1' then" with a false generic: no asynchronous reset
+    std::erase_if(asyncs, [&](const AsyncBranch& a) {
+        Ctx c0 = ctx;
+        ProcState scratch = pre;
+        c0.st = &scratch;
+        const SVal c = eval(*a.cond, c0, std_.boolean);
+        return c.known() && c.value->kind == Value::Kind::Int && c.value->i == 0;
+    });
     std::vector<ProcState> asyncStates(asyncs.size(), pre);
     struct Ctrl {
         SigSpec signal;

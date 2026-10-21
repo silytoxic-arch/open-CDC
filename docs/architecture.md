@@ -1,6 +1,6 @@
 # OpenCDC Analyzer — 架构设计文档（v0.1）
 
-> 状态：**已确认（v0.1）**，阶段 1–7 已全部实现，见 `docs/progress/stage-{1,…,7}.md`；性能见 `docs/benchmarks.md`，豁免见 `docs/waivers.md`。实现与本文的差异见第 14 节。本文对应《总提示词》第 8 节"第一次任务"的 8 项要求。
+> 状态：**已确认（v0.1）**，阶段 1–8 已全部实现，见 `docs/progress/stage-{1,…,8}.md`（阶段 8：VHDL 与混合语言，第 15 节）；性能见 `docs/benchmarks.md`，豁免见 `docs/waivers.md`。实现与本文的差异见第 14 节。本文对应《总提示词》第 8 节"第一次任务"的 8 项要求。
 > 所有标注【决策】的条目需要你确认；标注【风险】的条目是已知的实现风险。
 
 ---
@@ -124,12 +124,9 @@ gui ──► engine ◄── cli
 
 > slang 版本：阶段 1 实施时锁定 **v12.0**（GitHub 上的最新 tag），见 `cmake/Dependencies.cmake`。
 
-### 2.3 VHDL 的预留
+### 2.3 VHDL
 
-前端通过接口 `IFrontend` 抽象，输出同一种 Design IR。VHDL 阶段的候选路线（届时再决策）：
-1. 自研 VHDL 前端（工作量大，但许可证干净）；
-2. 进程外调用 GHDL（`--synth` 输出网表）再导入——源码位置信息会损失；
-3. hdlConvertor 解析 + 自研展开。
+前端通过接口 `IFrontend` 抽象，输出同一种 Design IR。候选路线曾有三条：自研前端、进程外调用 GHDL、hdlConvertor 解析加自研展开。阶段 8 选择了**自研 VHDL 前端**（许可证干净，保留完整源码位置），设计见第 15 节。
 
 ### 2.4 slang 相关风险
 
@@ -771,3 +768,51 @@ public:
 | GUI 表格使用 QTableWidget | 路径表和违规表改为 `QAbstractTableModel` + `QSortFilterProxyModel`，不复制数据；报告页超过 300 个同步结构时按类型汇总 | 17 万条路径时，逐单元格的 item 占用 2 GB 内存、填充需 15 s |
 | 打包：windeployqt + 安装包 | CMake `install()` 只安装 `OpenCDC` 组件（FetchContent 依赖自带的安装规则被排除）；Windows 用 `qt_generate_deploy_app_script` 在安装时运行 windeployqt；CPack 生成 ZIP/NSIS（Windows）、TGZ/DEB（Linux）；`package.install_smoke` 测试安装后的树 | 安装后的程序必须能单独运行；只有安装测试能证明这一点 |
 | slang 使用默认编译选项 | `maxGenerateSteps` 提高到 2²⁴ | 默认值 131072 会把 34 万次迭代的合法 generate 当作死循环 |
+
+| 计划：VHDL 前端在阶段 8 再决策 | 自研 VHDL-93/2008 前端 `opencdc_vhdl`（解析、语义、展开、降级到同一种 Design IR），不依赖 slang 和 Qt；与 Verilog 共用 `ir::BodyEditor`（折叠、结构哈希、控制信号提取、清理） | 许可证干净；源码位置完整；两种语言的 IR 质量一致 |
+| 混合语言：生成桩模块 | Verilog 中未知的 VHDL 实体保留为"未解析实例"（带参数值和端口实参），由链接器绑定到 VHDL 模块体；VHDL 中的 Verilog 模块通过生成的包装模块请求，迭代到不再出现新的参数组合 | 桩模块需要按参数计算端口宽度，等于在 Verilog 中重写 VHDL 的类型系统；未解析实例加迭代只依赖两侧各自的展开结果 |
+| 宽单元逐位建立依赖锥 | 宽度超过 4096 位的逐位单元（整块存储器的写入逻辑）作为一个整体建锥；大锥的合并用索引 | neorv32 的 64 KB 存储器使 CDC 路径分析从 7.6 s 降到 0.34 s，结果不变 |
+
+## 15. VHDL 前端（阶段 8）
+
+### 15.1 结构
+
+```
+src/frontend/vhdl/
+  VhdlLexer / VhdlParser   VHDL-93/2008 词法和递归下降语法分析 → AST（名字保持通用形式）
+  VhdlTypes                类型、编译期值、值与 IR 位的映射
+  VhdlScope                库、包、可见性（use/library/context）、声明
+  VhdlBuiltins             std / ieee 包的原生实现（std_logic_1164、numeric_std、numeric_bit、
+                           numeric_std_unsigned、std_logic_arith/unsigned/signed/misc、math_real、textio）
+  VhdlExpr / VhdlNames     重载决议、表达式求值（常量与硬件统一）、名字（下标、切片、字段、属性、调用）
+  VhdlStmt                 顺序语句的符号执行，进程降级为寄存器 / 组合连接 / 锁存器
+  VhdlElab                 层次展开：实体 + 结构体 + generic 值 → 唯一模块体；generate、block、端口映射
+  VhdlMixed                与 Verilog 之间的值和端口转换
+  VhdlFrontend             IFrontend 实现
+src/frontend/AutoFrontend  按扩展名选择前端；混合工程的链接器
+```
+
+### 15.2 统一求值
+
+每个表达式求值为 `SVal {类型, 可选的编译期值, IR 位}`。输入全部已知（generic、常量、循环变量、字面量）时得到编译期值，否则生成 IR 单元。所以 generic 相关的宽度、generate 范围、常量表、`log2ceil` 之类的用户函数和进程逻辑由同一份代码处理。子程序在调用处内联；循环展开；`return`、`exit`、`next` 用执行条件（alive）表示。
+
+### 15.3 位布局
+
+- 数组：最左元素在最高位；记录：第一个字段在最高位，信号和端口按字段拆成独立的线网（`r.Cnt`）。
+- 枚举按位置编码；`std_ulogic` 为 1 位（'0'/'L'→0，'1'/'H'→1，'Z'→Z，其余→X）。
+- 整数的宽度由范围决定，范围含负数时为有符号。
+- 元素不是 1 位标量的一维数组标记为存储器（`arrayDepth`/`elemWidth`）。
+
+### 15.4 进程
+
+- 时钟进程：`rising_edge`/`falling_edge`、`clk'event and clk = '1'`、`wait until`；if 链中边沿分支之前的分支是异步复位（条件为常量假时去掉，例如 `RST_ASYNC_G and rst = '1'`）；`edge and en` 中的 `en` 成为使能；同步复位和使能由 `BodyEditor::extractControls` 提取。
+- 变量：存储值被读到时才成为寄存器；整个覆盖的写不算读取。
+- 组合进程：每条路径都写到的位成为组合连接，其余成为锁存器（报告 `IR-LATCH-INFERRED`）。
+- 含其他 `wait` 的进程视为测试平台代码，不分析（`VHDL-TESTBENCH`）。
+
+### 15.5 混合语言
+
+1. slang 以 `IgnoreUnknownModules` 编译 Verilog 源文件和一个生成的包装模块；对 VHDL 实体的实例记录参数值（从语法重新绑定并求值）和端口实参。
+2. VHDL 展开器把模块体加入同一个 Design。Verilog 中的 VHDL 实例按名字（不区分大小写）或位置绑定端口；输入宽度不一致时按 Verilog 规则补零或截断。
+3. VHDL 中的 Verilog 实例向包装模块请求 `模块 #(参数)`；本轮没有的请求触发下一轮（最多 16 轮），最后一轮的诊断才报告。
+4. 结果只保留从顶层可达的模块体；两种语言都定义的名字给出 `FE-MIXED-DUPLICATE`。
