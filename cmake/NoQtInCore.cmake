@@ -1,0 +1,46 @@
+# Enforces the architecture rule "core analysis code must not depend on Qt".
+# Walks the link graph of each given target (following only targets that are
+# defined in this build) and fails configuration if any Qt target is reached.
+
+function(_opencdc_collect_links target out_var)
+    set(result "")
+    foreach(prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+        get_target_property(libs ${target} ${prop})
+        if(libs)
+            list(APPEND result ${libs})
+        endif()
+    endforeach()
+    set(${out_var} "${result}" PARENT_SCOPE)
+endfunction()
+
+function(opencdc_assert_no_qt)
+    foreach(root IN LISTS ARGN)
+        if(NOT TARGET ${root})
+            message(FATAL_ERROR "opencdc_assert_no_qt: unknown target '${root}'")
+        endif()
+        set(queue ${root})
+        set(visited "")
+        while(queue)
+            list(POP_FRONT queue current)
+            if(current IN_LIST visited)
+                continue()
+            endif()
+            list(APPEND visited ${current})
+            # Strip generator expressions such as $<LINK_ONLY:x>.
+            string(REGEX REPLACE "^\\$<[A-Z_]+:(.*)>$" "\\1" current "${current}")
+            if(current MATCHES "^Qt[0-9]*::" OR current MATCHES "^Qt[0-9]*(Core|Gui|Widgets)")
+                message(FATAL_ERROR
+                    "Architecture violation: target '${root}' depends on Qt ('${current}'). "
+                    "Only the GUI target may link Qt.")
+            endif()
+            if(TARGET ${current})
+                get_target_property(aliased ${current} ALIASED_TARGET)
+                if(aliased)
+                    set(current ${aliased})
+                endif()
+                _opencdc_collect_links(${current} deps)
+                list(APPEND queue ${deps})
+            endif()
+        endwhile()
+    endforeach()
+endfunction()

@@ -1,0 +1,10 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "cdc_rules",
+  "top": "cdc_rules",
+  "language": "verilog-2001",
+  "sources": ["rtl/cdc_rules.v"],
+  "constraints": ["constraints/cdc_rules.sdc"],
+  "options": {"unknownClockRelation": "report", "minSyncStages": 2}
+}

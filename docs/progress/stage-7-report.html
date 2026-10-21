@@ -1,0 +1,1301 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OpenCDC report: cdc_advanced_waived</title><style>
+body{font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",sans-serif;margin:24px;color:#222;background:#fff;font-size:14px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:18px;margin:28px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px}
+h3{font-size:15px;margin:18px 0 6px}.nowrap{white-space:nowrap}
+table{border-collapse:collapse;margin:6px 0 12px}td,th{border:1px solid #d6d6d6;padding:3px 7px;text-align:left;vertical-align:top}
+th{background:#f3f3f3}tr:nth-child(even) td{background:#fafafa}
+.meta{color:#666}.mono{font-family:Consolas,Menlo,monospace;font-size:12px}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
+.card{border:1px solid #ddd;border-radius:6px;padding:8px 14px;min-width:120px}
+.card b{display:block;font-size:22px}
+.badge{display:inline-block;border-radius:3px;padding:0 6px;font-size:12px;color:#fff;white-space:nowrap}
+.safe{background:#2e8b57}.review{background:#b38f00}.risk{background:#e07b00}.violation{background:#d02020}
+.waived{background:#888}
+.ok{color:#2e8b57}.fail{color:#d02020}
+.path{border:1px solid #e0e0e0;border-radius:6px;padding:8px 12px;margin:12px 0}
+.path svg{max-width:100%;height:auto;border:1px solid #eee}
+ol.steps li{margin:1px 0}.logic{color:#b04000}
+table td.rel-async{background:#ffe0c0}table td.rel-unknown{background:#fff3b8}table td.rel-same{background:#e6e6e6}
+table td.rel-sync{background:#d8f0d0}table td.rel-excl{background:#e2e2f8}
+@media print{.path{break-inside:avoid}}
+</style></head><body>
+<h1>CDC report: cdc_advanced_waived</h1>
+<p class="meta">OpenCDC Analyzer 0.7.0 &middot; analyzed 2026-10-20T23:43:29Z &middot; 3 ms &middot; <span class="mono">examples/cdc_advanced/cdc_advanced_waived.ocdc.json</span></p>
+<p>Top: <b>cdc_advanced</b>, 16 instances, 7 source file(s), 1 constraint file(s), 1 waiver file(s).</p>
+<h2 id="summary">Summary</h2>
+<div class="cards"><div class="card"><b class="">16</b>CDC paths</div><div class="card"><b class="fail">3</b>violation</div><div class="card"><b class="">1</b>potential risk</div><div class="card"><b class="">0</b>needs review</div><div class="card"><b class="ok">12</b>safe</div><div class="card"><b class="">3</b>waived rule hits</div><div class="card"><b class="">11</b>synchronizer structures</div><div class="card"><b class="">0</b>errors (HDL/constraints)</div><div class="card"><b class="">0</b>warnings</div></div>
+<p>Error-severity violations (not waived): <b>3</b>; warning-severity violations: <b>0</b>.</p>
+<h2 id="stages">Analysis stages</h2>
+<table><tr><th>Stage</th><th>Status</th><th>Time</th><th>Detail</th></tr>
+<tr><td>Parse &amp; elaborate (frontend)</td><td>completed</td><td class="nowrap">0.002 s</td><td>7 definitions, 16 instances</td></tr>
+<tr><td>RTL extraction (Design IR)</td><td>completed</td><td class="nowrap">0.000 s</td><td>7 module bodies, 47 registers (179 bits), 0 latches, 0 unsupported construct(s)</td></tr>
+<tr><td>Constraint reading (SDC/XDC subset)</td><td>completed</td><td class="nowrap">0.000 s</td><td>1/1 file(s), 3 clock definition(s), 1 clock group constraint(s)</td></tr>
+<tr><td>Clock domain analysis</td><td>completed</td><td class="nowrap">0.000 s</td><td>3 clock(s), 47/47 registers resolved, 0 clock pair(s) with unknown relation (policy: report)</td></tr>
+<tr><td>CDC path analysis</td><td>completed</td><td class="nowrap">0.000 s</td><td>16 crossing path(s), 0 with unknown clock relation; 12 source(s) without clock domain not checked; 8 asynchronous reset connection(s) crossing domains</td></tr>
+<tr><td>Synchronizer recognition</td><td>completed</td><td class="nowrap">0.000 s</td><td>11 synchronizer structure(s) (async-fifo x1, handshake x1, reset-sync x2, toggle x1, two-flop x6); 13 synchronized and 3 unsynchronized path(s)</td></tr>
+<tr><td>Advanced CDC analysis</td><td>completed</td><td class="nowrap">0.000 s</td><td>2 reset synchronizer(s), 1 reconvergence point(s) (depth 2)</td></tr>
+<tr><td>CDC rule checks</td><td>completed</td><td class="nowrap">0.000 s</td><td>10 rules (CDC-001, CDC-002, CDC-003, CDC-004, CDC-005, CDC-006, CDC-007, CDC-008, CDC-009, CDC-010); hits: CDC-004 x2, CDC-005 x2, CDC-006 x1, CDC-007 x1, CDC-008 x1, CDC-009 x2</td></tr>
+<tr><td>Waiver application</td><td>completed</td><td class="nowrap">0.000 s</td><td>2 waiver(s) from 1 file(s); 3 rule hit(s) waived, 0 expired, 0 unused</td></tr>
+</table>
+<h2 id="clocks">Clocks</h2>
+<table><tr><th>Clock</th><th>Kind</th><th>Source</th><th>Period</th><th>Registers</th></tr>
+<tr><td>clk_a</td><td>constraint</td><td class="mono">cdc_advanced.clk_a</td><td>10 ns</td><td>17</td></tr>
+<tr><td>clk_b</td><td>constraint</td><td class="mono">cdc_advanced.clk_b</td><td>8 ns</td><td>24</td></tr>
+<tr><td>clk_c</td><td>constraint</td><td class="mono">cdc_advanced.clk_c</td><td>12 ns</td><td>6</td></tr>
+</table>
+<table><tr><th></th><th>clk_a</th><th>clk_b</th><th>clk_c</th></tr>
+<tr><th>clk_a</th><td class="rel-same" title="">same</td><td class="rel-async" title="set_clock_groups -asynchronous at examples/cdc_advanced/constraints/cdc_advanced.sdc:5">asynchronous</td><td class="rel-async" title="set_clock_groups -asynchronous at examples/cdc_advanced/constraints/cdc_advanced.sdc:5">asynchronous</td></tr>
+<tr><th>clk_b</th><td class="rel-async" title="set_clock_groups -asynchronous at examples/cdc_advanced/constraints/cdc_advanced.sdc:5">asynchronous</td><td class="rel-same" title="">same</td><td class="rel-async" title="set_clock_groups -asynchronous at examples/cdc_advanced/constraints/cdc_advanced.sdc:5">asynchronous</td></tr>
+<tr><th>clk_c</th><td class="rel-async" title="set_clock_groups -asynchronous at examples/cdc_advanced/constraints/cdc_advanced.sdc:5">asynchronous</td><td class="rel-async" title="set_clock_groups -asynchronous at examples/cdc_advanced/constraints/cdc_advanced.sdc:5">asynchronous</td><td class="rel-same" title="">same</td></tr>
+</table>
+<h2 id="rules">Rules</h2>
+<table><tr><th>Rule</th><th>Title</th><th>Severity</th><th>Hits</th><th>Waived</th></tr>
+<tr><td>CDC-001</td><td>Single-bit signal crosses clock domains without a synchronizer</td><td>error</td><td>0</td><td>0</td></tr>
+<tr><td>CDC-002</td><td>Crossing passes only one synchronizer stage</td><td>warning</td><td>0</td><td>0</td></tr>
+<tr><td>CDC-003</td><td>Multi-bit data crosses clock domains without synchronization</td><td>error</td><td>0</td><td>0</td></tr>
+<tr><td>CDC-004</td><td>Combinational logic in front of a synchronizer</td><td>error</td><td>2</td><td>0</td></tr>
+<tr><td>CDC-005</td><td>Reconvergence of independently synchronized signals</td><td>warning</td><td>0</td><td>2</td></tr>
+<tr><td>CDC-006</td><td>Asynchronous reset released without a reset synchronizer</td><td>error</td><td>1</td><td>0</td></tr>
+<tr><td>CDC-007</td><td>Pulse may be lost by a level synchronizer</td><td>warning</td><td>1</td><td>0</td></tr>
+<tr><td>CDC-008</td><td>Multi-bit value synchronized bit by bit</td><td>error</td><td>0</td><td>1</td></tr>
+<tr><td>CDC-009</td><td>Crossing logic mixes signals from several clock domains</td><td>warning</td><td>2</td><td>0</td></tr>
+<tr><td>CDC-010</td><td>Crossing between clocks with an unknown relation</td><td>warning</td><td>0</td><td>0</td></tr>
+</table>
+<h2 id="paths">CDC paths</h2>
+<table><tr><th>#</th><th>Status</th><th>Source clock</th><th>Dest. clock</th><th>Source</th><th>Destination</th><th>Width</th><th>Synchronizer</th><th>Rules</th></tr>
+<tr><td><a href="#p0">0</a></td><td><span class="badge violation">violation</span></td><td>clk_a</td><td>clk_c</td><td class="mono">cdc_advanced.u_rst_a.r</td><td class="mono">cdc_advanced.c_y (async-reset)</td><td>1</td><td>none / not-synchronized</td><td>CDC-006</td></tr>
+<tr><td><a href="#p1">1</a></td><td><span class="badge safe">safe</span></td><td>(asynchronous input)</td><td>clk_a</td><td class="mono">cdc_advanced.rst_n</td><td class="mono">cdc_advanced.u_rst_a.r (async-reset)</td><td>1</td><td>reset-sync / necessary-conditions-verified</td><td></td></tr>
+<tr><td><a href="#p2">2</a></td><td><span class="badge safe">safe</span></td><td>(asynchronous input)</td><td>clk_b</td><td class="mono">cdc_advanced.rst_n</td><td class="mono">cdc_advanced.u_rst_b.r (async-reset)</td><td>1</td><td>reset-sync / necessary-conditions-verified</td><td></td></tr>
+<tr><td><a href="#p3">3</a></td><td><span class="badge safe">safe</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.u_fifo.mem</td><td class="mono">cdc_advanced.u_fifo.rdata</td><td>8</td><td>async-fifo / protocol-unverified</td><td></td></tr>
+<tr><td><a href="#p4">4</a></td><td><span class="badge safe">safe</span></td><td>clk_a</td><td>clk_c</td><td class="mono">cdc_advanced.u_hs.data</td><td class="mono">cdc_advanced.u_hs.dout</td><td>8</td><td>handshake / protocol-unverified</td><td></td></tr>
+<tr><td><a href="#p5">5</a></td><td><span class="badge waived">waived</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.a_start</td><td class="mono">cdc_advanced.u_start.meta</td><td>1</td><td>two-flop / necessary-conditions-verified</td><td>CDC-005&#8224;</td></tr>
+<tr><td><a href="#p6">6</a></td><td><span class="badge waived">waived</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.a_mode</td><td class="mono">cdc_advanced.u_mode.meta</td><td>1</td><td>two-flop / necessary-conditions-verified</td><td>CDC-005&#8224;</td></tr>
+<tr><td><a href="#p7">7</a></td><td><span class="badge risk">potential-risk</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.a_kick</td><td class="mono">cdc_advanced.u_kick.meta</td><td>1</td><td>two-flop / necessary-conditions-verified</td><td>CDC-007</td></tr>
+<tr><td><a href="#p8">8</a></td><td><span class="badge waived">waived</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.a_cfg</td><td class="mono">cdc_advanced.u_cfg.s1</td><td>4</td><td>two-flop / protocol-unverified</td><td>CDC-008&#8224;</td></tr>
+<tr><td><a href="#p9">9</a></td><td><span class="badge violation">violation</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.a_x</td><td class="mono">cdc_advanced.u_mix.meta</td><td>1</td><td>two-flop / structure-recognized</td><td>CDC-004 CDC-009</td></tr>
+<tr><td><a href="#p10">10</a></td><td><span class="badge violation">violation</span></td><td>clk_c</td><td>clk_b</td><td class="mono">cdc_advanced.c_y</td><td class="mono">cdc_advanced.u_mix.meta</td><td>1</td><td>two-flop / structure-recognized</td><td>CDC-004 CDC-009</td></tr>
+<tr><td><a href="#p11">11</a></td><td><span class="badge safe">safe</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.u_fifo.wptr</td><td class="mono">cdc_advanced.u_fifo.u_w2r.s1</td><td>4</td><td>gray / necessary-conditions-verified</td><td></td></tr>
+<tr><td><a href="#p12">12</a></td><td><span class="badge safe">safe</span></td><td>clk_b</td><td>clk_a</td><td class="mono">cdc_advanced.u_fifo.rptr</td><td class="mono">cdc_advanced.u_fifo.u_r2w.s1</td><td>4</td><td>gray / necessary-conditions-verified</td><td></td></tr>
+<tr><td><a href="#p13">13</a></td><td><span class="badge safe">safe</span></td><td>clk_a</td><td>clk_b</td><td class="mono">cdc_advanced.u_pulse.toggle</td><td class="mono">cdc_advanced.u_pulse.u_sync.meta</td><td>1</td><td>toggle / necessary-conditions-verified</td><td></td></tr>
+<tr><td><a href="#p14">14</a></td><td><span class="badge safe">safe</span></td><td>clk_a</td><td>clk_c</td><td class="mono">cdc_advanced.u_hs.req</td><td class="mono">cdc_advanced.u_hs.u_req.meta</td><td>1</td><td>two-flop / necessary-conditions-verified</td><td></td></tr>
+<tr><td><a href="#p15">15</a></td><td><span class="badge safe">safe</span></td><td>clk_c</td><td>clk_a</td><td class="mono">cdc_advanced.u_hs.ack</td><td class="mono">cdc_advanced.u_hs.u_ack.meta</td><td>1</td><td>two-flop / necessary-conditions-verified</td><td></td></tr>
+</table>
+<p class="meta">&#8224; waived</p>
+<h2 id="structures">Synchronizer structures</h2>
+<table><tr><th>#</th><th>Type</th><th>Name</th><th>Clocks</th><th>Status</th><th>Paths</th><th>Notes</th></tr>
+<tr><td>S0</td><td>async-fifo</td><td class="mono">cdc_advanced.u_fifo.mem</td><td>clk_a &rarr; clk_b</td><td>protocol-unverified</td><td><a href="#p3">#3</a> <a href="#p11">#11</a> <a href="#p12">#12</a> </td><td>write pointer: cdc_advanced.u_fifo.wptr -&gt; cdc_advanced.u_fifo.u_w2r.s1<br>read pointer: cdc_advanced.u_fifo.rptr -&gt; cdc_advanced.u_fifo.u_r2w.s1<br></td></tr>
+<tr><td>S1</td><td>handshake</td><td class="mono">cdc_advanced.u_hs.req</td><td>clk_a &rarr; clk_c</td><td>protocol-unverified</td><td><a href="#p4">#4</a> <a href="#p14">#14</a> <a href="#p15">#15</a> </td><td>request: cdc_advanced.u_hs.req -&gt; cdc_advanced.u_hs.u_req.meta<br>acknowledge: cdc_advanced.u_hs.ack -&gt; cdc_advanced.u_hs.u_ack.meta<br></td></tr>
+<tr><td>S2</td><td>reset-sync</td><td class="mono">cdc_advanced.u_rst_a.r</td><td>(asynchronous input) &rarr; clk_a</td><td>necessary-conditions-verified</td><td><a href="#p1">#1</a> </td><td></td></tr>
+<tr><td>S3</td><td>reset-sync</td><td class="mono">cdc_advanced.u_rst_b.r</td><td>(asynchronous input) &rarr; clk_b</td><td>necessary-conditions-verified</td><td><a href="#p2">#2</a> </td><td></td></tr>
+<tr><td>S4</td><td>two-flop</td><td class="mono">cdc_advanced.u_start.meta</td><td>clk_a &rarr; clk_b</td><td>necessary-conditions-verified</td><td><a href="#p5">#5</a> </td><td></td></tr>
+<tr><td>S5</td><td>two-flop</td><td class="mono">cdc_advanced.u_mode.meta</td><td>clk_a &rarr; clk_b</td><td>necessary-conditions-verified</td><td><a href="#p6">#6</a> </td><td></td></tr>
+<tr><td>S6</td><td>two-flop</td><td class="mono">cdc_advanced.u_kick.meta</td><td>clk_a &rarr; clk_b</td><td>necessary-conditions-verified</td><td><a href="#p7">#7</a> </td><td></td></tr>
+<tr><td>S7</td><td>two-flop</td><td class="mono">cdc_advanced.u_cfg.s1</td><td>clk_a &rarr; clk_b</td><td>protocol-unverified</td><td><a href="#p8">#8</a> </td><td></td></tr>
+<tr><td>S8</td><td>two-flop</td><td class="mono">cdc_advanced.u_mix.meta</td><td>clk_a &rarr; clk_b</td><td>structure-recognized</td><td><a href="#p9">#9</a> </td><td></td></tr>
+<tr><td>S9</td><td>two-flop</td><td class="mono">cdc_advanced.u_mix.meta</td><td>clk_c &rarr; clk_b</td><td>structure-recognized</td><td><a href="#p10">#10</a> </td><td></td></tr>
+<tr><td>S10</td><td>toggle</td><td class="mono">cdc_advanced.u_pulse.u_sync.meta</td><td>clk_a &rarr; clk_b</td><td>necessary-conditions-verified</td><td><a href="#p13">#13</a> </td><td></td></tr>
+</table>
+<h2 id="details">Path details</h2>
+<div class="path" id="p0"><h3>#0 <span class="badge violation">violation</span> cdc_advanced.u_rst_a.r &rarr; cdc_advanced.c_y</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_c (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_rst_a.r</span> examples/cdc_advanced/rtl/rst_sync.v:8:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.c_y</span> examples/cdc_advanced/rtl/cdc_advanced.v:111:5</td></tr><tr><th>Pin / width / class</th><td>async-reset / 1 / single-bit-control</td></tr><tr><th>Grouped registers</th><td>6: <span class="mono">cdc_advanced.c_y cdc_advanced.u_hs.dvalid cdc_advanced.u_hs.dout cdc_advanced.u_hs.ack cdc_advanced.u_hs.u_req.meta cdc_advanced.u_hs.u_req.sync </span></td></tr><tr><th>Synchronizer</th><td>none &mdash; <b>not-synchronized</b></td></tr><tr><th>Fingerprint</th><td><span class="mono">197ba302c5d4312b</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_rst_a.r</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/rst_sync.v:7:40</span></li><li><span class="mono">cdc_advanced.u_rst_a.rst_out_n</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/rst_sync.v:5:17</span></li><li><span class="mono">cdc_advanced.rst_a_n</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:37:10</span></li><li><span class="mono">cdc_advanced.rst_c_n</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:41:10</span></li><li><span class="mono">cdc_advanced.c_y</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:111:5</span></li></ol>
+<p class="meta">6 registers of clock clk_c use this asynchronous reset: cdc_advanced.c_y, cdc_advanced.u_hs.dvalid, cdc_advanced.u_hs.dout, cdc_advanced.u_hs.ack, cdc_advanced.u_hs.u_req.meta, cdc_advanced.u_hs.u_req.sync</p>
+<p class="meta">'cdc_advanced.u_rst_a.r' is the output of a reset synchronizer for clock clk_a; registers of clock clk_c need their own reset synchronizer</p>
+<p><b>CDC-006</b> error <span class="badge violation">violation</span> asynchronous reset from 'cdc_advanced.u_rst_a.r' (clk_a) is released without a reset synchronizer in clock clk_c (6 registers, e.g. 'cdc_advanced.c_y')<br><span class="meta">Fix: Add a reset synchronizer per clock domain: two or more flops clocked by that clock, asynchronously reset by the raw reset, with a constant 1 (active-low) shifted through; use its output as the asynchronous reset of the domain's registers.</span></p>
+<svg xmlns="http://www.w3.org/2000/svg" width="308.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #0: r (clk_a) -&gt; c_y (clk_c)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #0: r (clk_a) -&gt; c_y (clk_c)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C134.0,32.0 134.0,32.0 169.0,32.0" fill="none" stroke="#d02020" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="27.0" font-size="10" fill="#555555">ARST</text>
+<g class="node"><title>cdc_advanced.u_rst_a.r
+clock: clk_a
+crossing source
+paths: #0
+examples/cdc_advanced/rtl/rst_sync.v:8:5</title>
+<rect x="35.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="31.0" text-anchor="middle">r</text>
+<text x="67.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.c_y
+clock: clk_c
+first synchronizer stage / destination
+status: violation
+paths: #0
+examples/cdc_advanced/rtl/cdc_advanced.v:111:5</title>
+<rect x="169.0" y="13.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#d02020" stroke-width="3.0"/>
+<polyline points="169.0,38.0 177.0,44.0 169.0,50.0" fill="none" stroke="#505050"/>
+<text x="201.0" y="31.0" text-anchor="middle">c_y</text>
+<text x="201.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p1"><h3>#1 <span class="badge safe">safe</span> cdc_advanced.rst_n &rarr; cdc_advanced.u_rst_a.r</h3>
+<table><tr><th>Clocks</th><td>(asynchronous input) &rarr; clk_a (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.rst_n</span> examples/cdc_advanced/rtl/cdc_advanced.v:7:23</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_rst_a.r</span> examples/cdc_advanced/rtl/rst_sync.v:8:5</td></tr><tr><th>Pin / width / class</th><td>async-reset / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>reset-sync, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S2 reset-sync</td></tr><tr><th>Fingerprint</th><td><span class="mono">b94ba793189c87e8</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.rst_n</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:7:23</span></li><li><span class="mono">cdc_advanced.u_rst_a.rst_in_n</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/rst_sync.v:4:17</span></li><li><span class="mono">cdc_advanced.u_rst_a.r</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/rst_sync.v:8:5</span></li></ol>
+<ul><li class="ok">&#10004; the first stage has a constant data input</li><li class="ok">&#10004; all stages share the same asynchronous reset</li><li class="ok">&#10004; at least 2 stages (found 2)</li><li class="ok">&#10004; stages before the last drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">reset synchronizer (asynchronous assertion, synchronous release); its output drives the asynchronous reset of 21 register(s)</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="308.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #1: rst_n ((asynchronous input)) -&gt; r (clk_a)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #1: rst_n ((asynchronous input)) -&gt; r (clk_a)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C134.0,32.0 134.0,32.0 169.0,32.0" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="105.0" y="27.0" font-size="10" fill="#555555">ARST</text>
+<g class="node"><title>cdc_advanced.rst_n
+input port
+crossing source
+paths: #1
+examples/cdc_advanced/rtl/cdc_advanced.v:7:23</title>
+<polygon points="35.0,13.0 87.0,13.0 99.0,32.0 87.0,51.0 35.0,51.0" fill="#f0f0f0" stroke="#505050" stroke-width="1.2"/>
+<text x="67.0" y="36.0" text-anchor="middle">rst_n</text>
+</g>
+<g class="node"><title>cdc_advanced.u_rst_a.r
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #1
+examples/cdc_advanced/rtl/rst_sync.v:8:5</title>
+<rect x="169.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,38.0 177.0,44.0 169.0,50.0" fill="none" stroke="#505050"/>
+<text x="201.0" y="31.0" text-anchor="middle">r</text>
+<text x="201.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p2"><h3>#2 <span class="badge safe">safe</span> cdc_advanced.rst_n &rarr; cdc_advanced.u_rst_b.r</h3>
+<table><tr><th>Clocks</th><td>(asynchronous input) &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.rst_n</span> examples/cdc_advanced/rtl/cdc_advanced.v:7:23</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_rst_b.r</span> examples/cdc_advanced/rtl/rst_sync.v:8:5</td></tr><tr><th>Pin / width / class</th><td>async-reset / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>reset-sync, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S3 reset-sync</td></tr><tr><th>Fingerprint</th><td><span class="mono">d3ae61df78139475</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.rst_n</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:7:23</span></li><li><span class="mono">cdc_advanced.u_rst_b.rst_in_n</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/rst_sync.v:4:17</span></li><li><span class="mono">cdc_advanced.u_rst_b.r</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/rst_sync.v:8:5</span></li></ol>
+<ul><li class="ok">&#10004; the first stage has a constant data input</li><li class="ok">&#10004; all stages share the same asynchronous reset</li><li class="ok">&#10004; at least 2 stages (found 2)</li><li class="ok">&#10004; stages before the last drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">reset synchronizer (asynchronous assertion, synchronous release); its output drives the asynchronous reset of 23 register(s)</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="308.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #2: rst_n ((asynchronous input)) -&gt; r (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #2: rst_n ((asynchronous input)) -&gt; r (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C134.0,32.0 134.0,32.0 169.0,32.0" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="105.0" y="27.0" font-size="10" fill="#555555">ARST</text>
+<g class="node"><title>cdc_advanced.rst_n
+input port
+crossing source
+paths: #2
+examples/cdc_advanced/rtl/cdc_advanced.v:7:23</title>
+<polygon points="35.0,13.0 87.0,13.0 99.0,32.0 87.0,51.0 35.0,51.0" fill="#f0f0f0" stroke="#505050" stroke-width="1.2"/>
+<text x="67.0" y="36.0" text-anchor="middle">rst_n</text>
+</g>
+<g class="node"><title>cdc_advanced.u_rst_b.r
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #2
+examples/cdc_advanced/rtl/rst_sync.v:8:5</title>
+<rect x="169.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,38.0 177.0,44.0 169.0,50.0" fill="none" stroke="#505050"/>
+<text x="201.0" y="31.0" text-anchor="middle">r</text>
+<text x="201.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p3"><h3>#3 <span class="badge safe">safe</span> cdc_advanced.u_fifo.mem &rarr; cdc_advanced.u_fifo.rdata</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_fifo.mem</span> examples/cdc_advanced/rtl/gray_fifo.v:31:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_fifo.rdata</span> examples/cdc_advanced/rtl/gray_fifo.v:41:5</td></tr><tr><th>Pin / width / class</th><td>data / 8 / multi-bit-data</td></tr><tr><th>Synchronizer</th><td>async-fifo &mdash; <b>protocol-unverified</b></td></tr><tr><th>Structure</th><td>S0 async-fifo</td></tr><tr><th>Fingerprint</th><td><span class="mono">4fc20667fa8023be</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_fifo.mem</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/gray_fifo.v:15:18</span></li><li class="logic"><span class="mono">cdc_advanced.u_fifo.$dyn_select$19</span> <i>(dyn_select)</i> <span class="meta">examples/cdc_advanced/rtl/gray_fifo.v:50:26</span></li><li><span class="mono">cdc_advanced.u_fifo.rdata</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/gray_fifo.v:41:5</span></li></ol>
+<ul><li class="ok">&#10004; the destination is enabled or selected by 'cdc_advanced.u_fifo.u_w2r.s2', a synchronized signal from the source clock 'clk_a'</li><li class="ok">&#10004; the write pointer 'cdc_advanced.u_fifo.wptr' reaches the read clock as Gray code</li><li class="ok">&#10004; the read pointer 'cdc_advanced.u_fifo.rptr' returns to the write clock as Gray code</li></ul>
+<p><b>Not verified statically:</b> the full/empty comparison of the pointers and a power-of-two depth are not checked</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="630.0" height="273.0" font-family="sans-serif" font-size="12">
+<title>Path #3: mem (clk_a) -&gt; rdata (clk_b)  [async-fifo structure S0]</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #3: mem (clk_a) -&gt; rdata (clk_b)  [async-fifo structure S0]</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C134.0,32.0 134.0,32.0 169.0,32.0" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M267.0,32.0 C323.0,32.0 323.0,38.5 379.0,38.5 C435.0,38.5 435.0,89.7 491.0,89.7" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M421.0,70.5 C456.0,70.5 456.0,102.3 491.0,102.3" fill="none" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="427.0" y="65.5" font-size="10" fill="#555555">EN/SEL</text>
+<path class="edge" d="M99.0,96.0 C137.5,96.0 137.5,96.0 176.0,96.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="91.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M260.0,96.0 C298.5,96.0 298.5,70.5 337.0,70.5" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M99.0,160.0 C137.5,160.0 137.5,160.0 176.0,160.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="155.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M260.0,160.0 C298.5,160.0 298.5,134.5 337.0,134.5" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_fifo.mem
+memory
+clock: clk_a
+crossing source
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:31:5</title>
+<rect x="40.0" y="8.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050"/>
+<rect x="35.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<text x="67.0" y="31.0" text-anchor="middle">mem</text>
+<text x="67.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>logic dyn_select
+cdc_advanced.u_fifo.$dyn_select$19
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:50:26</title>
+<rect x="169.0" y="13.0" width="98.0" height="38.0" rx="15.2" fill="#f0f0f0" stroke="#505050" stroke-width="1.2"/>
+<text x="218.0" y="36.0" text-anchor="middle">dyn_select</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.rdata
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:41:5</title>
+<rect x="491.0" y="77.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="491.0,102.0 499.0,108.0 491.0,114.0" fill="none" stroke="#505050"/>
+<text x="523.0" y="95.0" text-anchor="middle">rdata</text>
+<text x="523.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_w2r.s2
+clock: clk_b
+synchronizer stage
+synchronized qualifier
+paths: #3 #11
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="337.0" y="51.5" width="84.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,76.5 345.0,82.5 337.0,88.5" fill="none" stroke="#505050"/>
+<text x="379.0" y="69.5" text-anchor="middle">u_w2r.s2</text>
+<text x="379.0" y="84.5" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.wptr
+clock: clk_a
+crossing source
+paths: #11
+examples/cdc_advanced/rtl/gray_fifo.v:23:5</title>
+<rect x="35.0" y="77.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,102.0 43.0,108.0 35.0,114.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="95.0" text-anchor="middle">wptr</text>
+<text x="67.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_w2r.s1
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #11
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="176.0" y="77.0" width="84.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="176.0,102.0 184.0,108.0 176.0,114.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="95.0" text-anchor="middle">u_w2r.s1</text>
+<text x="218.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.rptr
+clock: clk_b
+crossing source
+paths: #12
+examples/cdc_advanced/rtl/gray_fifo.v:41:5</title>
+<rect x="35.0" y="141.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,166.0 43.0,172.0 35.0,178.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="159.0" text-anchor="middle">rptr</text>
+<text x="67.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_r2w.s1
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #12
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="176.0" y="141.0" width="84.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="176.0,166.0 184.0,172.0 176.0,178.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="159.0" text-anchor="middle">u_r2w.s1</text>
+<text x="218.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_r2w.s2
+clock: clk_a
+synchronizer stage
+paths: #12
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="337.0" y="115.5" width="84.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,140.5 345.0,146.5 337.0,152.5" fill="none" stroke="#505050"/>
+<text x="379.0" y="133.5" text-anchor="middle">u_r2w.s2</text>
+<text x="379.0" y="148.5" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p4"><h3>#4 <span class="badge safe">safe</span> cdc_advanced.u_hs.data &rarr; cdc_advanced.u_hs.dout</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_c (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_hs.data</span> examples/cdc_advanced/rtl/handshake.v:16:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_hs.dout</span> examples/cdc_advanced/rtl/handshake.v:31:5</td></tr><tr><th>Pin / width / class</th><td>data / 8 / multi-bit-data</td></tr><tr><th>Synchronizer</th><td>handshake &mdash; <b>protocol-unverified</b></td></tr><tr><th>Structure</th><td>S1 handshake</td></tr><tr><th>Fingerprint</th><td><span class="mono">acb8ea0ab7ec5dbb</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_hs.data</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/handshake.v:14:18</span></li><li><span class="mono">cdc_advanced.u_hs.dout</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/handshake.v:31:5</span></li></ol>
+<ul><li class="ok">&#10004; the destination is enabled or selected by 'cdc_advanced.u_hs.u_req.sync', a synchronized signal from the source clock 'clk_a'</li><li class="ok">&#10004; the acknowledge 'cdc_advanced.u_hs.ack' returns to clock clk_a through a synchronizer</li></ul>
+<p><b>Not verified statically:</b> the source must hold the data stable from the request until the acknowledge returns</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="644.0" height="273.0" font-family="sans-serif" font-size="12">
+<title>Path #4: data (clk_a) -&gt; dout (clk_c)  [handshake structure S1]</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #4: data (clk_a) -&gt; dout (clk_c)  [handshake structure S1]</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M418.0,32.0 C461.5,32.0 461.5,89.7 505.0,89.7" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<path class="edge" d="M435.0,96.0 C470.0,96.0 470.0,102.3 505.0,102.3" fill="none" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="441.0" y="91.0" font-size="10" fill="#555555">EN/SEL</text>
+<path class="edge" d="M99.0,64.0 C134.0,64.0 134.0,64.0 169.0,64.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="59.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,64.0 C302.0,64.0 302.0,96.0 337.0,96.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M99.0,128.0 C134.0,128.0 134.0,128.0 169.0,128.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="123.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,128.0 C302.0,128.0 302.0,160.0 337.0,160.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_hs.data
+clock: clk_a
+crossing source
+paths: #4
+examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="354.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="354.0,38.0 362.0,44.0 354.0,50.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="31.0" text-anchor="middle">data</text>
+<text x="386.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.dout
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #4
+examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="505.0" y="77.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="505.0,102.0 513.0,108.0 505.0,114.0" fill="none" stroke="#505050"/>
+<text x="537.0" y="95.0" text-anchor="middle">dout</text>
+<text x="537.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.sync
+clock: clk_c
+synchronizer stage
+synchronized qualifier
+paths: #4 #14
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="77.0" width="98.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,102.0 345.0,108.0 337.0,114.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="95.0" text-anchor="middle">u_req.sync</text>
+<text x="386.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.req
+clock: clk_a
+crossing source
+paths: #14
+examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="35.0" y="45.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,70.0 43.0,76.0 35.0,82.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="63.0" text-anchor="middle">req</text>
+<text x="67.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.meta
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #14
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="45.0" width="98.0" height="38.0" fill="#ffe0c0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,70.0 177.0,76.0 169.0,82.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="63.0" text-anchor="middle">u_req.meta</text>
+<text x="218.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.ack
+clock: clk_c
+crossing source
+paths: #15
+examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="35.0" y="109.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,134.0 43.0,140.0 35.0,146.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="127.0" text-anchor="middle">ack</text>
+<text x="67.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.meta
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #15
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="109.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,134.0 177.0,140.0 169.0,146.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="127.0" text-anchor="middle">u_ack.meta</text>
+<text x="218.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.sync
+clock: clk_a
+synchronizer stage
+paths: #15
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="141.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,166.0 345.0,172.0 337.0,178.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="159.0" text-anchor="middle">u_ack.sync</text>
+<text x="386.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p5"><h3>#5 <span class="badge waived">waived</span> cdc_advanced.a_start &rarr; cdc_advanced.u_start.meta</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.a_start</span> examples/cdc_advanced/rtl/cdc_advanced.v:63:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_start.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S4 two-flop</td></tr><tr><th>Fingerprint</th><td><span class="mono">02465dcee70efaa2</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.a_start</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:62:9</span></li><li><span class="mono">cdc_advanced.u_start.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_start.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p><b>CDC-005</b> warning <span class="badge waived">waived</span> synchronized 'cdc_advanced.a_start' (clk_a) reconverges with 'cdc_advanced.a_mode' at 'cdc_advanced.b_go' (first register after the synchronizers)<br><i>Waived by W-START-MODE: start and mode are set in different configuration phases; b_go is only sampled after both settled</i><br><span class="meta">Fix: Synchronize related signals as one encoded value (Gray code), or transfer them with a handshake or asynchronous FIFO, or synchronize one qualifier and capture the others under it.</span></p>
+<svg xmlns="http://www.w3.org/2000/svg" width="589.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #5: a_start (clk_a) -&gt; meta (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #5: a_start (clk_a) -&gt; meta (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M112.0,32.0 C147.0,32.0 147.0,32.0 182.0,32.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="118.0" y="27.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M246.0,32.0 C281.0,32.0 281.0,32.0 316.0,32.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M380.0,32.0 C415.0,32.0 415.0,32.0 450.0,32.0" fill="none" stroke="#8e3fb0" stroke-width="1.5" stroke-dasharray="8,3,2,3" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.a_start
+clock: clk_a
+crossing source
+paths: #5
+examples/cdc_advanced/rtl/cdc_advanced.v:63:5</title>
+<rect x="35.0" y="13.0" width="77.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="73.5" y="31.0" text-anchor="middle">a_start</text>
+<text x="73.5" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_start.meta
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #5
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="182.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="182.0,38.0 190.0,44.0 182.0,50.0" fill="none" stroke="#505050"/>
+<text x="214.0" y="31.0" text-anchor="middle">meta</text>
+<text x="214.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_start.sync
+clock: clk_b
+synchronizer stage
+paths: #5
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="316.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="316.0,38.0 324.0,44.0 316.0,50.0" fill="none" stroke="#505050"/>
+<text x="348.0" y="31.0" text-anchor="middle">sync</text>
+<text x="348.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.b_go
+clock: clk_b
+reconvergence point
+paths: #5
+examples/cdc_advanced/rtl/cdc_advanced.v:74:5</title>
+<rect x="450.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#8e3fb0" stroke-width="2.5" stroke-dasharray="6,3"/>
+<polyline points="450.0,38.0 458.0,44.0 450.0,50.0" fill="none" stroke="#505050"/>
+<text x="482.0" y="31.0" text-anchor="middle">b_go</text>
+<text x="482.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p6"><h3>#6 <span class="badge waived">waived</span> cdc_advanced.a_mode &rarr; cdc_advanced.u_mode.meta</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.a_mode</span> examples/cdc_advanced/rtl/cdc_advanced.v:63:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_mode.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S5 two-flop</td></tr><tr><th>Fingerprint</th><td><span class="mono">bfe991e39ccad65c</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.a_mode</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:62:18</span></li><li><span class="mono">cdc_advanced.u_mode.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_mode.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p><b>CDC-005</b> warning <span class="badge waived">waived</span> synchronized 'cdc_advanced.a_mode' (clk_a) reconverges with 'cdc_advanced.a_start' at 'cdc_advanced.b_go' (first register after the synchronizers)<br><i>Waived by W-START-MODE: start and mode are set in different configuration phases; b_go is only sampled after both settled</i><br><span class="meta">Fix: Synchronize related signals as one encoded value (Gray code), or transfer them with a handshake or asynchronous FIFO, or synchronize one qualifier and capture the others under it.</span></p>
+<svg xmlns="http://www.w3.org/2000/svg" width="582.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #6: a_mode (clk_a) -&gt; meta (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #6: a_mode (clk_a) -&gt; meta (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M105.0,32.0 C140.0,32.0 140.0,32.0 175.0,32.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="111.0" y="27.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M239.0,32.0 C274.0,32.0 274.0,32.0 309.0,32.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M373.0,32.0 C408.0,32.0 408.0,32.0 443.0,32.0" fill="none" stroke="#8e3fb0" stroke-width="1.5" stroke-dasharray="8,3,2,3" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.a_mode
+clock: clk_a
+crossing source
+paths: #6
+examples/cdc_advanced/rtl/cdc_advanced.v:63:5</title>
+<rect x="35.0" y="13.0" width="70.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="70.0" y="31.0" text-anchor="middle">a_mode</text>
+<text x="70.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_mode.meta
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #6
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="175.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="175.0,38.0 183.0,44.0 175.0,50.0" fill="none" stroke="#505050"/>
+<text x="207.0" y="31.0" text-anchor="middle">meta</text>
+<text x="207.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_mode.sync
+clock: clk_b
+synchronizer stage
+paths: #6
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="309.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="309.0,38.0 317.0,44.0 309.0,50.0" fill="none" stroke="#505050"/>
+<text x="341.0" y="31.0" text-anchor="middle">sync</text>
+<text x="341.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.b_go
+clock: clk_b
+reconvergence point
+paths: #6
+examples/cdc_advanced/rtl/cdc_advanced.v:74:5</title>
+<rect x="443.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#8e3fb0" stroke-width="2.5" stroke-dasharray="6,3"/>
+<polyline points="443.0,38.0 451.0,44.0 443.0,50.0" fill="none" stroke="#505050"/>
+<text x="475.0" y="31.0" text-anchor="middle">b_go</text>
+<text x="475.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p7"><h3>#7 <span class="badge risk">potential-risk</span> cdc_advanced.a_kick &rarr; cdc_advanced.u_kick.meta</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.a_kick</span> examples/cdc_advanced/rtl/cdc_advanced.v:81:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_kick.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S6 two-flop</td></tr><tr><th>Fingerprint</th><td><span class="mono">19389cf79353a884</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.a_kick</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:80:15</span></li><li><span class="mono">cdc_advanced.u_kick.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_kick.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p class="meta">the source register has no hold path (no enable, no feedback) and is computed by logic: it can be high for a single source clock cycle</p>
+<p><b>CDC-007</b> warning <span class="badge risk">potential-risk</span> a one-cycle pulse of 'cdc_advanced.a_kick' (clk_a) can be missed by the level synchronizer 'cdc_advanced.u_kick.meta' (clk_b) (source period 10 ns &lt; 1.5 x destination period 8 ns = 12 ns)<br><span class="meta">Fix: Use a toggle (pulse) synchronizer: toggle a flop in the source domain per event, synchronize it, and detect edges in the destination; or stretch the pulse / use a handshake.</span></p>
+<svg xmlns="http://www.w3.org/2000/svg" width="448.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #7: a_kick (clk_a) -&gt; meta (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #7: a_kick (clk_a) -&gt; meta (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M105.0,32.0 C140.0,32.0 140.0,32.0 175.0,32.0" fill="none" stroke="#e07b00" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="111.0" y="27.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M239.0,32.0 C274.0,32.0 274.0,32.0 309.0,32.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.a_kick
+clock: clk_a
+crossing source
+paths: #7
+examples/cdc_advanced/rtl/cdc_advanced.v:81:5</title>
+<rect x="35.0" y="13.0" width="70.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="70.0" y="31.0" text-anchor="middle">a_kick</text>
+<text x="70.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_kick.meta
+clock: clk_b
+first synchronizer stage / destination
+status: potential-risk
+paths: #7
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="175.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#e07b00" stroke-width="3.0"/>
+<polyline points="175.0,38.0 183.0,44.0 175.0,50.0" fill="none" stroke="#505050"/>
+<text x="207.0" y="31.0" text-anchor="middle">meta</text>
+<text x="207.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_kick.sync
+clock: clk_b
+synchronizer stage
+paths: #7
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="309.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="309.0,38.0 317.0,44.0 309.0,50.0" fill="none" stroke="#505050"/>
+<text x="341.0" y="31.0" text-anchor="middle">sync</text>
+<text x="341.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p8"><h3>#8 <span class="badge waived">waived</span> cdc_advanced.a_cfg &rarr; cdc_advanced.u_cfg.s1</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.a_cfg</span> examples/cdc_advanced/rtl/cdc_advanced.v:97:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_cfg.s1</span> examples/cdc_advanced/rtl/sync_vec.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 4 / multi-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>protocol-unverified</b></td></tr><tr><th>Structure</th><td>S7 two-flop</td></tr><tr><th>Fingerprint</th><td><span class="mono">56217b2b265b0279</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.a_cfg</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:96:15</span></li><li><span class="mono">cdc_advanced.u_cfg.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_vec.v:5:25</span></li><li><span class="mono">cdc_advanced.u_cfg.s1</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_vec.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p><b>Not verified statically:</b> the bits are synchronized independently: the source value must change by at most one bit at a time (e.g. Gray code), otherwise the destination can capture an inconsistent value (CDC-008)</p>
+<p class="meta">each of the 4 bits has its own synchronizer chain (shown for the first bit)</p>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p><b>CDC-008</b> error <span class="badge waived">waived</span> 4-bit value 'cdc_advanced.a_cfg' is synchronized bit by bit without Gray coding; the synchronized bits are read together in clk_b<br><i>Waived by W-CFG: a_cfg is written only while clk_b logic is held in reset (quasi-static configuration)</i><br><span class="meta">Fix: Gray-code the value before synchronizing (counters/pointers), or transfer it with a handshake / MUX synchronizer or an asynchronous FIFO.</span></p>
+<svg xmlns="http://www.w3.org/2000/svg" width="442.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #8: a_cfg (clk_a) -&gt; s1 (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #8: a_cfg (clk_a) -&gt; s1 (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C134.0,32.0 134.0,32.0 169.0,32.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="27.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M233.0,32.0 C268.0,32.0 268.0,32.0 303.0,32.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.a_cfg
+clock: clk_a
+crossing source
+paths: #8
+examples/cdc_advanced/rtl/cdc_advanced.v:97:5</title>
+<rect x="35.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="31.0" text-anchor="middle">a_cfg</text>
+<text x="67.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_cfg.s1
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #8
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="169.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,38.0 177.0,44.0 169.0,50.0" fill="none" stroke="#505050"/>
+<text x="201.0" y="31.0" text-anchor="middle">s1</text>
+<text x="201.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_cfg.s2
+clock: clk_b
+synchronizer stage
+paths: #8
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="303.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="303.0,38.0 311.0,44.0 303.0,50.0" fill="none" stroke="#505050"/>
+<text x="335.0" y="31.0" text-anchor="middle">s2</text>
+<text x="335.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p9"><h3>#9 <span class="badge violation">violation</span> cdc_advanced.a_x &rarr; cdc_advanced.u_mix.meta</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.a_x</span> examples/cdc_advanced/rtl/cdc_advanced.v:108:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_mix.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>structure-recognized</b></td></tr><tr><th>Structure</th><td>S8 two-flop</td></tr><tr><th>Fingerprint</th><td><span class="mono">87f0a7eba1f10c44</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.a_x</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:107:9</span></li><li class="logic"><span class="mono">cdc_advanced.$or$11</span> <i>(or)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:114:54</span></li><li><span class="mono">cdc_advanced.u_mix.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_mix.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="fail">&#10008; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p><b>CDC-004</b> error <span class="badge violation">violation</span> combinational logic before synchronizer stage 'cdc_advanced.u_mix.meta' (first logic: or 'cdc_advanced.$or$11') for crossing 'cdc_advanced.a_x' (clk_a) -&gt; 'cdc_advanced.u_mix.meta' (clk_b) through combinational logic<br><span class="meta">Fix: Register the combined signal in the source clock domain and synchronize the register output; keep only wires (or one inverter) between the source flop and the first synchronizer stage.</span></p>
+<p><b>CDC-009</b> warning <span class="badge risk">potential-risk</span> logic in front of 'cdc_advanced.u_mix.meta' combines 'cdc_advanced.a_x' (clk_a) with signals from 'clk_c'<br><span class="meta">Fix: Synchronize each source domain's signal separately into the destination domain and combine the synchronized signals there.</span></p>
+<svg xmlns="http://www.w3.org/2000/svg" width="560.0" height="209.0" font-family="sans-serif" font-size="12">
+<title>Path #9: a_x (clk_a) -&gt; meta (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #9: a_x (clk_a) -&gt; meta (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C134.0,32.0 134.0,57.7 169.0,57.7" fill="none" stroke="#d02020" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M217.0,64.0 C252.0,64.0 252.0,64.0 287.0,64.0" fill="none" stroke="#d02020" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="223.0" y="59.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M351.0,64.0 C386.0,64.0 386.0,64.0 421.0,64.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M99.0,96.0 C134.0,96.0 134.0,70.3 169.0,70.3" fill="none" stroke="#d02020" stroke-width="2.2" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.a_x
+clock: clk_a
+crossing source
+paths: #9
+examples/cdc_advanced/rtl/cdc_advanced.v:108:5</title>
+<rect x="35.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="31.0" text-anchor="middle">a_x</text>
+<text x="67.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>logic or
+cdc_advanced.$or$11
+paths: #9 #10
+examples/cdc_advanced/rtl/cdc_advanced.v:114:54</title>
+<rect x="169.0" y="45.0" width="48.0" height="38.0" rx="15.2" fill="#f0f0f0" stroke="#505050" stroke-width="1.2"/>
+<text x="193.0" y="68.0" text-anchor="middle">or</text>
+</g>
+<g class="node"><title>cdc_advanced.u_mix.meta
+clock: clk_b
+first synchronizer stage / destination
+status: violation
+paths: #9 #10
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="287.0" y="45.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#d02020" stroke-width="3.0"/>
+<polyline points="287.0,70.0 295.0,76.0 287.0,82.0" fill="none" stroke="#505050"/>
+<text x="319.0" y="63.0" text-anchor="middle">meta</text>
+<text x="319.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_mix.sync
+clock: clk_b
+synchronizer stage
+paths: #9 #10
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="421.0" y="45.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="421.0,70.0 429.0,76.0 421.0,82.0" fill="none" stroke="#505050"/>
+<text x="453.0" y="63.0" text-anchor="middle">sync</text>
+<text x="453.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.c_y
+clock: clk_c
+crossing source
+paths: #10
+examples/cdc_advanced/rtl/cdc_advanced.v:111:5</title>
+<rect x="35.0" y="77.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,102.0 43.0,108.0 35.0,114.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="95.0" text-anchor="middle">c_y</text>
+<text x="67.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p10"><h3>#10 <span class="badge violation">violation</span> cdc_advanced.c_y &rarr; cdc_advanced.u_mix.meta</h3>
+<table><tr><th>Clocks</th><td>clk_c &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.c_y</span> examples/cdc_advanced/rtl/cdc_advanced.v:111:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_mix.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>structure-recognized</b></td></tr><tr><th>Structure</th><td>S9 two-flop</td></tr><tr><th>Fingerprint</th><td><span class="mono">b6833641092336b3</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.c_y</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:107:14</span></li><li class="logic"><span class="mono">cdc_advanced.$or$11</span> <i>(or)</i> <span class="meta">examples/cdc_advanced/rtl/cdc_advanced.v:114:54</span></li><li><span class="mono">cdc_advanced.u_mix.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_mix.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="fail">&#10008; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p><b>CDC-004</b> error <span class="badge violation">violation</span> combinational logic before synchronizer stage 'cdc_advanced.u_mix.meta' (first logic: or 'cdc_advanced.$or$11') for crossing 'cdc_advanced.c_y' (clk_c) -&gt; 'cdc_advanced.u_mix.meta' (clk_b) through combinational logic<br><span class="meta">Fix: Register the combined signal in the source clock domain and synchronize the register output; keep only wires (or one inverter) between the source flop and the first synchronizer stage.</span></p>
+<p><b>CDC-009</b> warning <span class="badge risk">potential-risk</span> logic in front of 'cdc_advanced.u_mix.meta' combines 'cdc_advanced.c_y' (clk_c) with signals from 'clk_a'<br><span class="meta">Fix: Synchronize each source domain's signal separately into the destination domain and combine the synchronized signals there.</span></p>
+<svg xmlns="http://www.w3.org/2000/svg" width="560.0" height="209.0" font-family="sans-serif" font-size="12">
+<title>Path #10: c_y (clk_c) -&gt; meta (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #10: c_y (clk_c) -&gt; meta (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C134.0,32.0 134.0,57.7 169.0,57.7" fill="none" stroke="#d02020" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M217.0,64.0 C252.0,64.0 252.0,64.0 287.0,64.0" fill="none" stroke="#d02020" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="223.0" y="59.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M351.0,64.0 C386.0,64.0 386.0,64.0 421.0,64.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M99.0,96.0 C134.0,96.0 134.0,70.3 169.0,70.3" fill="none" stroke="#d02020" stroke-width="2.2" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.c_y
+clock: clk_c
+crossing source
+paths: #10
+examples/cdc_advanced/rtl/cdc_advanced.v:111:5</title>
+<rect x="35.0" y="13.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="31.0" text-anchor="middle">c_y</text>
+<text x="67.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>logic or
+cdc_advanced.$or$11
+paths: #10 #9
+examples/cdc_advanced/rtl/cdc_advanced.v:114:54</title>
+<rect x="169.0" y="45.0" width="48.0" height="38.0" rx="15.2" fill="#f0f0f0" stroke="#505050" stroke-width="1.2"/>
+<text x="193.0" y="68.0" text-anchor="middle">or</text>
+</g>
+<g class="node"><title>cdc_advanced.u_mix.meta
+clock: clk_b
+first synchronizer stage / destination
+status: violation
+paths: #10 #9
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="287.0" y="45.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#d02020" stroke-width="3.0"/>
+<polyline points="287.0,70.0 295.0,76.0 287.0,82.0" fill="none" stroke="#505050"/>
+<text x="319.0" y="63.0" text-anchor="middle">meta</text>
+<text x="319.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_mix.sync
+clock: clk_b
+synchronizer stage
+paths: #10 #9
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="421.0" y="45.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="421.0,70.0 429.0,76.0 421.0,82.0" fill="none" stroke="#505050"/>
+<text x="453.0" y="63.0" text-anchor="middle">sync</text>
+<text x="453.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.a_x
+clock: clk_a
+crossing source
+paths: #9
+examples/cdc_advanced/rtl/cdc_advanced.v:108:5</title>
+<rect x="35.0" y="77.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,102.0 43.0,108.0 35.0,114.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="95.0" text-anchor="middle">a_x</text>
+<text x="67.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p11"><h3>#11 <span class="badge safe">safe</span> cdc_advanced.u_fifo.wptr &rarr; cdc_advanced.u_fifo.u_w2r.s1</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_fifo.wptr</span> examples/cdc_advanced/rtl/gray_fifo.v:23:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_fifo.u_w2r.s1</span> examples/cdc_advanced/rtl/sync_vec.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 4 / multi-bit-control</td></tr><tr><th>Synchronizer</th><td>gray, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S0 async-fifo</td></tr><tr><th>Fingerprint</th><td><span class="mono">8ea5b61c21a6166f</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_fifo.wptr</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/gray_fifo.v:18:23</span></li><li><span class="mono">cdc_advanced.u_fifo.u_w2r.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_vec.v:5:25</span></li><li><span class="mono">cdc_advanced.u_fifo.u_w2r.s1</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_vec.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li><li class="ok">&#10004; the source register is Gray-encoded (g = b ^ (b &gt;&gt; 1))</li><li class="ok">&#10004; every bit has a synchronizer chain of the same length</li></ul>
+<p class="meta">each of the 4 bits has its own synchronizer chain (shown for the first bit)</p>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p class="meta">the binary value is produced by an increment/decrement by at most one, so the Gray value changes by at most one bit per source clock</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="630.0" height="273.0" font-family="sans-serif" font-size="12">
+<title>Path #11: wptr (clk_a) -&gt; s1 (clk_b)  [async-fifo structure S0]</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #11: wptr (clk_a) -&gt; s1 (clk_b)  [async-fifo structure S0]</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C137.5,32.0 137.5,32.0 176.0,32.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="27.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M260.0,32.0 C298.5,32.0 298.5,57.5 337.0,57.5" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M99.0,96.0 C134.0,96.0 134.0,96.0 169.0,96.0" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M267.0,96.0 C323.0,96.0 323.0,102.5 379.0,102.5 C435.0,102.5 435.0,102.3 491.0,102.3" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M421.0,57.5 C456.0,57.5 456.0,89.7 491.0,89.7" fill="none" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="427.0" y="52.5" font-size="10" fill="#555555">EN/SEL</text>
+<path class="edge" d="M99.0,160.0 C137.5,160.0 137.5,160.0 176.0,160.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="155.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M260.0,160.0 C298.5,160.0 298.5,134.5 337.0,134.5" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_fifo.wptr
+clock: clk_a
+crossing source
+paths: #11
+examples/cdc_advanced/rtl/gray_fifo.v:23:5</title>
+<rect x="35.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="31.0" text-anchor="middle">wptr</text>
+<text x="67.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_w2r.s1
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #11
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="176.0" y="13.0" width="84.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="176.0,38.0 184.0,44.0 176.0,50.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="31.0" text-anchor="middle">u_w2r.s1</text>
+<text x="218.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_w2r.s2
+clock: clk_b
+synchronizer stage
+synchronized qualifier
+paths: #11 #3
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="337.0" y="38.5" width="84.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,63.5 345.0,69.5 337.0,75.5" fill="none" stroke="#505050"/>
+<text x="379.0" y="56.5" text-anchor="middle">u_w2r.s2</text>
+<text x="379.0" y="71.5" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.mem
+memory
+clock: clk_a
+crossing source
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:31:5</title>
+<rect x="40.0" y="72.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050"/>
+<rect x="35.0" y="77.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<text x="67.0" y="95.0" text-anchor="middle">mem</text>
+<text x="67.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>logic dyn_select
+cdc_advanced.u_fifo.$dyn_select$19
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:50:26</title>
+<rect x="169.0" y="77.0" width="98.0" height="38.0" rx="15.2" fill="#f0f0f0" stroke="#505050" stroke-width="1.2"/>
+<text x="218.0" y="100.0" text-anchor="middle">dyn_select</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.rdata
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:41:5</title>
+<rect x="491.0" y="77.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="491.0,102.0 499.0,108.0 491.0,114.0" fill="none" stroke="#505050"/>
+<text x="523.0" y="95.0" text-anchor="middle">rdata</text>
+<text x="523.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.rptr
+clock: clk_b
+crossing source
+paths: #12
+examples/cdc_advanced/rtl/gray_fifo.v:41:5</title>
+<rect x="35.0" y="141.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,166.0 43.0,172.0 35.0,178.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="159.0" text-anchor="middle">rptr</text>
+<text x="67.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_r2w.s1
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #12
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="176.0" y="141.0" width="84.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="176.0,166.0 184.0,172.0 176.0,178.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="159.0" text-anchor="middle">u_r2w.s1</text>
+<text x="218.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_r2w.s2
+clock: clk_a
+synchronizer stage
+paths: #12
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="337.0" y="115.5" width="84.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,140.5 345.0,146.5 337.0,152.5" fill="none" stroke="#505050"/>
+<text x="379.0" y="133.5" text-anchor="middle">u_r2w.s2</text>
+<text x="379.0" y="148.5" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p12"><h3>#12 <span class="badge safe">safe</span> cdc_advanced.u_fifo.rptr &rarr; cdc_advanced.u_fifo.u_r2w.s1</h3>
+<table><tr><th>Clocks</th><td>clk_b &rarr; clk_a (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_fifo.rptr</span> examples/cdc_advanced/rtl/gray_fifo.v:41:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_fifo.u_r2w.s1</span> examples/cdc_advanced/rtl/sync_vec.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 4 / multi-bit-control</td></tr><tr><th>Synchronizer</th><td>gray, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S0 async-fifo</td></tr><tr><th>Fingerprint</th><td><span class="mono">a088d01afba970ca</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_fifo.rptr</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/gray_fifo.v:36:23</span></li><li><span class="mono">cdc_advanced.u_fifo.u_r2w.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_vec.v:5:25</span></li><li><span class="mono">cdc_advanced.u_fifo.u_r2w.s1</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_vec.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li><li class="ok">&#10004; the source register is Gray-encoded (g = b ^ (b &gt;&gt; 1))</li><li class="ok">&#10004; every bit has a synchronizer chain of the same length</li></ul>
+<p class="meta">each of the 4 bits has its own synchronizer chain (shown for the first bit)</p>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p class="meta">the binary value is produced by an increment/decrement by at most one, so the Gray value changes by at most one bit per source clock</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="630.0" height="273.0" font-family="sans-serif" font-size="12">
+<title>Path #12: rptr (clk_b) -&gt; s1 (clk_a)  [async-fifo structure S0]</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #12: rptr (clk_b) -&gt; s1 (clk_a)  [async-fifo structure S0]</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,32.0 C137.5,32.0 137.5,32.0 176.0,32.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="27.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M260.0,32.0 C298.5,32.0 298.5,57.5 337.0,57.5" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M99.0,96.0 C134.0,96.0 134.0,96.0 169.0,96.0" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M267.0,96.0 C323.0,96.0 323.0,102.5 379.0,102.5 C435.0,102.5 435.0,89.7 491.0,89.7" fill="none" stroke="#2e8b57" stroke-width="2.2" marker-end="url(#arrow)"/>
+<path class="edge" d="M421.0,134.5 C456.0,134.5 456.0,102.3 491.0,102.3" fill="none" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="427.0" y="129.5" font-size="10" fill="#555555">EN/SEL</text>
+<path class="edge" d="M99.0,160.0 C137.5,160.0 137.5,160.0 176.0,160.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="155.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M260.0,160.0 C298.5,160.0 298.5,134.5 337.0,134.5" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_fifo.rptr
+clock: clk_b
+crossing source
+paths: #12
+examples/cdc_advanced/rtl/gray_fifo.v:41:5</title>
+<rect x="35.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="31.0" text-anchor="middle">rptr</text>
+<text x="67.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_r2w.s1
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #12
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="176.0" y="13.0" width="84.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="176.0,38.0 184.0,44.0 176.0,50.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="31.0" text-anchor="middle">u_r2w.s1</text>
+<text x="218.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_r2w.s2
+clock: clk_a
+synchronizer stage
+paths: #12
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="337.0" y="38.5" width="84.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,63.5 345.0,69.5 337.0,75.5" fill="none" stroke="#505050"/>
+<text x="379.0" y="56.5" text-anchor="middle">u_r2w.s2</text>
+<text x="379.0" y="71.5" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.mem
+memory
+clock: clk_a
+crossing source
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:31:5</title>
+<rect x="40.0" y="72.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050"/>
+<rect x="35.0" y="77.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<text x="67.0" y="95.0" text-anchor="middle">mem</text>
+<text x="67.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>logic dyn_select
+cdc_advanced.u_fifo.$dyn_select$19
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:50:26</title>
+<rect x="169.0" y="77.0" width="98.0" height="38.0" rx="15.2" fill="#f0f0f0" stroke="#505050" stroke-width="1.2"/>
+<text x="218.0" y="100.0" text-anchor="middle">dyn_select</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.rdata
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #3
+examples/cdc_advanced/rtl/gray_fifo.v:41:5</title>
+<rect x="491.0" y="77.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="491.0,102.0 499.0,108.0 491.0,114.0" fill="none" stroke="#505050"/>
+<text x="523.0" y="95.0" text-anchor="middle">rdata</text>
+<text x="523.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_w2r.s2
+clock: clk_b
+synchronizer stage
+synchronized qualifier
+paths: #3 #11
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="337.0" y="115.5" width="84.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,140.5 345.0,146.5 337.0,152.5" fill="none" stroke="#505050"/>
+<text x="379.0" y="133.5" text-anchor="middle">u_w2r.s2</text>
+<text x="379.0" y="148.5" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.wptr
+clock: clk_a
+crossing source
+paths: #11
+examples/cdc_advanced/rtl/gray_fifo.v:23:5</title>
+<rect x="35.0" y="141.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,166.0 43.0,172.0 35.0,178.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="159.0" text-anchor="middle">wptr</text>
+<text x="67.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_fifo.u_w2r.s1
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #11
+examples/cdc_advanced/rtl/sync_vec.v:9:5</title>
+<rect x="176.0" y="141.0" width="84.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="176.0,166.0 184.0,172.0 176.0,178.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="159.0" text-anchor="middle">u_w2r.s1</text>
+<text x="218.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p13"><h3>#13 <span class="badge safe">safe</span> cdc_advanced.u_pulse.toggle &rarr; cdc_advanced.u_pulse.u_sync.meta</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_b (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_pulse.toggle</span> examples/cdc_advanced/rtl/pulse_sync.v:11:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_pulse.u_sync.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>toggle, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S10 toggle</td></tr><tr><th>Fingerprint</th><td><span class="mono">bd80d5f58a22168f</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_pulse.toggle</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/pulse_sync.v:10:9</span></li><li><span class="mono">cdc_advanced.u_pulse.u_sync.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_pulse.u_sync.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li><li class="ok">&#10004; the source register toggles: its next value is its current value inverted</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<p class="meta">the destination detects toggles in 'cdc_advanced.u_pulse.dst_pulse' (it compares two consecutive samples)</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="448.0" height="145.0" font-family="sans-serif" font-size="12">
+<title>Path #13: toggle (clk_a) -&gt; meta (clk_b)</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #13: toggle (clk_a) -&gt; meta (clk_b)</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M105.0,32.0 C140.0,32.0 140.0,32.0 175.0,32.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="111.0" y="27.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M239.0,32.0 C274.0,32.0 274.0,32.0 309.0,32.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_pulse.toggle
+clock: clk_a
+crossing source
+paths: #13
+examples/cdc_advanced/rtl/pulse_sync.v:11:5</title>
+<rect x="35.0" y="13.0" width="70.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,38.0 43.0,44.0 35.0,50.0" fill="none" stroke="#505050"/>
+<text x="70.0" y="31.0" text-anchor="middle">toggle</text>
+<text x="70.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_pulse.u_sync.meta
+clock: clk_b
+first synchronizer stage / destination
+status: safe
+paths: #13
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="175.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="175.0,38.0 183.0,44.0 175.0,50.0" fill="none" stroke="#505050"/>
+<text x="207.0" y="31.0" text-anchor="middle">meta</text>
+<text x="207.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+<g class="node"><title>cdc_advanced.u_pulse.u_sync.sync
+clock: clk_b
+synchronizer stage
+paths: #13
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="309.0" y="13.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="309.0,38.0 317.0,44.0 309.0,50.0" fill="none" stroke="#505050"/>
+<text x="341.0" y="31.0" text-anchor="middle">sync</text>
+<text x="341.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_b</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p14"><h3>#14 <span class="badge safe">safe</span> cdc_advanced.u_hs.req &rarr; cdc_advanced.u_hs.u_req.meta</h3>
+<table><tr><th>Clocks</th><td>clk_a &rarr; clk_c (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_hs.req</span> examples/cdc_advanced/rtl/handshake.v:16:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_hs.u_req.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S1 handshake</td></tr><tr><th>Fingerprint</th><td><span class="mono">b6ed9995877a453c</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_hs.req</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/handshake.v:13:18</span></li><li><span class="mono">cdc_advanced.u_hs.u_req.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_hs.u_req.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="644.0" height="273.0" font-family="sans-serif" font-size="12">
+<title>Path #14: req (clk_a) -&gt; meta (clk_c)  [handshake structure S1]</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #14: req (clk_a) -&gt; meta (clk_c)  [handshake structure S1]</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,64.0 C134.0,64.0 134.0,64.0 169.0,64.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="59.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,64.0 C302.0,64.0 302.0,32.0 337.0,32.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M418.0,96.0 C461.5,96.0 461.5,102.3 505.0,102.3" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<path class="edge" d="M435.0,32.0 C470.0,32.0 470.0,89.7 505.0,89.7" fill="none" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="441.0" y="27.0" font-size="10" fill="#555555">EN/SEL</text>
+<path class="edge" d="M99.0,128.0 C134.0,128.0 134.0,128.0 169.0,128.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="123.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,128.0 C302.0,128.0 302.0,160.0 337.0,160.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_hs.req
+clock: clk_a
+crossing source
+paths: #14
+examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="35.0" y="45.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,70.0 43.0,76.0 35.0,82.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="63.0" text-anchor="middle">req</text>
+<text x="67.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.meta
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #14
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="45.0" width="98.0" height="38.0" fill="#ffe0c0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,70.0 177.0,76.0 169.0,82.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="63.0" text-anchor="middle">u_req.meta</text>
+<text x="218.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.sync
+clock: clk_c
+synchronizer stage
+synchronized qualifier
+paths: #14 #4
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="13.0" width="98.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,38.0 345.0,44.0 337.0,50.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="31.0" text-anchor="middle">u_req.sync</text>
+<text x="386.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.data
+clock: clk_a
+crossing source
+paths: #4
+examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="354.0" y="77.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="354.0,102.0 362.0,108.0 354.0,114.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="95.0" text-anchor="middle">data</text>
+<text x="386.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.dout
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #4
+examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="505.0" y="77.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="505.0,102.0 513.0,108.0 505.0,114.0" fill="none" stroke="#505050"/>
+<text x="537.0" y="95.0" text-anchor="middle">dout</text>
+<text x="537.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.ack
+clock: clk_c
+crossing source
+paths: #15
+examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="35.0" y="109.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,134.0 43.0,140.0 35.0,146.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="127.0" text-anchor="middle">ack</text>
+<text x="67.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.meta
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #15
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="109.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,134.0 177.0,140.0 169.0,146.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="127.0" text-anchor="middle">u_ack.meta</text>
+<text x="218.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.sync
+clock: clk_a
+synchronizer stage
+paths: #15
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="141.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,166.0 345.0,172.0 337.0,178.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="159.0" text-anchor="middle">u_ack.sync</text>
+<text x="386.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+</g>
+</svg>
+</div>
+<div class="path" id="p15"><h3>#15 <span class="badge safe">safe</span> cdc_advanced.u_hs.ack &rarr; cdc_advanced.u_hs.u_ack.meta</h3>
+<table><tr><th>Clocks</th><td>clk_c &rarr; clk_a (asynchronous)</td></tr><tr><th>Source</th><td><span class="mono">cdc_advanced.u_hs.ack</span> examples/cdc_advanced/rtl/handshake.v:31:5</td></tr><tr><th>Destination</th><td><span class="mono">cdc_advanced.u_hs.u_ack.meta</span> examples/cdc_advanced/rtl/sync_2ff.v:9:5</td></tr><tr><th>Pin / width / class</th><td>data / 1 / single-bit-control</td></tr><tr><th>Synchronizer</th><td>two-flop, 2 stage(s) &mdash; <b>necessary-conditions-verified</b></td></tr><tr><th>Structure</th><td>S1 handshake</td></tr><tr><th>Fingerprint</th><td><span class="mono">1ad9a80668cc1d10</span></td></tr></table>
+<ol class="steps"><li><span class="mono">cdc_advanced.u_hs.ack</span> <i>(net)</i> <span class="meta">examples/cdc_advanced/rtl/handshake.v:29:10</span></li><li><span class="mono">cdc_advanced.u_hs.u_ack.d</span> <i>(port)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:5:17</span></li><li><span class="mono">cdc_advanced.u_hs.u_ack.meta</span> <i>(register)</i> <span class="meta">examples/cdc_advanced/rtl/sync_2ff.v:9:5</span></li></ol>
+<ul><li class="ok">&#10004; the crossing enters the first stage without glitch-prone combinational logic</li><li class="ok">&#10004; the first stage drives only the second stage</li><li class="ok">&#10004; intermediate stages drive only the next stage</li><li class="ok">&#10004; all stages are clocked by the same clock and edge</li></ul>
+<p class="meta">all stages carry the ASYNC_REG attribute</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="644.0" height="273.0" font-family="sans-serif" font-size="12">
+<title>Path #15: ack (clk_c) -&gt; meta (clk_a)  [handshake structure S1]</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #15: ack (clk_c) -&gt; meta (clk_a)  [handshake structure S1]</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M99.0,64.0 C134.0,64.0 134.0,64.0 169.0,64.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="59.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,64.0 C302.0,64.0 302.0,32.0 337.0,32.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M418.0,96.0 C461.5,96.0 461.5,89.7 505.0,89.7" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<path class="edge" d="M435.0,160.0 C470.0,160.0 470.0,102.3 505.0,102.3" fill="none" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="441.0" y="155.0" font-size="10" fill="#555555">EN/SEL</text>
+<path class="edge" d="M99.0,128.0 C134.0,128.0 134.0,128.0 169.0,128.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="123.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,128.0 C302.0,128.0 302.0,160.0 337.0,160.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_hs.ack
+clock: clk_c
+crossing source
+paths: #15
+examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="35.0" y="45.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,70.0 43.0,76.0 35.0,82.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="63.0" text-anchor="middle">ack</text>
+<text x="67.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.meta
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #15
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="45.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,70.0 177.0,76.0 169.0,82.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="63.0" text-anchor="middle">u_ack.meta</text>
+<text x="218.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.sync
+clock: clk_a
+synchronizer stage
+paths: #15
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="13.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,38.0 345.0,44.0 337.0,50.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="31.0" text-anchor="middle">u_ack.sync</text>
+<text x="386.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.data
+clock: clk_a
+crossing source
+paths: #4
+examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="354.0" y="77.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="354.0,102.0 362.0,108.0 354.0,114.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="95.0" text-anchor="middle">data</text>
+<text x="386.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.dout
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #4
+examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="505.0" y="77.0" width="64.0" height="38.0" fill="#ffe0c0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="505.0,102.0 513.0,108.0 505.0,114.0" fill="none" stroke="#505050"/>
+<text x="537.0" y="95.0" text-anchor="middle">dout</text>
+<text x="537.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.sync
+clock: clk_c
+synchronizer stage
+synchronized qualifier
+paths: #4 #14
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="141.0" width="98.0" height="38.0" fill="#ffe0c0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,166.0 345.0,172.0 337.0,178.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="159.0" text-anchor="middle">u_req.sync</text>
+<text x="386.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.req
+clock: clk_a
+crossing source
+paths: #14
+examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="35.0" y="109.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,134.0 43.0,140.0 35.0,146.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="127.0" text-anchor="middle">req</text>
+<text x="67.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.meta
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #14
+examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="109.0" width="98.0" height="38.0" fill="#ffe0c0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,134.0 177.0,140.0 169.0,146.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="127.0" text-anchor="middle">u_req.meta</text>
+<text x="218.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+</g>
+</svg>
+</div>
+<h2 id="waivers">Waivers</h2>
+<table><tr><th>Id</th><th>Rule</th><th>Selectors</th><th>Reason</th><th>Author</th><th>Expires</th><th>Hits covered</th><th>Defined at</th></tr>
+<tr><td>W-CFG</td><td>CDC-008</td><td class="mono">source=cdc_advanced.a_cfg<br></td><td>a_cfg is written only while clk_b logic is held in reset (quasi-static configuration)</td><td>example</td><td>2099-12-31</td><td>1</td><td>examples/cdc_advanced/waivers.json:6:1</td></tr>
+<tr><td>W-START-MODE</td><td>CDC-005</td><td class="mono">source=cdc_advanced.a_*<br>destination=cdc_advanced.u_*.meta</td><td>start and mode are set in different configuration phases; b_go is only sampled after both settled</td><td>example</td><td></td><td>2</td><td>examples/cdc_advanced/waivers.json:14:1</td></tr>
+</table>
+<h2 id="diagnostics">Diagnostics</h2>
+<table><tr><th>Severity</th><th>Code</th><th>Message</th><th>Location</th></tr>
+<tr><td>info</td><td>CDC-NO-DOMAIN</td><td>12 input port(s) without a clock domain (use set_input_delay -clock to assign one) feed clocked registers; these connections are not checked for CDC (e.g. 'cdc_advanced.a_word')</td><td></td></tr>
+</table>
+<h2 id="unsupported">Not analyzed / approximated</h2>
+<p>All constructs were modelled.</p>
+<p class="meta">Generated by OpenCDC Analyzer 0.7.0.</p>
+</body></html>

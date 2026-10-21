@@ -1,0 +1,17 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "cdc_advanced",
+  "top": "cdc_advanced",
+  "sources": [
+    "rtl/sync_2ff.v",
+    "rtl/sync_vec.v",
+    "rtl/rst_sync.v",
+    "rtl/pulse_sync.v",
+    "rtl/gray_fifo.v",
+    "rtl/handshake.v",
+    "rtl/cdc_advanced.v"
+  ],
+  "constraints": ["constraints/cdc_advanced.sdc"],
+  "options": {"minSyncStages": 2, "reconvergenceDepth": 2}
+}

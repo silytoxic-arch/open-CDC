@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="644.0" height="273.0" font-family="sans-serif" font-size="12">
+<title>Path #4: data (clk_a) -&gt; dout (clk_c)  [handshake structure S1]</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<text x="20.0" y="20.0" font-weight="bold">Path #4: data (clk_a) -&gt; dout (clk_c)  [handshake structure S1]</text>
+<g transform="translate(20.0,48.0)">
+<path class="edge" d="M418.0,32.0 C461.5,32.0 461.5,89.7 505.0,89.7" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<path class="edge" d="M435.0,96.0 C470.0,96.0 470.0,102.3 505.0,102.3" fill="none" stroke="#1f5fbf" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="441.0" y="91.0" font-size="10" fill="#555555">EN/SEL</text>
+<path class="edge" d="M99.0,64.0 C134.0,64.0 134.0,64.0 169.0,64.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="59.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,64.0 C302.0,64.0 302.0,96.0 337.0,96.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path class="edge" d="M99.0,128.0 C134.0,128.0 134.0,128.0 169.0,128.0" fill="none" stroke="#2e8b57" stroke-width="3.0" marker-end="url(#arrow)"/>
+<text x="105.0" y="123.0" font-size="10" fill="#555555">d</text>
+<path class="edge" d="M267.0,128.0 C302.0,128.0 302.0,160.0 337.0,160.0" fill="none" stroke="#444444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g class="node"><title>cdc_advanced.u_hs.data
+clock: clk_a
+crossing source
+paths: #4
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="354.0" y="13.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="354.0,38.0 362.0,44.0 354.0,50.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="31.0" text-anchor="middle">data</text>
+<text x="386.0" y="46.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.dout
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #4
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="505.0" y="77.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="505.0,102.0 513.0,108.0 505.0,114.0" fill="none" stroke="#505050"/>
+<text x="537.0" y="95.0" text-anchor="middle">dout</text>
+<text x="537.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.sync
+clock: clk_c
+synchronizer stage
+synchronized qualifier
+paths: #4 #14
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="77.0" width="98.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,102.0 345.0,108.0 337.0,114.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="95.0" text-anchor="middle">u_req.sync</text>
+<text x="386.0" y="110.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.req
+clock: clk_a
+crossing source
+paths: #14
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/handshake.v:16:5</title>
+<rect x="35.0" y="45.0" width="64.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,70.0 43.0,76.0 35.0,82.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="63.0" text-anchor="middle">req</text>
+<text x="67.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_req.meta
+clock: clk_c
+first synchronizer stage / destination
+status: safe
+paths: #14
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="45.0" width="98.0" height="38.0" fill="#d8f0d0" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,70.0 177.0,76.0 169.0,82.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="63.0" text-anchor="middle">u_req.meta</text>
+<text x="218.0" y="78.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.ack
+clock: clk_c
+crossing source
+paths: #15
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/handshake.v:31:5</title>
+<rect x="35.0" y="109.0" width="64.0" height="38.0" fill="#d8f0d0" stroke="#505050" stroke-width="1.2"/>
+<polyline points="35.0,134.0 43.0,140.0 35.0,146.0" fill="none" stroke="#505050"/>
+<text x="67.0" y="127.0" text-anchor="middle">ack</text>
+<text x="67.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_c</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.meta
+clock: clk_a
+first synchronizer stage / destination
+status: safe
+paths: #15
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="169.0" y="109.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#2e8b57" stroke-width="3.0"/>
+<polyline points="169.0,134.0 177.0,140.0 169.0,146.0" fill="none" stroke="#505050"/>
+<text x="218.0" y="127.0" text-anchor="middle">u_ack.meta</text>
+<text x="218.0" y="142.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+<g class="node"><title>cdc_advanced.u_hs.u_ack.sync
+clock: clk_a
+synchronizer stage
+paths: #15
+/home/claude/OpenCDC/examples/cdc_advanced/rtl/sync_2ff.v:9:5</title>
+<rect x="337.0" y="141.0" width="98.0" height="38.0" fill="#cfe2ff" stroke="#505050" stroke-width="1.2"/>
+<polyline points="337.0,166.0 345.0,172.0 337.0,178.0" fill="none" stroke="#505050"/>
+<text x="386.0" y="159.0" text-anchor="middle">u_ack.sync</text>
+<text x="386.0" y="174.0" text-anchor="middle" font-size="10" fill="#404040">clk_a</text>
+</g>
+</g>
+</svg>

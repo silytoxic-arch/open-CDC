@@ -1,0 +1,22 @@
+{
+  "format": "opencdc-waivers",
+  "version": 1,
+  "waivers": [
+    {
+      "id": "W-CFG",
+      "rule": "CDC-008",
+      "source": "cdc_advanced.a_cfg",
+      "reason": "a_cfg is written only while clk_b logic is held in reset (quasi-static configuration)",
+      "author": "example",
+      "expires": "2099-12-31"
+    },
+    {
+      "id": "W-START-MODE",
+      "rule": "CDC-005",
+      "source": "cdc_advanced.a_*",
+      "destination": "cdc_advanced.u_*.meta",
+      "reason": "start and mode are set in different configuration phases; b_go is only sampled after both settled",
+      "author": "example"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "smoke",
+  "top": "top",
+  "language": "verilog-2001",
+  "sources": [
+    "rtl/sync_2ff.v",
+    "rtl/tx_domain.v",
+    "rtl/rx_domain.v",
+    "rtl/top.v"
+  ],
+  "includeDirs": [
+    "rtl/include"
+  ],
+  "defines": {},
+  "constraints": [
+    "constraints/clocks.sdc"
+  ]
+}

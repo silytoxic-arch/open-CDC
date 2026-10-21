@@ -1,0 +1,18 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "async_fifo",
+  "top": "afifo",
+  "language": "verilog-2001",
+  "sources": [
+    "rtl/fifomem.v",
+    "rtl/sync_r2w.v",
+    "rtl/sync_w2r.v",
+    "rtl/rptr_empty.v",
+    "rtl/wptr_full.v",
+    "rtl/afifo.v"
+  ],
+  "constraints": [
+    "constraints/afifo.xdc"
+  ]
+}

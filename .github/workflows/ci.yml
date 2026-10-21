@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-msvc:
+    name: Windows x64 / VS2022 (${{ matrix.config }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: 'win64_msvc2022_64'
+          cache: true
+
+      - name: Configure
+        run: cmake --preset windows-msvc-ci
+
+      - name: Build
+        run: cmake --build --preset windows-msvc-ci-${{ matrix.config == 'Debug' && 'debug' || 'release' }} --parallel
+
+      - name: Test
+        run: ctest --preset windows-msvc-ci-${{ matrix.config == 'Debug' && 'debug' || 'release' }}
+
+      - name: Package (Release)
+        if: matrix.config == 'Release'
+        shell: pwsh
+        run: |
+          # NSIS is preinstalled on the runner image but not on PATH.
+          $nsis = "${env:ProgramFiles(x86)}\NSIS"
+          if (Test-Path "$nsis\makensis.exe") { $env:PATH = "$nsis;$env:PATH" }
+          # Re-configure so that Packaging.cmake finds makensis.
+          cmake --preset windows-msvc-ci
+          cpack --config build/windows-msvc-ci/CPackConfig.cmake -C Release -B dist
+
+      - name: Upload packages
+        if: matrix.config == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCDC-windows-x64
+          path: |
+            dist/*.zip
+            dist/*.exe
+
+  linux-gcc:
+    name: Linux / GCC (Release)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-dev libegl1
+
+      # Ubuntu 24.04 ships Qt 6.4; OpenCDC needs Qt >= 6.5.
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          cache: true
+
+      - name: Configure
+        run: cmake --preset linux-gcc-ci
+
+      - name: Build
+        run: cmake --build --preset linux-gcc-ci-release --parallel
+
+      - name: Test
+        run: ctest --preset linux-gcc-ci-release
+
+      - name: Package
+        run: cpack --config build/linux-gcc-ci/CPackConfig.cmake -C Release -B dist
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCDC-linux-x64
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+  linux-sanitize:
+    name: Linux / GCC / ASan+UBSan+checked STL
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: cmake --preset linux-gcc-sanitize
+
+      - name: Build
+        run: cmake --build --preset linux-gcc-sanitize --parallel 2
+
+      - name: Test
+        run: ctest --preset linux-gcc-sanitize --parallel 2
+
+  linux-clang:
+    name: Linux / Clang 18 (Debug, warnings as errors, no GUI)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+
+      - name: Configure
+        run: cmake --preset linux-clang -DCMAKE_CXX_COMPILER=clang++-18 -DOPENCDC_WARNINGS_AS_ERRORS=ON -DOPENCDC_BUILD_GUI=OFF
+
+      - name: Build
+        run: cmake --build --preset linux-clang-debug --parallel
+
+      - name: Test
+        run: ctest --preset linux-clang-debug
