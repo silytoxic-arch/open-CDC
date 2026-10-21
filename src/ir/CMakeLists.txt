@@ -1,4 +1,6 @@
 add_library(opencdc_ir STATIC
+    BodyEditor.cpp
+    BodyEditor.h
     Const.cpp
     Const.h
     ConstFold.cpp

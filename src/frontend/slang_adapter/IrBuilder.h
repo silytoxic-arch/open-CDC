@@ -4,6 +4,7 @@
 
 #include "core/Diagnostic.h"
 #include "core/SourceLocation.h"
+#include "ir/BodyEditor.h"
 #include "ir/Design.h"
 
 #include <slang/ast/Compilation.h>
@@ -130,9 +131,6 @@ private:
     void lowerNetInitializer(const sast::ValueSymbol& sym);
     void lowerInstance(const sast::InstanceSymbol& inst);
     void lowerPrimitive(const sast::PrimitiveInstanceSymbol& prim);
-    void checkMultipleDrivers();
-    void pruneDeadStorage();
-    void removeDeadCells();
     std::string relativeName(const sast::Symbol& sym) const;
     bool isModuleLevelStorage(const sast::ValueSymbol& sym) const;
 
@@ -174,9 +172,7 @@ private:
     ir::ModuleBody body_;
     std::string prefix_; ///< hierarchical path prefix of symbols in this body ("top.u_rx.")
     std::unordered_map<const sast::Symbol*, ir::NetId> netOf_;
-    std::unordered_map<std::uint32_t, std::size_t> driverCell_; ///< temp net -> cell index
-    std::unordered_map<std::string, ir::SigSpec> cellCache_;    ///< structural hashing (identical cells are shared)
-    std::vector<bool> latchUnintended_;                         ///< parallel to body_.latches: warn if it survives
+    ir::BodyEditor ed_{body_}; ///< cell creation, control extraction, cleanup (shared with the VHDL frontend)
     std::unordered_set<const sast::ValueSymbol*> loopVars_;     ///< variables used as for-loop indices
     ProcState* proc_ = nullptr;                                 ///< non-null inside procedural code
     int inlineDepth_ = 0;
@@ -197,6 +193,7 @@ public:
     }
     [[nodiscard]] SourceLocation loc(slang::SourceLocation l) const;
     void report(Diagnostic d) { sink_.report(std::move(d)); }
+    DiagnosticSink& sink() { return sink_; }
     ir::Design& design() { return *design_; }
 
 private:

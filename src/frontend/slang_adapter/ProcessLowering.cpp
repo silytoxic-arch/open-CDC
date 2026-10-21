@@ -658,8 +658,7 @@ void BodyBuilder::lowerComb(const sast::Statement& body, bool intendedLatch, sla
         // Latch warnings are issued after dead-storage removal (pruneDeadStorage):
         // a "latch" whose output is never read is not hardware.
         for (const auto& [o, w] : runs(latch)) {
-            body_.latches.push_back({SigSpec::net(*net, w, o), value->extract(o, w), loc(l)});
-            latchUnintended_.push_back(!intendedLatch);
+            ed_.addLatch({SigSpec::net(*net, w, o), value->extract(o, w), loc(l)}, !intendedLatch);
         }
     }
 }
@@ -851,79 +850,7 @@ void BodyBuilder::lowerSequential(const sast::Statement& body, std::vector<std::
 }
 
 void BodyBuilder::extractControls(Register& r, slang::SourceLocation l) {
-    // Recognizes D = Mux(S, A, B) structures created by if/else:
-    //   sync reset:  if (srst) q <= CONST; else q <= ...   (outermost)
-    //   enable:      if (en) q <= d;                       (other branch holds q)
-    auto asMux = [&](const SigSpec& d) -> std::optional<std::tuple<SigSpec, SigSpec, SigSpec>> {
-        if (d.chunks().size() != 1 || d.chunks()[0].isConst())
-            return std::nullopt;
-        const auto& ch = d.chunks()[0];
-        auto it = driverCell_.find(ch.net.value);
-        if (it == driverCell_.end())
-            return std::nullopt;
-        const Cell& c = body_.cells[it->second];
-        if (c.kind != CellKind::Mux)
-            return std::nullopt;
-        return std::make_tuple(c.inputs[0].extract(ch.offset, ch.width), c.inputs[1].extract(ch.offset, ch.width),
-                               c.inputs[2]);
-    };
-
-    // Strips 1-bit inverters (~x, !x). Returns the underlying signal and
-    // whether the original is active high.
-    auto stripInverters = [&](SigSpec sig) {
-        bool activeHigh = true;
-        for (int i = 0; i < 4 && sig.width() == 1 && sig.chunks().size() == 1 && !sig.chunks()[0].isConst(); ++i) {
-            auto it = driverCell_.find(sig.chunks()[0].net.value);
-            if (it == driverCell_.end())
-                break;
-            const Cell& c = body_.cells[it->second];
-            if ((c.kind != CellKind::Not && c.kind != CellKind::LogicNot) || c.inputs[0].width() != 1)
-                break;
-            sig = c.inputs[0];
-            activeHigh = !activeHigh;
-        }
-        return std::make_pair(sig, activeHigh);
-    };
-    auto isNamedSignal = [&](const SigSpec& sig) {
-        return sig.width() == 1 && sig.chunks().size() == 1 && !sig.chunks()[0].isConst() &&
-               body_.net(sig.chunks()[0].net).kind != NetKind::Temp;
-    };
-
-    for (int guard = 0; guard < 8; ++guard) {
-        auto m = asMux(r.d);
-        if (!m)
-            return;
-        auto& [A, B, S] = *m;
-        // A synchronous reset is a *named* signal (optionally inverted) that
-        // forces a constant; a constant selected by decoded logic (case items,
-        // comparisons) is ordinary data and must stay in D.
-        const auto [base, high] = stripInverters(S);
-        if (!r.enable && !r.syncReset && isNamedSignal(base)) {
-            if (B.isFullyConst() && A != r.q) {
-                r.syncReset = ResetSpec{base, high, B};
-                r.d = A;
-                continue;
-            }
-            if (A.isFullyConst() && B != r.q) {
-                r.syncReset = ResetSpec{base, !high, A};
-                r.d = B;
-                continue;
-            }
-        }
-        if (!r.enable) {
-            if (A == r.q) {
-                r.enable = S;
-                r.d = B;
-                continue;
-            }
-            if (B == r.q) {
-                r.enable = cell(CellKind::Not, {S}, 1, l);
-                r.d = A;
-                continue;
-            }
-        }
-        return;
-    }
+    ed_.extractControls(r, loc(l));
 }
 
 } // namespace opencdc::frontend::detail

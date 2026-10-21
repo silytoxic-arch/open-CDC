@@ -18,9 +18,11 @@ add_executable(opencdc_tests
     engine/test_analysis_session.cpp
     engine/test_waivers.cpp
     engine/test_report.cpp
-    frontend/test_slang_frontend.cpp)
+    frontend/test_slang_frontend.cpp
+    vhdl/test_vhdl_parser.cpp)
 
 target_link_libraries(opencdc_tests PRIVATE
+    opencdc_vhdl
     opencdc_engine
     opencdc_ir
     opencdc_clock
@@ -122,3 +124,8 @@ if(TARGET opencdc-gui)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
 endif()
+
+# Development tool: batch-parse VHDL files (used for the corpus check).
+add_executable(opencdc-vhdl-parse ${PROJECT_SOURCE_DIR}/tools/vhdl/vhdl_parse.cpp)
+target_link_libraries(opencdc-vhdl-parse PRIVATE opencdc_vhdl)
+opencdc_set_warnings(opencdc-vhdl-parse)

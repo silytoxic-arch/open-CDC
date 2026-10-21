@@ -1,3 +1,5 @@
+add_subdirectory(vhdl)
+
 add_library(opencdc_frontend STATIC
     Frontend.h
     slang_adapter/IrBuilder.cpp

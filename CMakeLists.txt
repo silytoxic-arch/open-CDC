@@ -74,4 +74,4 @@ if(OPENCDC_BUILD_TESTS)
 endif()
 
 # Architectural rule: analysis libraries and the CLI must never depend on Qt.
-opencdc_assert_no_qt(opencdc_core opencdc_ir opencdc_graph opencdc_constraints opencdc_clock opencdc_cdc opencdc_rules opencdc_schematic opencdc_frontend opencdc_engine opencdc)
+opencdc_assert_no_qt(opencdc_core opencdc_vhdl opencdc_ir opencdc_graph opencdc_constraints opencdc_clock opencdc_cdc opencdc_rules opencdc_schematic opencdc_frontend opencdc_engine opencdc)

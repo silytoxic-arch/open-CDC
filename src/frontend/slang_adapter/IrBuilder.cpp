@@ -260,9 +260,10 @@ ModuleBody BodyBuilder::build() {
     declarePorts();
     declareScope(sym_);
     lowerScope(sym_);
-    pruneDeadStorage();
-    removeDeadCells();
-    checkMultipleDrivers();
+    ed_.finish(owner_.sink(), [this](const std::vector<std::uint32_t>& remap) {
+        for (auto& [sym, id] : netOf_)
+            id = NetId{remap[id.index()]};
+    });
     return std::move(body_);
 }
 
@@ -570,359 +571,26 @@ void BodyBuilder::lowerPrimitive(const sast::PrimitiveInstanceSymbol& prim) {
 // Driver checks and cleanup
 // ============================================================================
 
-void BodyBuilder::pruneDeadStorage() {
-    // Registers and latches whose output cannot reach anything observable
-    // (ports, continuous assignments, child inputs, or other live storage)
-    // are not hardware: temporaries of always blocks, loop indices, unused
-    // state. Synthesis removes them; so do we. Liveness is propagated
-    // backwards through combinational cells (a storage element feeding only
-    // its own hold multiplexer stays dead).
-    const std::size_t nNets = body_.nets.size();
-    std::vector<std::int64_t> cellOf(nNets, -1);
-    for (std::size_t i = 0; i < body_.cells.size(); ++i)
-        cellOf[body_.cells[i].output.index()] = static_cast<std::int64_t>(i);
 
-    std::vector<std::vector<bool>> reached(nNets);
-    std::vector<bool> cellDone(body_.cells.size(), false);
-    std::vector<SigSpec> work;
-    auto visit = [&](const SigSpec& sig) { work.push_back(sig); };
-    auto drain = [&] {
-        while (!work.empty()) {
-            SigSpec sig = std::move(work.back());
-            work.pop_back();
-            for (const auto& c : sig.chunks()) {
-                if (c.isConst())
-                    continue;
-                auto& m = reached[c.net.index()];
-                if (m.empty())
-                    m.resize(body_.nets[c.net.index()].width, false);
-                for (std::uint32_t i = c.offset; i < c.offset + c.width && i < m.size(); ++i)
-                    m[i] = true;
-                const auto ci = cellOf[c.net.index()];
-                if (ci >= 0 && !cellDone[static_cast<std::size_t>(ci)]) {
-                    cellDone[static_cast<std::size_t>(ci)] = true;
-                    for (const auto& in : body_.cells[static_cast<std::size_t>(ci)].inputs)
-                        work.push_back(in);
-                }
-            }
-        }
-    };
-    auto isReached = [&](const SigSpec& q) {
-        for (const auto& c : q.chunks()) {
-            if (c.isConst())
-                continue;
-            if (body_.nets[c.net.index()].dir != PortDir::None)
-                return true;
-            const auto& m = reached[c.net.index()];
-            for (std::uint32_t i = c.offset; i < c.offset + c.width && i < m.size(); ++i)
-                if (m[i])
-                    return true;
-        }
-        return false;
-    };
 
-    for (const auto& c : body_.connections)
-        visit(c.rhs);
-    for (const auto& ch : body_.children)
-        for (const auto& p : ch.ports)
-            if (p.dir != PortDir::Out)
-                visit(p.actual);
-    drain();
-
-    std::vector<bool> regLive(body_.registers.size(), false);
-    std::vector<bool> latchLive(body_.latches.size(), false);
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (std::size_t i = 0; i < body_.registers.size(); ++i) {
-            const auto& r = body_.registers[i];
-            if (regLive[i] || !isReached(r.q))
-                continue;
-            regLive[i] = changed = true;
-            visit(r.d);
-            visit(r.clock.signal);
-            for (const auto& a : r.asyncResets) {
-                visit(a.signal);
-                visit(a.value);
-            }
-            if (r.syncReset) {
-                visit(r.syncReset->signal);
-                visit(r.syncReset->value);
-            }
-            if (r.enable)
-                visit(*r.enable);
-        }
-        for (std::size_t i = 0; i < body_.latches.size(); ++i) {
-            if (latchLive[i] || !isReached(body_.latches[i].q))
-                continue;
-            latchLive[i] = changed = true;
-            visit(body_.latches[i].d);
-        }
-        drain();
-    }
-
-    std::size_t removedRegs = 0;
-    std::size_t removedLatches = 0;
-    std::vector<Register> regs;
-    for (std::size_t i = 0; i < body_.registers.size(); ++i) {
-        if (regLive[i])
-            regs.push_back(std::move(body_.registers[i]));
-        else
-            ++removedRegs;
-    }
-    std::vector<Latch> latches;
-    std::vector<bool> flags;
-    for (std::size_t i = 0; i < body_.latches.size(); ++i) {
-        if (latchLive[i]) {
-            latches.push_back(std::move(body_.latches[i]));
-            flags.push_back(i < latchUnintended_.size() && latchUnintended_[i]);
-        }
-        else {
-            ++removedLatches;
-        }
-    }
-    body_.registers = std::move(regs);
-    body_.latches = std::move(latches);
-    latchUnintended_ = std::move(flags);
-
-    if (removedRegs + removedLatches > 0) {
-        owner_.report({"IR-DEAD-STORAGE", Severity::Info,
-                       "module '" + body_.name + "': removed " + std::to_string(removedRegs) + " register(s) and " +
-                           std::to_string(removedLatches) + " latch(es) whose outputs are never read",
-                       body_.loc, {}});
-    }
-    for (std::size_t i = 0; i < body_.latches.size(); ++i) {
-        if (i < latchUnintended_.size() && latchUnintended_[i]) {
-            owner_.report({"IR-LATCH-INFERRED", Severity::Warning,
-                           "latch inferred for '" + formatSig(body_, body_.latches[i].q) + "' in module '" + body_.name +
-                               "': not assigned on every path of a combinational block",
-                           body_.latches[i].origin, {}});
-        }
-    }
-}
-
-void BodyBuilder::removeDeadCells() {
-    // Live cells are those reachable (backwards) from anything observable:
-    // connections, registers, latches and child port bindings.
-    const std::size_t nNets = body_.nets.size();
-    std::vector<std::int64_t> cellOf(nNets, -1);
-    for (std::size_t i = 0; i < body_.cells.size(); ++i)
-        cellOf[body_.cells[i].output.index()] = static_cast<std::int64_t>(i);
-
-    std::vector<bool> live(body_.cells.size(), false);
-    std::vector<std::size_t> work;
-    auto use = [&](const SigSpec& s) {
-        for (const auto& c : s.chunks()) {
-            if (c.isConst())
-                continue;
-            const auto ci = cellOf[c.net.index()];
-            if (ci >= 0 && !live[static_cast<std::size_t>(ci)]) {
-                live[static_cast<std::size_t>(ci)] = true;
-                work.push_back(static_cast<std::size_t>(ci));
-            }
-        }
-    };
-    for (const auto& c : body_.connections) {
-        use(c.lhs);
-        use(c.rhs);
-    }
-    for (const auto& r : body_.registers) {
-        use(r.d);
-        use(r.clock.signal);
-        for (const auto& a : r.asyncResets) {
-            use(a.signal);
-            use(a.value);
-        }
-        if (r.syncReset) {
-            use(r.syncReset->signal);
-            use(r.syncReset->value);
-        }
-        if (r.enable)
-            use(*r.enable);
-    }
-    for (const auto& l : body_.latches)
-        use(l.d);
-    for (const auto& ch : body_.children)
-        for (const auto& p : ch.ports)
-            use(p.actual);
-    while (!work.empty()) {
-        const auto ci = work.back();
-        work.pop_back();
-        for (const auto& in : body_.cells[ci].inputs)
-            use(in);
-    }
-    if (std::ranges::all_of(live, [](bool b) { return b; }))
-        return;
-
-    // Compact: drop dead cells and their temp nets, renumber everything.
-    std::vector<bool> keepNet(nNets, true);
-    for (std::size_t i = 0; i < body_.cells.size(); ++i)
-        if (!live[i])
-            keepNet[body_.cells[i].output.index()] = false;
-    std::vector<std::uint32_t> remap(nNets, 0);
-    std::vector<Net> nets;
-    for (std::size_t i = 0; i < nNets; ++i) {
-        if (!keepNet[i])
-            continue;
-        remap[i] = static_cast<std::uint32_t>(nets.size());
-        nets.push_back(std::move(body_.nets[i]));
-    }
-    auto fix = [&](SigSpec& s) {
-        SigSpec out;
-        for (auto c : s.chunks()) {
-            if (!c.isConst())
-                c.net = NetId{remap[c.net.index()]};
-            out.append(c);
-        }
-        s = std::move(out);
-    };
-    std::vector<Cell> cells;
-    for (std::size_t i = 0; i < body_.cells.size(); ++i) {
-        if (!live[i])
-            continue;
-        Cell c = std::move(body_.cells[i]);
-        for (auto& in : c.inputs)
-            fix(in);
-        c.output = NetId{remap[c.output.index()]};
-        cells.push_back(std::move(c));
-    }
-    for (auto& c : body_.connections) {
-        fix(c.lhs);
-        fix(c.rhs);
-    }
-    for (auto& r : body_.registers) {
-        fix(r.q);
-        fix(r.d);
-        fix(r.clock.signal);
-        for (auto& a : r.asyncResets) {
-            fix(a.signal);
-            fix(a.value);
-        }
-        if (r.syncReset) {
-            fix(r.syncReset->signal);
-            fix(r.syncReset->value);
-        }
-        if (r.enable)
-            fix(*r.enable);
-    }
-    for (auto& l : body_.latches) {
-        fix(l.q);
-        fix(l.d);
-    }
-    for (auto& ch : body_.children)
-        for (auto& p : ch.ports)
-            fix(p.actual);
-    for (auto& p : body_.ports)
-        p.net = NetId{remap[p.net.index()]};
-    for (auto& [sym, id] : netOf_)
-        id = NetId{remap[id.index()]};
-    body_.nets = std::move(nets);
-    body_.cells = std::move(cells);
-    driverCell_.clear();
-    cellCache_.clear();
-}
-
-void BodyBuilder::checkMultipleDrivers() {
-    struct Drv {
-        std::uint32_t lo;
-        std::uint32_t hi;
-        std::string what;
-    };
-    std::vector<std::vector<Drv>> drivers(body_.nets.size());
-    auto add = [&](const SigSpec& s, const std::string& what) {
-        for (const auto& c : s.chunks())
-            if (!c.isConst())
-                drivers[c.net.index()].push_back({c.offset, c.offset + c.width, what});
-    };
-    for (const auto& p : body_.ports)
-        if (p.dir == PortDir::In)
-            add(body_.netSig(p.net), "input port");
-    for (const auto& c : body_.connections)
-        add(c.lhs, (c.kind == ConnKind::Process ? "always block at " : "assignment at ") + toString(c.origin));
-    for (const auto& r : body_.registers)
-        add(r.q, "always block at " + toString(r.origin));
-    for (const auto& l : body_.latches)
-        add(l.q, "always block at " + toString(l.origin));
-    for (const auto& ch : body_.children)
-        for (const auto& p : ch.ports)
-            if (p.dir == PortDir::Out)
-                add(p.actual, "output port ." + p.port + " of " + ch.name);
-
-    for (std::size_t n = 0; n < drivers.size(); ++n) {
-        auto& ds = drivers[n];
-        if (ds.size() < 2)
-            continue;
-        std::ranges::sort(ds, {}, &Drv::lo);
-        for (std::size_t i = 0; i + 1 < ds.size(); ++i) {
-            for (std::size_t j = i + 1; j < ds.size() && ds[j].lo < ds[i].hi; ++j) {
-                // Several assignments from the same always block are one driver.
-                if (ds[i].what == ds[j].what)
-                    continue;
-                const auto& net = body_.nets[n];
-                const std::uint32_t bit = ds[j].lo;
-                owner_.report({"IR-MULTIDRIVER", Severity::Error,
-                               "'" + net.name + "' bit [" + std::to_string(net.indexOf(bit)) + "] in module '" +
-                                   body_.name + "' has multiple drivers: " + ds[i].what + " and " + ds[j].what,
-                               net.loc, {}});
-                goto nextNet; // one diagnostic per net is enough
-            }
-        }
-    nextNet:;
-    }
-}
 
 // ============================================================================
 // Expressions
 // ============================================================================
 
-namespace {
 
-void appendKey(std::string& key, const SigSpec& s) {
-    for (const auto& c : s.chunks()) {
-        if (c.isConst())
-            key += c.constant.toString();
-        else
-            key += "n" + std::to_string(c.net.value) + "." + std::to_string(c.offset) + "." + std::to_string(c.width);
-        key += ',';
-    }
-    key += '|';
-}
-
-} // namespace
 
 SigSpec BodyBuilder::emit(Cell c) {
-    if (auto simplified = simplifyCell(c))
-        return simplified->resized(c.width, false);
-    // Structural hashing: an identical cell already exists -> reuse its output.
-    std::string key = std::to_string(static_cast<int>(c.kind)) + ":" + std::to_string(c.width) + ":" +
-                      (c.isSigned ? "s" : "u") + ":" + std::to_string(c.elemWidth) + ":" +
-                      std::to_string(c.rangeLeft) + ":" + std::to_string(c.rangeRight) + ":";
-    for (const auto& in : c.inputs)
-        appendKey(key, in);
-    if (auto it = cellCache_.find(key); it != cellCache_.end())
-        return it->second;
-    SigSpec out = body_.addCell(std::move(c));
-    driverCell_[body_.cells.back().output.value] = body_.cells.size() - 1;
-    cellCache_.emplace(std::move(key), out);
-    return out;
+    return ed_.emit(std::move(c));
 }
 
 SigSpec BodyBuilder::cell(CellKind kind, std::vector<SigSpec> inputs, std::uint32_t width, slang::SourceLocation l,
                           bool isSigned) {
-    Cell c;
-    c.kind = kind;
-    c.inputs = std::move(inputs);
-    c.width = width;
-    c.isSigned = isSigned;
-    c.origin = loc(l);
-    return emit(std::move(c));
+    return ed_.cell(kind, std::move(inputs), width, loc(l), isSigned);
 }
 
 SigSpec BodyBuilder::toBool(const SigSpec& s, slang::SourceLocation l) {
-    if (s.width() == 1)
-        return s;
-    if (s.width() == 0)
-        return SigSpec::constant(0, 1);
-    return cell(CellKind::ReduceOr, {s}, 1, l);
+    return ed_.toBool(s, loc(l));
 }
 
 SigSpec BodyBuilder::opaque(const sast::Expression& e, const std::string& what) {
@@ -949,9 +617,7 @@ SigSpec BodyBuilder::opaque(const sast::Expression& e, const std::string& what) 
     c.width = w;
     c.label = what;
     c.origin = loc(e.sourceRange.start());
-    SigSpec out = body_.addCell(std::move(c));
-    driverCell_[body_.cells.back().output.value] = body_.cells.size() - 1;
-    return out;
+    return ed_.addUnique(std::move(c));
 }
 
 std::optional<SigSpec> BodyBuilder::tryConstant(const sast::Expression& e) {
