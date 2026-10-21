@@ -1,4 +1,5 @@
 #include "gui/MainWindow.h"
+#include "gui/ProjectEditor.h"
 
 #include "core/PathUtil.h"
 #include "core/Version.h"
@@ -182,6 +183,13 @@ void MainWindow::createActions() {
     openAction_ = fileMenu->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton),
                                       tr("&Open Project..."), this, &MainWindow::onOpenProject);
     openAction_->setShortcut(QKeySequence::Open);
+    fileMenu->addAction(style()->standardIcon(QStyle::SP_FileIcon), tr("&New Project..."), this,
+                        &MainWindow::onNewProject)
+        ->setShortcut(QKeySequence::New);
+    editProjectAction_ = fileMenu->addAction(tr("&Edit Project..."), this, &MainWindow::onEditProject);
+    editProjectAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+    saveProjectAsAction_ = fileMenu->addAction(tr("Save Project &As..."), this, &MainWindow::onSaveProjectAs);
+    saveProjectAsAction_->setShortcut(QKeySequence::SaveAs);
     fileMenu->addSeparator();
     exportHtmlAction_ = fileMenu->addAction(tr("Export &HTML Report..."), this, [this] {
         const QString file = QFileDialog::getSaveFileName(this, tr("Export HTML report"),
@@ -212,6 +220,7 @@ void MainWindow::createActions() {
     auto* toolbar = addToolBar(tr("Main"));
     toolbar->setObjectName("mainToolbar");
     toolbar->addAction(openAction_);
+    toolbar->addAction(editProjectAction_);
     toolbar->addAction(runAction_);
     toolbar->addAction(cancelAction_);
 }
@@ -354,8 +363,15 @@ bool MainWindow::openProject(const QString& path) {
         statusLabel_->setText(tr("Failed to load project: %1").arg(path));
         return false;
     }
-    project_ = std::move(loaded).value();
+    setProject(std::move(loaded).value());
+    statusLabel_->setText(tr("Project '%1' loaded").arg(qs(project_->name)));
+    return true;
+}
+
+void MainWindow::setProject(engine::ProjectConfig config) {
+    project_ = std::move(config);
     lastResult_.reset();
+    messageTable_->setRowCount(0);
     hierarchyTree_->clear();
     reportView_->clear();
     clockView_->clear();
@@ -363,9 +379,74 @@ bool MainWindow::openProject(const QString& path) {
     violationView_->clear();
     schematicView_->clear();
     showProjectInfo();
-    statusLabel_->setText(tr("Project '%1' loaded").arg(qs(project_->name)));
+    statusLabel_->setText(tr("Project '%1'").arg(qs(project_->name)));
     updateActions();
+}
+
+bool MainWindow::saveProjectAs(const QString& path) {
+    if (!project_)
+        return false;
+    const auto file = std::filesystem::absolute(fromUtf8(path.toStdString())).lexically_normal();
+    if (auto err = engine::saveProjectFile(*project_, file)) {
+        appendMessage(*err);
+        statusLabel_->setText(tr("Could not save the project to %1").arg(path));
+        return false;
+    }
+    project_->projectFile = file;
+    showProjectInfo();
+    statusLabel_->setText(tr("Project saved to %1").arg(qs(file)));
     return true;
+}
+
+namespace {
+QString projectDir(const std::optional<engine::ProjectConfig>& p) {
+    if (p && !p->projectFile.empty())
+        return QString::fromStdString(toUtf8(p->projectFile.parent_path()));
+    return QString();
+}
+} // namespace
+
+void MainWindow::onNewProject() {
+    if (controller_->isRunning())
+        return;
+    engine::ProjectConfig cfg;
+    cfg.name = "new_project";
+    ProjectEditor editor(cfg, projectDir(project_), this);
+    editor.setWindowTitle(tr("New Project"));
+    if (editor.exec() != QDialog::Accepted)
+        return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Save New Project"), QString::fromStdString(editor.config().name) + QStringLiteral(".ocdc.json"),
+        tr("OpenCDC projects (*.ocdc.json)"));
+    if (path.isEmpty())
+        return;
+    setProject(editor.config());
+    if (saveProjectAs(path))
+        runAnalysis();
+}
+
+void MainWindow::onEditProject() {
+    if (!project_ || controller_->isRunning())
+        return;
+    ProjectEditor editor(*project_, projectDir(project_), this);
+    if (editor.exec() != QDialog::Accepted)
+        return;
+    setProject(editor.config());
+    if (!project_->projectFile.empty() &&
+        !saveProjectAs(QString::fromStdString(toUtf8(project_->projectFile))))
+        return;
+    runAnalysis();
+}
+
+void MainWindow::onSaveProjectAs() {
+    if (!project_)
+        return;
+    const QString start = project_->projectFile.empty() ? QString::fromStdString(project_->name + ".ocdc.json")
+                                                        : QString::fromStdString(toUtf8(project_->projectFile));
+    const QString path =
+        QFileDialog::getSaveFileName(this, tr("Save Project As"), start, tr("OpenCDC projects (*.ocdc.json)"));
+    if (!path.isEmpty())
+        saveProjectAs(path);
 }
 
 void MainWindow::showProjectInfo() {
@@ -638,6 +719,8 @@ void MainWindow::updateActions() {
     const bool running = controller_->isRunning();
     openAction_->setEnabled(!running);
     runAction_->setEnabled(project_.has_value() && !running);
+    editProjectAction_->setEnabled(project_.has_value() && !running);
+    saveProjectAsAction_->setEnabled(project_.has_value() && !running);
     cancelAction_->setEnabled(running);
     exportHtmlAction_->setEnabled(lastResult_ != nullptr && !running);
     exportCsvAction_->setEnabled(lastResult_ != nullptr && !running);

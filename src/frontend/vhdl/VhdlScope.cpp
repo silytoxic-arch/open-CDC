@@ -181,19 +181,45 @@ void Elaborator::elaboratePackage(PackageInfo& p) {
         elaboratePackageBody(p);
 }
 
-void Elaborator::elaboratePackageBody(PackageInfo& p) {
-    if (p.bodyElaborated || !p.body)
+void Elaborator::preparePackageBodyScope(PackageInfo& p) {
+    if (p.bodyScopeReady)
         return;
-    p.bodyElaborated = true;
+    p.bodyScopeReady = true;
     p.bodyScope.parent = &p.scope;
     p.bodyScope.workLibrary = p.library;
     p.bodyScope.label = p.scope.label + " body";
     applyContext(p.bodyScope, p.body->context, p.library);
+}
+
+void Elaborator::elaboratePackageBody(PackageInfo& p) {
+    if (p.bodyElaborated || !p.body)
+        return;
+    p.bodyElaborated = true;
+    preparePackageBodyScope(p);
     Ctx ctx;
     ctx.scope = &p.bodyScope;
     ctx.constOnly = true;
     for (const auto& d : p.body->decls)
-        declare(p.bodyScope, *d, ctx);
+        if (!p.earlyBodies.contains(d.get()))
+            declare(p.bodyScope, *d, ctx);
+}
+
+void Elaborator::elaborateEarlyBodies(PackageInfo& p, const std::string& key) {
+    // A constant of the package declaration calls a function whose body is in
+    // the package body (accepted by synthesis tools). Bind just that body; the
+    // rest of the body waits until the declaration is complete.
+    if (p.bodyElaborated || !p.body)
+        return;
+    preparePackageBodyScope(p);
+    Ctx ctx;
+    ctx.scope = &p.bodyScope;
+    ctx.constOnly = true;
+    for (const auto& d : p.body->decls)
+        if (d->kind == DeclKind::Subprogram && d->sub && d->sub->hasBody && d->sub->designator.key == key &&
+            !p.earlyBodies.contains(d.get())) {
+            p.earlyBodies.insert(d.get());
+            declare(p.bodyScope, *d, ctx);
+        }
 }
 
 void Elaborator::applyContext(Scope& scope, const std::vector<ContextItem>& items, const std::string& workLib) {

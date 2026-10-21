@@ -969,6 +969,25 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
                 break;
             }
         }
+        // if rising_edge(clk) then ... end if;
+        // if rst = '1' then q <= INIT; end if;   -- later statement wins: asynchronous reset
+        if (clock && clockedBody) {
+            for (std::size_t k = clockedIndex + 1; k < stmts.size(); ++k) {
+                const Stmt& s = *stmts[k];
+                const Expr* rest = nullptr;
+                if (s.kind == StmtKind::If && s.branches.size() == 1 && s.branches[0].cond &&
+                    !clockEdge(*s.branches[0].cond, ctx, &rest)) {
+                    asyncs.insert(asyncs.begin(), {s.branches[0].cond.get(), &s.branches[0].body});
+                    continue;
+                }
+                if (s.kind == StmtKind::Null)
+                    continue;
+                warn("VHDL-CLOCKED-TAIL",
+                     "statement after the clocked if of process '" + label +
+                         "' is ignored (only 'if <reset> then ... end if' is understood there)",
+                     s.loc);
+            }
+        }
     }
 
     if (!clock) {

@@ -207,7 +207,7 @@ TEST_CASE("Constants selected by decoded logic stay data, not reset", "[extract]
                      "      default: q <= 4'b1000;\n"
                      "    endcase\n"
                      "endmodule\n");
-    CHECK(e.contains("reg q <= $mux$"));
+    CHECK(e.contains("reg q <= {$mux$")); // bit 2 is 0 in every branch: a constant, not selected
     CHECK_FALSE(e.contains("srst("));
 }
 

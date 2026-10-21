@@ -255,4 +255,107 @@ Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file) {
     return cfg;
 }
 
+namespace {
+
+std::string relativeText(const std::filesystem::path& p, const std::filesystem::path& baseDir) {
+    std::filesystem::path out = p;
+    if (!baseDir.empty() && p.is_absolute()) {
+        const auto rel = p.lexically_normal().lexically_relative(baseDir.lexically_normal());
+        if (!rel.empty() && !rel.has_root_path())
+            out = rel;
+    }
+    std::string text = toUtf8(out);
+    std::ranges::replace(text, '\\', '/');
+    return text;
+}
+
+std::string_view policyText(UnknownClockPolicy p) {
+    switch (p) {
+        case UnknownClockPolicy::Report: return "report";
+        case UnknownClockPolicy::AssumeAsync: return "assume_async";
+        case UnknownClockPolicy::AssumeSync: return "assume_sync";
+    }
+    return "report";
+}
+
+} // namespace
+
+std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path& baseDir) {
+    nlohmann::ordered_json j;
+    j["format"] = kProjectFormatName;
+    j["version"] = kProjectFormatVersion;
+    j["name"] = cfg.name;
+    if (!cfg.top.empty())
+        j["top"] = cfg.top;
+    j["language"] = std::string(frontend::toString(cfg.language));
+    auto sources = nlohmann::ordered_json::array();
+    for (std::size_t i = 0; i < cfg.sources.size(); ++i) {
+        const std::string file = relativeText(cfg.sources[i], baseDir);
+        const std::string lib = i < cfg.sourceLibraries.size() ? cfg.sourceLibraries[i] : std::string();
+        if (lib.empty())
+            sources.push_back(file);
+        else
+            sources.push_back({{"file", file}, {"library", lib}});
+    }
+    j["sources"] = std::move(sources);
+    auto paths = [&](const char* key, const std::vector<std::filesystem::path>& list) {
+        if (list.empty())
+            return;
+        auto a = nlohmann::ordered_json::array();
+        for (const auto& p : list)
+            a.push_back(relativeText(p, baseDir));
+        j[key] = std::move(a);
+    };
+    paths("includeDirs", cfg.includeDirs);
+    if (!cfg.defines.empty()) {
+        auto d = nlohmann::ordered_json::object();
+        for (const auto& m : cfg.defines)
+            d[m.name] = m.value ? nlohmann::ordered_json(*m.value) : nlohmann::ordered_json(nullptr);
+        j["defines"] = std::move(d);
+    }
+    if (!cfg.parameters.empty()) {
+        auto d = nlohmann::ordered_json::object();
+        for (const auto& [name, value] : cfg.parameters)
+            d[name] = value;
+        j["parameters"] = std::move(d);
+    }
+    paths("constraints", cfg.constraints);
+    paths("waivers", cfg.waivers);
+    const AnalysisOptions defaults;
+    if (cfg.options.unknownClockRelation != defaults.unknownClockRelation ||
+        cfg.options.minSyncStages != defaults.minSyncStages ||
+        cfg.options.reconvergenceDepth != defaults.reconvergenceDepth) {
+        j["options"] = {{"unknownClockRelation", std::string(policyText(cfg.options.unknownClockRelation))},
+                        {"minSyncStages", cfg.options.minSyncStages},
+                        {"reconvergenceDepth", cfg.options.reconvergenceDepth}};
+    }
+    return j.dump(2) + "\n";
+}
+
+std::optional<Diagnostic> saveProjectFile(const ProjectConfig& cfg, const std::filesystem::path& file) {
+    std::error_code ec;
+    const auto abs = std::filesystem::absolute(file, ec).lexically_normal();
+    const std::string text = projectToJson(cfg, abs.parent_path());
+    auto tmp = abs;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out)
+            return projectError("PRJ-WRITE", "cannot write project file", abs);
+        out << text;
+        out.flush();
+        if (!out) {
+            out.close();
+            std::filesystem::remove(tmp, ec);
+            return projectError("PRJ-WRITE", "cannot write project file", abs);
+        }
+    }
+    std::filesystem::rename(tmp, abs, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        return projectError("PRJ-WRITE", "cannot replace project file: " + ec.message(), abs);
+    }
+    return std::nullopt;
+}
+
 } // namespace opencdc::engine

@@ -290,6 +290,13 @@ std::vector<SeqGraph::CellInput> SeqGraph::cellInputs(InstanceId inst, std::size
             bitOfInput(1, outBit, L);
             break;
         case CellKind::Mux:
+            // Both data inputs carry the same bit (a record field the
+            // branches leave alone): the select does not matter for it.
+            if (c.inputs.size() == 3 && outBit < c.inputs[0].width() && outBit < c.inputs[1].width() &&
+                c.inputs[0].bit(outBit) == c.inputs[1].bit(outBit)) {
+                bitOfInput(0, outBit, 0);
+                break;
+            }
             bitOfInput(0, outBit, L);
             bitOfInput(1, outBit, L);
             allOfInput(2, S);

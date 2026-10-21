@@ -149,3 +149,61 @@ TEST_CASE("parseProjectJson selects SystemVerilog for .sv sources unless a langu
     REQUIRE(given.ok());
     CHECK(given.value().language == frontend::LanguageStd::Verilog2005);
 }
+
+TEST_CASE("projectToJson round-trips through parseProjectJson", "[engine][project]") {
+    auto r = parseProjectJson(R"({
+        "format": "opencdc-project", "version": 1, "name": "demo", "top": "top",
+        "sources": ["rtl/a.v", {"file": "rtl/b.vhd", "library": "olo"}, "/abs/c.sv"],
+        "includeDirs": ["inc"],
+        "defines": {"WIDTH": "8", "FLAG": null},
+        "parameters": {"DEPTH": 16, "MODE": "\"FAST\""},
+        "constraints": ["c/clk.sdc"],
+        "waivers": ["../w.json"],
+        "options": {"unknownClockRelation": "assume_async", "minSyncStages": 3}
+    })", kBase);
+    REQUIRE(r.ok());
+    const auto& a = r.value();
+    const std::string text = projectToJson(a, kBase);
+    CHECK(text.find("\"rtl/a.v\"") != std::string::npos);  // relative, '/' separators
+    CHECK(text.find("\"../w.json\"") != std::string::npos);
+    CHECK(text.find("\"library\": \"olo\"") != std::string::npos);
+    auto r2 = parseProjectJson(text, kBase);
+    REQUIRE(r2.ok());
+    const auto& b = r2.value();
+    CHECK(b.name == a.name);
+    CHECK(b.top == a.top);
+    CHECK(b.language == a.language);
+    CHECK(b.sources == a.sources);
+    CHECK(b.sourceLibraries == a.sourceLibraries);
+    CHECK(b.includeDirs == a.includeDirs);
+    CHECK(b.constraints == a.constraints);
+    CHECK(b.waivers == a.waivers);
+    CHECK(b.parameters == a.parameters);
+    REQUIRE(b.defines.size() == a.defines.size());
+    for (std::size_t i = 0; i < a.defines.size(); ++i) {
+        CHECK(b.defines[i].name == a.defines[i].name);
+        CHECK(b.defines[i].value == a.defines[i].value);
+    }
+    CHECK(b.options.unknownClockRelation == UnknownClockPolicy::AssumeAsync);
+    CHECK(b.options.minSyncStages == 3);
+    CHECK(b.options.reconvergenceDepth == 2);
+}
+
+TEST_CASE("saveProjectFile writes a loadable file; unwritable location is PRJ-WRITE", "[engine][project]") {
+    test::TempDir dir;
+    ProjectConfig cfg;
+    cfg.name = "saved";
+    cfg.sources = {dir.write("rtl/top.v", "module top; endmodule\n")};
+    cfg.sourceLibraries = {""};
+    const fs::path file = dir.path() / "p.ocdc.json";
+    CHECK_FALSE(saveProjectFile(cfg, file).has_value());
+    auto loaded = loadProjectFile(file);
+    REQUIRE(loaded.ok());
+    CHECK(loaded.value().name == "saved");
+    CHECK(loaded.value().sources == cfg.sources);
+    CHECK_FALSE(fs::exists(dir.path() / "p.ocdc.json.tmp"));
+
+    auto err = saveProjectFile(cfg, dir.path() / "no_such_dir" / "p.ocdc.json");
+    REQUIRE(err.has_value());
+    CHECK(err->code == "PRJ-WRITE");
+}

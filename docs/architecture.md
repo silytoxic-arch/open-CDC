@@ -772,6 +772,11 @@ public:
 | 计划：VHDL 前端在阶段 8 再决策 | 自研 VHDL-93/2008 前端 `opencdc_vhdl`（解析、语义、展开、降级到同一种 Design IR），不依赖 slang 和 Qt；与 Verilog 共用 `ir::BodyEditor`（折叠、结构哈希、控制信号提取、清理） | 许可证干净；源码位置完整；两种语言的 IR 质量一致 |
 | 混合语言：生成桩模块 | Verilog 中未知的 VHDL 实体保留为"未解析实例"（带参数值和端口实参），由链接器绑定到 VHDL 模块体；VHDL 中的 Verilog 模块通过生成的包装模块请求，迭代到不再出现新的参数组合 | 桩模块需要按参数计算端口宽度，等于在 Verilog 中重写 VHDL 的类型系统；未解析实例加迭代只依赖两侧各自的展开结果 |
 | 宽单元逐位建立依赖锥 | 宽度超过 4096 位的逐位单元（整块存储器的写入逻辑）作为一个整体建锥；大锥的合并用索引 | neorv32 的 64 KB 存储器使 CDC 路径分析从 7.6 s 降到 0.34 s，结果不变 |
+| 厂商原语：要求用户提供仿真库 | 内置可综合的行为模型（Verilog）和 VHDL 组件包，只在设计实例化了原语且源文件没有定义时加入；MMCM/PLL 的模型按实例使用的参数名生成 | 仿真库含大量不可综合代码和加密模型；只需描述 CDC 相关的结构（触发器、同步链、时钟关系） |
+| 寄存器控制信号：原样保留 | 经层次连到无效常量的使能、同步复位去掉；异步复位只有全部为常量无效时才去掉 | `FDRE` 的 `CE=1'b1`、`R=1'b0` 在模型内部是端口，不去掉会把同步链的每一级都当作带使能的捕获寄存器 |
+| MUX 原样保留 | `BodyEditor` 把"两个数据输入在某位上相同"的 MUX 输出位替换为该输入位（生成单元时和结束时各做一次） | 两进程写法中记录的未修改字段要经过每一级 if 的整记录 MUX；不替换会使常量位看起来依赖选择信号（surf FIFO 的 CDC-007 误报） |
+| 时钟进程：只认 if/elsif 链 | 时钟 if 之后的 `if <cond> then ... end if` 是最高优先级的异步复位（VHDL 中后一条赋值生效） | surf 的 `Synchronizer` 用这种写法 |
+| Gray 识别：一个多比特源寄存器 | 还识别"按位拆开的寄存器组"（`xpm_cdc_gray` 每一位一条 generate 链）：同一 generate 的兄弟寄存器合起来证明 Gray 编码 | XPM 宏和很多手写代码都按位生成同步链 |
 
 ## 15. VHDL 前端（阶段 8）
 
@@ -816,3 +821,24 @@ src/frontend/AutoFrontend  按扩展名选择前端；混合工程的链接器
 2. VHDL 展开器把模块体加入同一个 Design。Verilog 中的 VHDL 实例按名字（不区分大小写）或位置绑定端口；输入宽度不一致时按 Verilog 规则补零或截断。
 3. VHDL 中的 Verilog 实例向包装模块请求 `模块 #(参数)`；本轮没有的请求触发下一轮（最多 16 轮），最后一轮的诊断才报告。
 4. 结果只保留从顶层可达的模块体；两种语言都定义的名字给出 `FE-MIXED-DUPLICATE`。
+5. 记录与结构体：VHDL 记录和 SystemVerilog packed struct 都是第一个字段在最高位，整端口直接按位相连。slang 适配层把 packed struct 的字段布局（含嵌套字段，`hdr.len`）记在 `ir::Net::fields` 中；VHDL 对 Verilog 端口的部分关联（`i.hdr.len => x`、`d(3) => y`、`d(0 to 3) => z`）按字段布局和端口的声明范围换算成位偏移，未关联的位为常量 X（输出端口上不产生驱动）。
+
+## 16. 厂商原语与工程编辑（阶段 9）
+
+### 16.1 原语库
+
+```
+src/frontend/primitives/   xilinx_unisim.v、xilinx_xpm.v、intel.v（可综合行为模型）
+                           unisim_vcomponents.vhd、xpm_vcomponents.vhd、altera_mf_components.vhd（VHDL 组件包）
+cmake/EmbedFiles.cmake     构建时把这些文件嵌入为 C++ 字符串（PrimitiveSources.cpp）
+src/frontend/Primitives    PrimitiveLibrary：查找（不区分大小写）、按依赖拼出模型、时钟生成器模型
+```
+
+1. Verilog 工程：slang 报告的未知模块中有原语时，改走混合链接器；链接器把用到的模型写入 `temp/opencdc-primitives-<版本>/`，作为额外的源文件。源文件中同名的模块优先。
+2. VHDL 工程：用到 `unisim`/`xpm`/`altera_mf` 库时，加入对应的组件包；组件的实例按外语言实例处理，由 Verilog 模型提供模块体。
+3. MMCM/PLL：模型按实例实际使用的参数名生成（参数多、取值各异，固定模型无法覆盖），每个 `CLKOUT*` 是由 `CLKIN1` 上升沿驱动的翻转寄存器，于是时钟分析把它识别为 `CLKIN1` 时钟的分频派生时钟：同一 MMCM 的各输出互为同步，与输入时钟的约束关系（`set_clock_groups`）一致。`LOCKED` 是寄存器。模型签名在迭代中收敛（新参数组合触发下一轮）。
+4. `ASYNC_REG` 可以写在实例上（Verilog 属性，VHDL 的 `attribute ... of label : label is`），记在 `ChildInstance::attrs` 中。
+
+### 16.2 工程编辑
+
+`engine::projectToJson` / `saveProjectFile` 写出工程文件（路径相对于工程文件，`/` 分隔；先写临时文件再替换）；与 `parseProjectJson` 往返不变。GUI 的 `ProjectEditor` 对话框只编辑 `ProjectConfig`，保存和重新分析由主窗口负责。`opencdc-gui --edit-test` 是无界面的自测：编辑、保存、重新打开、分析。

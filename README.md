@@ -2,22 +2,23 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 8, VHDL and mixed-language support**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 9, vendor primitives, records across languages and project editing**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–8)
+## What works today (stages 1–9)
 
 | Feature | Status |
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
 | VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM and surf | ✅ |
-| Mixed Verilog/VHDL designs in both directions, with parameters/generics and ports converted across the border | ✅ |
+| Mixed Verilog/VHDL designs in both directions, with parameters/generics and ports converted across the border; VHDL records ↔ SystemVerilog packed structs, and VHDL element associations (`p.f`, `p(i)`, `p(h downto l)`) on Verilog ports | ✅ |
+| Built-in models of vendor primitives, used when the design instantiates them without a definition: Xilinx UNISIM flip-flops/latches/buffers/SRLs/LUTs, XPM CDC macros and `xpm_fifo_async`, MMCM/PLL clock generators (outputs become clocks derived from the input clock), Intel `altera_std_synchronizer`/`dcfifo`; also from VHDL via `unisim.vcomponents`, `xpm.vcomponents`, `altera_mf.altera_mf_components` | ✅ |
 | Module list and elaborated instance hierarchy | ✅ |
 | Frontend diagnostics with file/line, including unsupported or erroneous code | ✅ |
 | CLI `opencdc analyze`, with a JSON result | ✅ |
-| Qt6 GUI: project explorer, design hierarchy, messages, source viewer with jump-to-source, run report | ✅ |
+| Qt6 GUI: project explorer, design hierarchy, messages, source viewer with jump-to-source, run report; new/edit/save-as project (sources and their VHDL library, constraints, waivers, parameters, defines, include directories, options) | ✅ |
 | RTL extraction into a word-level Design IR: registers with clock, async resets, sync reset and enable; latches; combinational cells; memories; instance tree | ✅ |
 | `opencdc analyze --dump-ir`, and a JSON register list | ✅ |
 | SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins) | ✅ |
@@ -151,7 +152,7 @@ Different clock names alone never make two clocks asynchronous.
 
 Input ports take part in CDC analysis only when `set_input_delay -clock <clk>` assigns them a clock domain. Otherwise they are listed as `CDC-NO-DOMAIN`. Asynchronous resets are the exception: an input without a clock domain that drives asynchronous reset pins is asynchronous to every clock, and its release is checked by CDC-006. Declare a reset that is synchronized outside the design with `set_input_delay -clock`.
 
-Paths are relative to the project file. All sources form one compilation unit, in the order listed, as in FPGA vendor tools. `language` is one of `verilog-2001` (default), `verilog-2005` or `systemverilog-2017`. In Verilog modes, SystemVerilog keywords such as `logic` and `bit` are accepted as identifiers.
+Paths are relative to the project file. All sources form one compilation unit, in the order listed, as in FPGA vendor tools. `language` is one of `verilog-2001`, `verilog-2005` or `systemverilog-2017`; without it, a project that has `.sv`/`.svh` sources uses `systemverilog-2017`, otherwise `verilog-2001`. In Verilog modes, SystemVerilog keywords such as `logic` and `bit` are accepted as identifiers.
 
 #### VHDL and mixed designs
 
@@ -166,7 +167,24 @@ Files ending in `.vhd` or `.vhdl` are VHDL (VHDL-2008, which also accepts VHDL-9
 "parameters": {"Width_g": 8, "MODE": "\"FAST\""}
 ```
 
-`parameters` overrides generics (VHDL) or parameters (Verilog) of the top level; values are written in the syntax of the top's language. VHDL and Verilog files can be mixed freely: Verilog can instantiate VHDL entities and VHDL can instantiate Verilog modules (as a component or with `entity work.name`), nested to any depth. Names are matched case-insensitively across the border, and port width differences follow the Verilog rule. Black boxes (for example vendor primitives without a model) are reported as `IR-UNRESOLVED-INSTANCE`.
+`parameters` overrides generics (VHDL) or parameters (Verilog) of the top level; values are written in the syntax of the top's language. VHDL and Verilog files can be mixed freely: Verilog can instantiate VHDL entities and VHDL can instantiate Verilog modules (as a component or with `entity work.name`), nested to any depth. Names are matched case-insensitively across the border, and port width differences follow the Verilog rule. A VHDL record port connects to a SystemVerilog packed struct (first field = most significant bits, as in both languages), and VHDL can associate fields, elements and slices of a Verilog port separately (`i.hdr.len => x`, `d(0 to 3) => y`). Black boxes are reported as `IR-UNRESOLVED-INSTANCE`.
+
+#### Vendor primitives
+
+Designs that instantiate FPGA vendor primitives directly need no simulation libraries: when a primitive is instantiated and the sources don't define it, OpenCDC adds its built-in model (reported once as `FE-PRIMITIVES`). A module of the same name in the sources always wins.
+
+| Library | Primitives |
+|---|---|
+| Xilinx UNISIM | `FDRE`, `FDSE`, `FDCE`, `FDPE` and the older `FD*` forms, `LDCE`/`LDPE`, `BUFG*`, `BUFH*`, `BUFR`, `BUFIO`, `IBUF*`/`OBUF*`/`IOBUF`, `SRL16E`/`SRLC32E`, `LUT1`–`LUT6_2`, `MUXF7/8`, `VCC`/`GND` |
+| Xilinx clocking | `MMCME2/3/4_BASE/ADV`, `PLLE2/3/4_BASE/ADV`: every `CLKOUT*` becomes a clock derived from `CLKIN1`, so its domains are synchronous to each other and follow the input clock's constraints; `LOCKED` has no clock domain (a reset released by it must be synchronized, CDC-006) |
+| Xilinx XPM | `xpm_cdc_single`, `_array_single`, `_gray`, `_handshake`, `_pulse`, `_async_rst`, `_sync_rst`, `xpm_fifo_async` — recognized as the matching synchronizer structures |
+| Intel | `altera_std_synchronizer`, `altera_std_synchronizer_bundle`, `altera_reset_synchronizer`, `dcfifo` |
+
+VHDL code reaches them through `library unisim; use unisim.vcomponents.all;`, `library xpm; use xpm.vcomponents.all;` or `library altera_mf; use altera_mf.altera_mf_components.all;`. `ASYNC_REG` on an instance (Verilog attribute or VHDL `attribute ASYNC_REG of s1 : label is "TRUE"`) marks a synchronizer stage. Other unknown modules remain errors (`FE-UNKNOWN-MODULE`).
+
+#### Editing projects in the GUI
+
+**File → New Project…**, **Edit Project…** (Ctrl+E) and **Save Project As…** open the project settings: sources in compilation order with their VHDL library, constraints, waivers, top parameters/generics, defines, include directories and the analysis options. The project is written back as `*.ocdc.json` with paths relative to the file, and analyzed again.
 
 Examples: `examples/vhdl/` has VHDL versions of all four examples, `examples/mixed/` has mixed versions; both give the same CDC results as the Verilog originals.
 

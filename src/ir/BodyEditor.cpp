@@ -24,9 +24,43 @@ void appendKey(std::string& key, const SigSpec& s) {
 
 } // namespace
 
+SigSpec BodyEditor::passThroughMuxBits(const SigSpec& s) const {
+    // Bits of a multiplexer output whose data inputs agree on that bit (a
+    // record field neither branch changes) are that input bit: the select
+    // does not matter for them. Cells are simplified as they are emitted, so
+    // one level of lookup sees through a whole if/elsif chain.
+    bool any = false;
+    for (const auto& ch : s.chunks())
+        if (!ch.isConst() && ch.width <= 4096)
+            if (const Cell* d = driverOf(ch.net); d && d->kind == CellKind::Mux)
+                any = true;
+    if (!any)
+        return s;
+    SigSpec out;
+    for (const auto& ch : s.chunks()) {
+        const Cell* d = ch.isConst() || ch.width > 4096 ? nullptr : driverOf(ch.net);
+        if (!d || d->kind != CellKind::Mux || d->inputs.size() != 3 || d->inputs[0].width() != d->width ||
+            d->inputs[1].width() != d->width) {
+            out.append(ch);
+            continue;
+        }
+        for (std::uint32_t b = 0; b < ch.width; ++b) {
+            const std::uint32_t off = ch.offset + b;
+            const SigSpec a = d->inputs[0].bit(off);
+            if (a == d->inputs[1].bit(off))
+                out.append(a);
+            else
+                out.append(SigSpec::net(ch.net, 1, off));
+        }
+    }
+    return out;
+}
+
 SigSpec BodyEditor::emit(Cell c) {
     if (c.width == 0)
         return {};
+    for (auto& in : c.inputs)
+        in = passThroughMuxBits(in);
     if (auto simplified = simplifyCell(c))
         return simplified->resized(c.width, false);
     // Structural hashing: an identical cell already exists -> reuse its output.
@@ -81,6 +115,15 @@ void BodyEditor::addLatch(Latch l, bool unintended) {
 }
 
 void BodyEditor::finish(DiagnosticSink& sink, const std::function<void(const std::vector<std::uint32_t>&)>& onRemap) {
+    for (auto& c : body_.connections)
+        c.rhs = passThroughMuxBits(c.rhs);
+    for (auto& r : body_.registers) {
+        r.d = passThroughMuxBits(r.d);
+        if (r.enable)
+            r.enable = passThroughMuxBits(*r.enable);
+    }
+    for (auto& l : body_.latches)
+        l.d = passThroughMuxBits(l.d);
     pruneDeadStorage(sink);
     removeDeadCells(onRemap);
     checkMultipleDrivers(sink);

@@ -172,6 +172,10 @@ struct PackageInfo {
     bool elaborated = false;
     bool inProgress = false;
     bool bodyElaborated = false;
+    bool bodyScopeReady = false;
+    /// Subprogram bodies bound before the package body (called while the
+    /// package declaration was still being elaborated).
+    std::set<const Decl*> earlyBodies;
 };
 
 // ---------------------------------------------------------------------------
@@ -431,6 +435,9 @@ public:
     PackageInfo* findPackage(const std::string& lib, const std::string& name, Loc l);
     void elaboratePackage(PackageInfo& p);
     void elaboratePackageBody(PackageInfo& p);
+    void preparePackageBodyScope(PackageInfo& p);
+    /// Binds only the bodies of subprogram `key` (package declaration in progress).
+    void elaborateEarlyBodies(PackageInfo& p, const std::string& key);
     void applyContext(Scope& scope, const std::vector<ContextItem>& items, const std::string& workLib);
     void declare(Scope& scope, const Decl& d, Ctx& ctx);
     void declareInterface(Scope& scope, const InterfaceDecl& d, Ctx& ctx);

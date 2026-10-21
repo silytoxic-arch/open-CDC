@@ -746,8 +746,12 @@ SVal Elaborator::callSubprogram(Symbol& sym, std::vector<SVal>& args, std::vecto
     if (!sym.body) {
         // body in a package body not yet elaborated
         for (auto& [key, pkg] : packages)
-            if (&pkg->scope == sym.declScope)
-                elaboratePackageBody(*pkg);
+            if (&pkg->scope == sym.declScope) {
+                if (pkg->inProgress)
+                    elaborateEarlyBodies(*pkg, sym.key);
+                else
+                    elaboratePackageBody(*pkg);
+            }
     }
     if (!sym.body) {
         error("VHDL-NO-BODY", "subprogram '" + sym.display + "' has no body", l);

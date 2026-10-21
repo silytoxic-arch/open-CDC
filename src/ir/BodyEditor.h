@@ -34,6 +34,9 @@ public:
     /// Adds a cell without folding or hashing (opaque cells: each is distinct).
     SigSpec addUnique(Cell c);
     /// The cell driving temp net `net`, if any.
+    /// `s` with every bit taken from a multiplexer whose data inputs agree on
+    /// it replaced by that input bit.
+    [[nodiscard]] SigSpec passThroughMuxBits(const SigSpec& s) const;
     [[nodiscard]] const Cell* driverOf(NetId net) const;
 
     /// Moves a synchronous reset (outermost "if (srst) q <= CONST") and a

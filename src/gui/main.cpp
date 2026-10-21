@@ -2,11 +2,15 @@
 //
 //   opencdc-gui [project.ocdc.json]
 //   opencdc-gui --smoke-test <project.ocdc.json>   (headless self-test, used by CTest)
+//   opencdc-gui --edit-test <project.ocdc.json>    (headless project editing self-test)
 
 #include "core/Version.h"
 #include "gui/CdcViews.h"
 #include "gui/ClockView.h"
 #include "gui/MainWindow.h"
+#include "gui/ProjectEditor.h"
+#include "core/PathUtil.h"
+#include "frontend/Frontend.h"
 #include "gui/SchematicView.h"
 #include "gui/SourceViewer.h"
 
@@ -23,6 +27,7 @@
 #include <QComboBox>
 #include <QCommandLineParser>
 #include <QDockWidget>
+#include <QListWidget>
 #include <QTableWidget>
 #include <QTimer>
 #include <QTreeWidget>
@@ -295,6 +300,81 @@ int runSmokeTest(MainWindow& window, const QString& project, const QString& scre
     return QApplication::exec();
 }
 
+/// Project editing: the editor shows the project as loaded and gives it back
+/// unchanged; removing, re-adding and re-labelling a source, adding a
+/// parameter and a constraint, saving under a new name and reopening keeps
+/// every edit; the saved project analyzes like the original.
+int runEditTest(MainWindow& window, const QString& project) {
+    if (!window.openProject(project))
+        return fail("project could not be loaded");
+    const auto orig = *window.project();
+    opencdc::gui::ProjectEditor editor(orig, QString());
+    if (editor.sourceTable()->rowCount() != static_cast<int>(orig.sources.size()) ||
+        editor.constraintList()->count() != static_cast<int>(orig.constraints.size()))
+        return fail("project editor does not show the project");
+    auto same = editor.config();
+    if (same.sources != orig.sources || same.sourceLibraries != orig.sourceLibraries || same.name != orig.name ||
+        same.top != orig.top || same.language != orig.language || same.constraints != orig.constraints ||
+        same.parameters != orig.parameters || same.includeDirs != orig.includeDirs ||
+        same.waivers != orig.waivers || same.defines.size() != orig.defines.size() ||
+        same.options.minSyncStages != orig.options.minSyncStages)
+        return fail("project editor changes a project it did not edit");
+    if (orig.sources.empty())
+        return fail("project has no sources");
+
+    const auto last = static_cast<int>(orig.sources.size()) - 1;
+    const QString lastFile = editor.sourceTable()->item(last, 0)->text();
+    editor.removeSource(last);
+    if (editor.validationError().isEmpty() != (orig.sources.size() > 1))
+        return fail("validation of the source list is wrong");
+    editor.addSources({lastFile, lastFile}); // duplicates are ignored
+    editor.setSourceLibrary(last, QStringLiteral("edit_lib"));
+    editor.setParameter(QStringLiteral("OPENCDC_EDIT_TEST"), QStringLiteral("1"));
+    editor.removeSource(-1);              // no-op
+    editor.moveSource(0, -1);             // no-op
+    if (!orig.constraints.empty())
+        editor.addConstraints({QString::fromStdString(opencdc::toUtf8(orig.constraints.front()))}); // duplicate
+    auto edited = editor.config();
+    if (edited.sources != orig.sources || edited.sourceLibraries.back() != "edit_lib" ||
+        edited.constraints != orig.constraints || edited.parameters.size() != orig.parameters.size() + 1)
+        return fail("edits are not reflected in the configuration");
+
+    // Keep the library only if it does not matter (Verilog file) for the analysis check below.
+    if (opencdc::frontend::isVhdlFile(edited.sources.back()))
+        edited.sourceLibraries.back() = orig.sourceLibraries.back();
+    edited.parameters = orig.parameters;
+    const QTemporaryDir dir;
+    const QString saved = dir.filePath(QStringLiteral("edited.ocdc.json"));
+    window.setProject(edited);
+    if (!dir.isValid() || !window.saveProjectAs(saved))
+        return fail("project could not be saved");
+    if (!window.openProject(saved))
+        return fail("saved project could not be reopened");
+    const auto& re = *window.project();
+    if (re.sources != edited.sources || re.sourceLibraries != edited.sourceLibraries ||
+        re.constraints != edited.constraints || re.name != edited.name || re.language != edited.language)
+        return fail("reopened project differs from the saved one");
+    if (window.saveProjectAs(dir.filePath(QStringLiteral("missing/dir/x.ocdc.json"))))
+        return fail("saving into a missing directory did not fail");
+
+    int exitCode = -1;
+    QObject::connect(window.controller(), &opencdc::gui::AnalysisController::finished, &window,
+                     [&](const opencdc::gui::AnalysisController::ResultPtr& result) {
+                         exitCode = result && result->cdc ? 0 : fail("saved project does not analyze");
+                         if (exitCode == 0)
+                             std::printf("GUI edit test passed: %zu source(s), %zu constraint file(s), "
+                                         "%zu CDC path(s) after save and reopen\n",
+                                         re.sources.size(), re.constraints.size(), result->cdc->paths.size());
+                         QApplication::exit(exitCode);
+                     });
+    QTimer::singleShot(0, &window, [&window] { window.runAnalysis(); });
+    QTimer::singleShot(600000, &window, [] {
+        std::fprintf(stderr, "GUI edit test FAILED: timeout\n");
+        QApplication::exit(1);
+    });
+    return QApplication::exec();
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -311,11 +391,16 @@ int main(int argc, char* argv[]) {
     parser.addOption(smokeOption);
     QCommandLineOption screenshotOption("screenshot", "With --smoke-test: save a window screenshot to <png>.", "png");
     parser.addOption(screenshotOption);
+    QCommandLineOption editOption("edit-test", "Run a headless project editing self-test on <project> and exit.",
+                                  "project");
+    parser.addOption(editOption);
     parser.addPositionalArgument("project", "Project file to open (*.ocdc.json).", "[project]");
     parser.process(app);
 
     MainWindow window;
 
+    if (parser.isSet(editOption))
+        return runEditTest(window, parser.value(editOption));
     if (parser.isSet(smokeOption))
         return runSmokeTest(window, parser.value(smokeOption), parser.value(screenshotOption));
 

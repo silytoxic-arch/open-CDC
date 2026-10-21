@@ -304,3 +304,25 @@ TEST_CASE("Primitives: MMCM from VHDL through unisim", "[primitives][vhdl]") {
     REQUIRE(p);
     CHECK(run->r->cdc->paths.size() == 1);
 }
+
+TEST_CASE("Primitives: MMCM LOCKED is asynchronous to every clock", "[primitives]") {
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input d, output reg q, output reg q2);\n"
+                       "  wire c0u, c0, locked;\n"
+                       "  MMCME2_BASE m (.CLKIN1(clk_a), .CLKOUT0(c0u), .LOCKED(locked), .RST(1'b0), .PWRDWN(1'b0));\n"
+                       "  BUFG b (.I(c0u), .O(c0));\n"
+                       "  reg r1, r2;\n" // reset synchronizer released by LOCKED
+                       "  always @(posedge c0 or negedge locked) if (!locked) {r2, r1} <= 2'b00; else {r2, r1} <= {r1, 1'b1};\n"
+                       "  always @(posedge c0 or negedge r2) if (!r2) q <= 1'b0; else q <= d;\n"
+                       "  always @(posedge c0 or negedge locked) if (!locked) q2 <= 1'b0; else q2 <= d;\n" // raw
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    const auto* sync = run->path("top.m.LOCKED", "top.r1");
+    REQUIRE(sync);
+    CHECK(sync->syncType == SyncType::ResetSync);
+    const auto* raw = run->path("top.m.LOCKED", "top.q2");
+    REQUIRE(raw);
+    CHECK(raw->syncType == SyncType::None);
+    CHECK(run->hits("CDC-006") == 1);
+}

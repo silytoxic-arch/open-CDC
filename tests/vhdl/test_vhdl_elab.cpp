@@ -640,3 +640,88 @@ TEST_CASE("VHDL examples give the same CDC results as the Verilog examples", "[v
         CHECK(a == b);
     }
 }
+
+// ===========================================================================
+// Stage 9 fixes found on real code (surf)
+// ===========================================================================
+
+TEST_CASE("VHDL: reset 'if' after the clocked 'if' is an asynchronous reset", "[vhdl][elab]") {
+    // surf Synchronizer: the later statement wins, so rst overrides the clock
+    auto r = elaborate(lib("entity t is port (clk, rst, d : in std_logic; q : out std_logic_vector(1 downto 0)); end;\n"
+                           "architecture rtl of t is signal s : std_logic_vector(1 downto 0) := \"11\"; begin\n"
+                           "  process (clk, rst) begin\n"
+                           "    if rising_edge(clk) then s <= s(0) & d; end if;\n"
+                           "    if rst = '0' then s <= \"11\"; end if;\n"
+                           "  end process;\n"
+                           "  q <= s;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-CLOCKED-TAIL") == 0);
+    CHECK(r.has("arst(!rst -> 2'b11)"));
+}
+
+TEST_CASE("VHDL negative: other statements after the clocked 'if' are reported", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (clk, d : in std_logic; q : out std_logic); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk) begin\n"
+                           "    if rising_edge(clk) then q <= d; end if;\n"
+                           "    q <= '0';\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.count("VHDL-CLOCKED-TAIL") == 1);
+    CHECK(r.has("reg q <= d @(posedge clk)\n"));
+}
+
+TEST_CASE("VHDL: package constant calls a function whose body is in the package body", "[vhdl][elab]") {
+    // surf AxiLitePkg: accepted by synthesis tools; only that body is bound early
+    auto r = elaborate(lib("package p is\n"
+                           "  type r_t is record a : std_logic; b : std_logic_vector(1 downto 0); end record;\n"
+                           "  function mk (b : std_logic_vector(1 downto 0) := \"00\") return r_t;\n"
+                           "  constant C1 : r_t := mk(b => \"01\");\n"
+                           "  function mk2 return r_t;\n"
+                           "  constant C2 : r_t := mk2;\n"
+                           "end package;\n"
+                           "package body p is\n"
+                           "  function mk (b : std_logic_vector(1 downto 0) := \"00\") return r_t is\n"
+                           "    variable r : r_t; begin r.a := '1'; r.b := b; return r; end function;\n"
+                           "  function mk2 return r_t is begin return mk(\"10\"); end function;\n"
+                           "end package body;\n"
+                           "library ieee; use ieee.std_logic_1164.all; use work.p.all;\n"
+                           "entity t is port (q1, q2 : out std_logic_vector(1 downto 0)); end;\n"
+                           "architecture a of t is begin q1 <= C1.b; q2 <= C2.b; end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.has("q1 = 2'b01"));
+    CHECK(r.has("q2 = 2'b10"));
+}
+
+TEST_CASE("VHDL: record fields untouched by the branches bypass the multiplexers", "[vhdl][elab]") {
+    // two-process style: 'rdy' is set to '1' before the if chain; it must stay
+    // a constant-data flop (reset bridge), not logic selected by 'en'
+    auto r = elaborate(lib("entity t is port (clk, rst, en : in std_logic; rdy : out std_logic;\n"
+                           "  c : out unsigned(3 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type reg_t is record rdy : std_logic; cnt : unsigned(3 downto 0); end record;\n"
+                           "  signal r, rin : reg_t := ('0', (others => '0'));\n"
+                           "begin\n"
+                           "  comb : process (r, en) variable v : reg_t; begin\n"
+                           "    v := r; v.rdy := '1';\n"
+                           "    if en = '1' then v.cnt := r.cnt + 1; end if;\n"
+                           "    if r.cnt = 15 then v.cnt := (others => '0'); end if;\n"
+                           "    rin <= v;\n"
+                           "  end process;\n"
+                           "  seq : process (clk) begin if rising_edge(clk) then\n"
+                           "    if rst = '1' then r <= ('0', (others => '0')); else r <= rin; end if;\n"
+                           "  end if; end process;\n"
+                           "  rdy <= r.rdy; c <= r.cnt;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.has("rin.rdy = 1'b1"));
+}

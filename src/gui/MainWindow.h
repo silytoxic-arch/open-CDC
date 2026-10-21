@@ -33,6 +33,11 @@ public:
 
     /// Loads a project file; shows errors in the message view. Returns success.
     bool openProject(const QString& path);
+    /// Replaces the current project by an edited configuration (clears results).
+    void setProject(engine::ProjectConfig config);
+    /// Writes the current project to `path` and makes it the project file.
+    bool saveProjectAs(const QString& path);
+    [[nodiscard]] const std::optional<engine::ProjectConfig>& project() const { return project_; }
     void runAnalysis();
 
     // Accessors used by the headless self-test (--smoke-test).
@@ -58,6 +63,9 @@ public:
 
 private slots:
     void onOpenProject();
+    void onNewProject();
+    void onEditProject();
+    void onSaveProjectAs();
     void onAnalysisStarted();
     void onAnalysisProgress(const QString& stage, double fraction);
     void onAnalysisFinished(opencdc::gui::AnalysisController::ResultPtr result);
@@ -94,6 +102,8 @@ private:
     QMenu* viewMenu_ = nullptr;
 
     QAction* openAction_ = nullptr;
+    QAction* editProjectAction_ = nullptr;
+    QAction* saveProjectAsAction_ = nullptr;
     QAction* runAction_ = nullptr;
     QAction* cancelAction_ = nullptr;
     QAction* exportHtmlAction_ = nullptr;

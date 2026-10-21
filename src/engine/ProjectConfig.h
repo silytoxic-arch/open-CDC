@@ -1,10 +1,12 @@
 #pragma once
 
+#include "core/Diagnostic.h"
 #include "core/Result.h"
 #include "frontend/Frontend.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,5 +78,14 @@ inline constexpr int kProjectFormatVersion = 1;
 /// Parses project JSON text; `baseDir` resolves relative paths.
 [[nodiscard]] Result<ProjectConfig> parseProjectJson(std::string_view jsonText,
                                                      const std::filesystem::path& baseDir);
+
+/// Project JSON text (format version 1) for `cfg`. Paths are written relative
+/// to `baseDir` when they can be, with '/' separators; parseProjectJson(text,
+/// baseDir) gives back the same configuration.
+[[nodiscard]] std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path& baseDir);
+
+/// Writes `cfg` to `file` (relative paths against the file's directory). The
+/// file is replaced only once the new text is completely written. Error code PRJ-WRITE.
+[[nodiscard]] std::optional<Diagnostic> saveProjectFile(const ProjectConfig& cfg, const std::filesystem::path& file);
 
 } // namespace opencdc::engine

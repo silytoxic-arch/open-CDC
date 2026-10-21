@@ -557,6 +557,22 @@ void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
     }
     std::string key = ci.definition;
     std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (key == "opencdc_async_source") {
+        // Built-in black box of the primitive models: its single output is a
+        // signal without a clock domain (e.g. the LOCKED output of an MMCM).
+        const auto conns = u.getPortConnections();
+        PortBinding pb;
+        pb.port = "O";
+        pb.dir = PortDir::Out;
+        if (!conns.empty() && conns[0] && conns[0]->kind == sast::AssertionExprKind::Simple) {
+            const auto& e = conns[0]->as<sast::SimpleAssertionExpr>().expr;
+            if (e.kind != sast::ExpressionKind::EmptyArgument && !e.bad())
+                pb.actual = lower(e);
+        }
+        ci.ports.push_back(std::move(pb));
+        body_.children.push_back(std::move(ci));
+        return;
+    }
     if (owner_.foreignDefinitions().contains(key)) { // VHDL names are case-insensitive
         // parameter values: bound again from the syntax (slang binds them
         // against an unknown destination type, which fails for operators)

@@ -150,9 +150,8 @@ std::string PrimitiveLibrary::generatorModel(const std::string& name, const std:
             t += "    assign " + n + " = " + n + "_q;\n";
         }
         else if (n == "LOCKED") {
-            t += "    reg locked_q = 1'b0;\n";
-            t += "    always @(posedge " + g.clockIn + ") locked_q <= 1'b1;\n";
-            t += "    assign LOCKED = locked_q;\n";
+            // asynchronous to every clock, like a real lock detector
+            t += "    opencdc_async_source u_locked (LOCKED);\n";
         }
         else {
             t += "    assign " + n + " = " + std::to_string(w) + "'d0;\n";

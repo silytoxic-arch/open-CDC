@@ -11,6 +11,8 @@ qt_add_executable(opencdc-gui
     ClockView.h
     MainWindow.cpp
     MainWindow.h
+    ProjectEditor.cpp
+    ProjectEditor.h
     SchematicView.cpp
     SchematicView.h
     SourceViewer.cpp

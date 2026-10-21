@@ -6,8 +6,9 @@
 # 1. Parses every .vhd/.vhdl file of five projects (~1900 files); only the
 #    files listed in REJECT (documentation snippets, templates, VHDL-2019)
 #    may fail, and they must fail.
-# 2. Elaborates and analyzes the open-logic clock-crossing components and a
-#    fully featured neorv32 SoC; the CDC summaries must match.
+# 2. Elaborates and analyzes the open-logic clock-crossing components, a
+#    fully featured neorv32 SoC and surf's Xilinx clock manager (MMCM/PLL
+#    primitive models) and async FIFO; the CDC summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -87,6 +88,41 @@ json.dump({"format": "opencdc-project", "version": 1, "name": "neorv32", "top": 
            "sources": [{"file": f, "library": "neorv32"} for f in nfiles],
            "parameters": params, "constraints": ["neo.sdc"]},
           open(os.path.join(work, "neorv32.ocdc.json"), "w"), indent=1)
+# surf: Xilinx clock manager (MMCM/PLL primitives through unisim) and the inferred async FIFO
+surf = ["base/general/rtl/StdRtlPkg.vhd", "base/general/rtl/TextUtilPkg.vhd", "axi/axi-lite/rtl/AxiLitePkg.vhd",
+        "xilinx/7Series/general/rtl/ClockManager7Pkg.vhd", "base/general/rtl/RstPipeline.vhd",
+        "base/general/rtl/RegisterVector.vhd", "base/sync/rtl/Synchronizer.vhd", "base/sync/rtl/SynchronizerVector.vhd",
+        "base/sync/rtl/SynchronizerEdge.vhd", "base/sync/rtl/SynchronizerOneShot.vhd", "base/sync/rtl/RstSync.vhd",
+        "base/ram/inferred/DualPortRam.vhd", "base/ram/inferred/LutRam.vhd",
+        "base/ram/inferred/SimpleDualPortRamInferred.vhd", "base/ram/inferred/TrueDualPortRamInferred.vhd",
+        "base/ram/xilinx/SimpleDualPortRamXpm.vhd", "base/ram/xilinx/TrueDualPortRamXpm.vhd",
+        "base/ram/dummy/SimpleDualPortRamAlteraMfDummy.vhd", "base/ram/dummy/TrueDualPortRamXpmAlteraMfDummy.vhd",
+        "base/ram/rtl/SimpleDualPortRam.vhd", "base/ram/rtl/TrueDualPortRam.vhd", "base/fifo/rtl/inferred/FifoWrFsm.vhd",
+        "base/fifo/rtl/inferred/FifoRdFsm.vhd", "base/fifo/rtl/inferred/FifoAsync.vhd",
+        "base/fifo/rtl/inferred/FifoSync.vhd", "base/fifo/rtl/FifoOutputPipeline.vhd", "base/fifo/rtl/xilinx/FifoXpm.vhd",
+        "base/fifo/rtl/dummy/FifoAlteraMfDummy.vhd", "base/fifo/rtl/Fifo.vhd", "axi/axi-lite/rtl/AxiLiteAsync.vhd",
+        "axi/bridge/rtl/AxiLiteToDrp.vhd", "xilinx/general/tb/MmcmEmulation.vhd",
+        "xilinx/7Series/general/rtl/ClockManager7.vhd"]
+open(os.path.join(work, "cm7.sdc"), "w").write(
+    "create_clock -name clkIn -period 8 [get_ports clkIn]\n"
+    "create_clock -name axilClk -period 6.4 [get_ports axilClk]\n"
+    "set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks clkIn] -group [get_clocks axilClk]\n")
+open(os.path.join(work, "fifo.sdc"), "w").write(
+    "create_clock -name wr -period 8 [get_ports wr_clk]\n"
+    "create_clock -name rd -period 6 [get_ports rd_clk]\n"
+    "set_clock_groups -asynchronous -group [get_clocks wr] -group [get_clocks rd]\n")
+for name, top, gen, sdc in [
+        ("surf_cm7_mmcm", "ClockManager7", {"TYPE_G": '"MMCM"', "NUM_CLOCKS_G": 3, "CLKIN_PERIOD_G": "8.0",
+                                            "CLKFBOUT_MULT_F_G": "8.0", "CLKOUT0_DIVIDE_F_G": "4.0",
+                                            "CLKOUT1_DIVIDE_G": 8, "CLKOUT2_DIVIDE_G": 16}, "cm7.sdc"),
+        ("surf_cm7_pll", "ClockManager7", {"TYPE_G": '"PLL"', "NUM_CLOCKS_G": 3, "CLKFBOUT_MULT_G": 8,
+                                           "CLKOUT0_DIVIDE_G": 4, "CLKOUT1_DIVIDE_G": 8, "CLKOUT2_DIVIDE_G": 16},
+         "cm7.sdc"),
+        ("surf_fifo_async", "FifoAsync", {"DATA_WIDTH_G": 8, "ADDR_WIDTH_G": 4}, "fifo.sdc")]:
+    json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": top,
+               "sources": [{"file": os.path.join(work, "surf", f), "library": "surf"} for f in surf],
+               "parameters": gen, "constraints": [sdc]},
+              open(os.path.join(work, name + ".ocdc.json"), "w"), indent=1)
 EOF
 
 check() { # project expected-regex
@@ -104,5 +140,8 @@ check olo_base_cc_simple.ocdc.json    "Summary : 0 error.*CDC     : 6 crossing p
 check olo_base_cc_status.ocdc.json    "handshake x1.*Summary : 0 error.*CDC     : 11 crossing path\(s\), 11 synchronized"
 check olo_base_cc_handshake.ocdc.json "handshake x1.*Summary : 0 error.*CDC     : 11 crossing path\(s\), 11 synchronized"
 check olo_base_fifo_async.ocdc.json   "0 latches.*gray x2.*Summary : 0 error.*CDC     : 7 crossing path\(s\), 7 synchronized"
+check surf_cm7_mmcm.ocdc.json         "Clocks  : 5.*reset-sync x3.*MMCME2_ADV.*Summary : 0 error.*CDC     : 3 crossing path\(s\), 3 synchronized"
+check surf_cm7_pll.ocdc.json          "Clocks  : 5.*reset-sync x3.*PLLE2_ADV.*Summary : 0 error.*CDC     : 3 crossing path\(s\), 3 synchronized"
+check surf_fifo_async.ocdc.json       "Summary : 0 error.*CDC     : 7 crossing path\(s\).*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 0 path\(s\) at potential risk"
 check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodies, 7[0-9][0-9] registers.*0 latches.*Summary : 0 error"
 exit $fail
