@@ -54,6 +54,23 @@ int countModules(QTreeWidget* tree) {
     return 0;
 }
 
+/// Items that show a clock (clock role set), at any depth.
+int countClockItems(QTreeWidget* tree) {
+    int count = 0;
+    std::vector<QTreeWidgetItem*> work;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+        work.push_back(tree->topLevelItem(i));
+    while (!work.empty()) {
+        auto* it = work.back();
+        work.pop_back();
+        if (it->data(0, Qt::UserRole + 2).isValid())
+            ++count;
+        for (int c = 0; c < it->childCount(); ++c)
+            work.push_back(it->child(c));
+    }
+    return count;
+}
+
 /// The paths checked one by one: all of them for small designs, an evenly
 /// spread sample of large ones (each check redraws the whole UI state).
 std::vector<const opencdc::cdc::CdcPath*> samplePaths(const opencdc::engine::AnalysisResult& result,
@@ -220,6 +237,10 @@ int runSmokeTest(MainWindow& window, const QString& project, const QString& scre
                                   window.clockView()->matrix()->rowCount() !=
                                       static_cast<int>(result->clocks->clocks.size())) {
                              exitCode = fail("clock relation matrix does not match the clock model");
+                         }
+                         else if (result->clocks && countClockItems(window.clockView()->tree()) !=
+                                                        static_cast<int>(result->clocks->clocks.size())) {
+                             exitCode = fail("clock tree does not show every clock exactly once");
                          }
                          else if (result->cdc && window.pathView()->rowCount() !=
                                                      static_cast<int>(result->cdc->paths.size())) {

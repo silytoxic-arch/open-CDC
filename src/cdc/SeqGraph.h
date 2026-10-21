@@ -112,6 +112,17 @@ public:
         return regLocal_.at(globalReg);
     }
 
+    /// Bit `index` of `sig` in `inst` when it is a constant 0/1 through the
+    /// hierarchy and simple logic (not, and, or, reductions, logic ops, mux).
+    [[nodiscard]] std::optional<ir::Logic> constantBit(ir::InstanceId inst, const ir::SigSpec& sig,
+                                                       std::uint32_t index, int depth = 0) const;
+
+    /// The register's enable is constant 0: it keeps its initial value and is
+    /// no source of anything (e.g. the write side of a read-only RAM port).
+    [[nodiscard]] bool neverLoads(std::size_t globalReg) const {
+        return globalReg < neverLoads_.size() && neverLoads_[globalReg];
+    }
+
 private:
     struct CellKey {
         std::uint32_t inst;
@@ -170,6 +181,7 @@ private:
     std::vector<BitInput> bits_;
     std::vector<PinRange> pins_;  ///< per global register
     std::vector<std::pair<ir::InstanceId, std::size_t>> regLocal_;
+    std::vector<bool> neverLoads_;
     std::size_t combLoops_ = 0;
     std::vector<std::string> loopSamples_; ///< a few loop cells for the diagnostic
 };

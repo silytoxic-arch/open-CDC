@@ -87,6 +87,7 @@ SeqGraph::SeqGraph(const graph::DesignView& view, DiagnosticSink& sink) : view_(
 
     // Register input pins.
     pins_.resize(view.registerCount());
+    neverLoads_.assign(view.registerCount(), false);
     for (std::size_t g = 0; g < regLocal_.size(); ++g) {
         const auto [inst, r] = regLocal_[g];
         const auto& reg = view.bodyOf(inst).registers[r];
@@ -103,15 +104,16 @@ SeqGraph::SeqGraph(const graph::DesignView& view, DiagnosticSink& sink) : view_(
             add(reg.d, i);
         // Controls tied to their inactive level through the hierarchy (a
         // primitive FDRE with CE = 1 and R = 0) are no controls at all.
-        auto constantAt = [&](const SigSpec& sig, Logic level) {
-            auto b = view.bitOf(inst, sig, 0);
-            if (!b)
-                return false;
-            const auto drv = view.driver(*b);
-            return drv.kind == DriverKind::Constant && drv.constant == level;
-        };
+        auto constantAt = [&](const SigSpec& sig, Logic level) { return constantBit(inst, sig, 0) == level; };
         pr.en = static_cast<std::uint32_t>(bits_.size());
-        if (reg.enable && !constantAt(*reg.enable, Logic::L1)) {
+        if (reg.enable && constantAt(*reg.enable, Logic::L0)) {
+            // never loads (a block RAM port whose write enable is tied off):
+            // it keeps its initial value, its data inputs are no sources
+            for (std::uint32_t i = 0; i < pr.dataLen; ++i)
+                bits_[pr.data + i] = BitInput{};
+            neverLoads_[g] = true;
+        }
+        else if (reg.enable && !constantAt(*reg.enable, Logic::L1)) {
             pr.enLen = 1;
             add(*reg.enable, 0);
         }
@@ -144,6 +146,114 @@ SeqGraph::SeqGraph(const graph::DesignView& view, DiagnosticSink& sink) : view_(
                       {}, {}});
     }
     memo_.clear(); // only needed while building
+}
+
+std::optional<Logic> SeqGraph::constantBit(InstanceId inst, const SigSpec& sig, std::uint32_t index,
+                                           int depth) const {
+    // the value of a bit that is constant through the hierarchy and through
+    // simple logic (FDRE CE = 1'b1; RAMB WEA = 4'b0 into ENARDEN && |WEA)
+    if (index >= sig.width())
+        return std::nullopt;
+    auto b = view_.bitOf(inst, sig, index);
+    if (!b) {
+        const Logic c = graph::DesignView::constBit(sig, index);
+        return c == Logic::L0 || c == Logic::L1 ? std::optional(c) : std::nullopt;
+    }
+    const auto drv = view_.driver(*b);
+    if (drv.kind == DriverKind::Constant)
+        return drv.constant == Logic::L0 || drv.constant == Logic::L1 ? std::optional(drv.constant) : std::nullopt;
+    if (drv.kind != DriverKind::Cell || depth > 8)
+        return std::nullopt;
+    const auto& c = view_.bodyOf(drv.bit.inst).cells[drv.index];
+    const auto cinst = drv.bit.inst;
+    auto in = [&](std::size_t k, std::uint32_t bit) {
+        return k < c.inputs.size() ? constantBit(cinst, c.inputs[k], bit, depth + 1) : std::nullopt;
+    };
+    auto all = [&](std::size_t k, Logic v) { // every bit of input k is v
+        if (k >= c.inputs.size())
+            return false;
+        for (std::uint32_t i = 0; i < c.inputs[k].width(); ++i)
+            if (in(k, i) != v)
+                return false;
+        return true;
+    };
+    auto any = [&](std::size_t k, Logic v) {
+        if (k >= c.inputs.size())
+            return false;
+        for (std::uint32_t i = 0; i < c.inputs[k].width(); ++i)
+            if (in(k, i) == v)
+                return true;
+        return false;
+    };
+    const std::uint32_t ob = drv.bit.bit; // bit of the cell output
+    using L = Logic;
+    switch (c.kind) {
+        case CellKind::Not: {
+            auto v = in(0, ob);
+            return v ? std::optional(*v == L::L0 ? L::L1 : L::L0) : std::nullopt;
+        }
+        case CellKind::And: {
+            auto a = in(0, ob), bb = in(1, ob);
+            if (a == L::L0 || bb == L::L0)
+                return L::L0;
+            if (a == L::L1 && bb == L::L1)
+                return L::L1;
+            return std::nullopt;
+        }
+        case CellKind::Or: {
+            auto a = in(0, ob), bb = in(1, ob);
+            if (a == L::L1 || bb == L::L1)
+                return L::L1;
+            if (a == L::L0 && bb == L::L0)
+                return L::L0;
+            return std::nullopt;
+        }
+        case CellKind::ReduceOr:
+        case CellKind::LogicNot:
+            if (ob != 0)
+                return L::L0;
+            if (any(0, L::L1))
+                return c.kind == CellKind::ReduceOr ? L::L1 : L::L0;
+            if (all(0, L::L0))
+                return c.kind == CellKind::ReduceOr ? L::L0 : L::L1;
+            return std::nullopt;
+        case CellKind::ReduceAnd:
+            if (ob != 0)
+                return L::L0;
+            if (any(0, L::L0))
+                return L::L0;
+            if (all(0, L::L1))
+                return L::L1;
+            return std::nullopt;
+        case CellKind::LogicAnd:
+        case CellKind::LogicOr: {
+            if (ob != 0)
+                return L::L0;
+            const bool a1 = any(0, L::L1), b1 = any(1, L::L1);
+            const bool a0 = all(0, L::L0), b0 = all(1, L::L0);
+            if (c.kind == CellKind::LogicAnd) {
+                if (a0 || b0)
+                    return L::L0;
+                if (a1 && b1)
+                    return L::L1;
+            }
+            else {
+                if (a1 || b1)
+                    return L::L1;
+                if (a0 && b0)
+                    return L::L0;
+            }
+            return std::nullopt;
+        }
+        case CellKind::Mux: {
+            auto sel = in(2, 0);
+            if (c.inputs.size() == 3 && c.inputs[2].width() == 1 && sel)
+                return in(*sel == L::L1 ? 1 : 0, ob);
+            auto a = in(0, ob), bb = in(1, ob);
+            return a && a == bb ? a : std::nullopt;
+        }
+        default: return std::nullopt;
+    }
 }
 
 std::span<const BitInput> SeqGraph::pinBits(std::size_t globalReg, Pin pin) const {

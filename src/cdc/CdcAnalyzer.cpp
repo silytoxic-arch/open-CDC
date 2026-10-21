@@ -189,8 +189,9 @@ private:
                 auto [it, inserted] = relevantCache.try_emplace(node, false);
                 if (inserted) {
                     const auto& srcDomain = st_.domain[node];
-                    it->second = dstDomain.empty() || srcDomain.empty() ||
-                                 crossingBetween(srcDomain, dstDomain).crossing;
+                    it->second = !(st_.isRegister(node) && st_.sg.neverLoads(node)) &&
+                                 (dstDomain.empty() || srcDomain.empty() ||
+                                  crossingBetween(srcDomain, dstDomain).crossing);
                 }
                 return it->second;
             };

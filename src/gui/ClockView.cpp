@@ -17,6 +17,7 @@ namespace {
 
 constexpr int kFileRole = Qt::UserRole;
 constexpr int kLineRole = Qt::UserRole + 1;
+constexpr int kClockRole = Qt::UserRole + 2; ///< index of the clock an item shows
 constexpr std::size_t kMaxRegistersPerClock = 500;
 
 QString qs(const std::string& s) {
@@ -62,7 +63,8 @@ ClockView::ClockView(QWidget* parent)
     layout->addWidget(summary_);
 
     auto* split = new QSplitter(Qt::Vertical, this);
-    tree_->setHeaderLabels({tr("Clock / register"), tr("Kind"), tr("Source"), tr("Period"), tr("Registers")});
+    tree_->setHeaderLabels(
+        {tr("Clock / register"), tr("Kind"), tr("Source"), tr("Period"), tr("Frequency"), tr("Registers")});
     tree_->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     split->addWidget(tree_);
     matrix_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -105,13 +107,16 @@ void ClockView::setResult(const engine::AnalysisResult& result) {
         item->setText(0, qs(c.name));
         item->setText(1, qs(std::string(clock::toString(c.kind))));
         item->setText(2, qs(c.sourceName));
-        item->setText(3, c.periodNs ? QStringLiteral("%1 ns").arg(*c.periodNs) : QStringLiteral("-"));
+        const bool known = c.periodNs && *c.periodNs > 0;
+        item->setText(3, known ? QStringLiteral("%1 ns").arg(*c.periodNs) : QStringLiteral("-"));
+        item->setText(4, known ? QStringLiteral("%1 MHz").arg(1000.0 / *c.periodNs, 0, 'g', 4) : QStringLiteral("-"));
+        item->setData(0, kClockRole, static_cast<int>(i));
         QString regs = QString::number(c.registers());
         if (c.negedgeRegisters)
             regs += tr(" (%1 negedge)").arg(c.negedgeRegisters);
         if (c.gatedRegisters)
             regs += tr(", %1 gated").arg(c.gatedRegisters);
-        item->setText(4, regs);
+        item->setText(5, regs);
         QString tip = tr("%1 clock").arg(qs(std::string(clock::toString(c.kind))));
         if (c.master.valid())
             tip += tr(", derived from '%1'").arg(qs(cm.clock(c.master).name));
@@ -161,7 +166,28 @@ void ClockView::setResult(const engine::AnalysisResult& result) {
     if (unresolvedCount == 0)
         delete unresolved;
     else
-        unresolved->setText(4, QString::number(unresolvedCount));
+        unresolved->setText(5, QString::number(unresolvedCount));
+
+    // Derived clocks (generated, dividers, MMCM/PLL outputs) under their master.
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto m = cm.clocks[i].master;
+        if (!m.valid() || m.index() == i)
+            continue;
+        bool cycle = false; // a master chain that comes back to this clock
+        auto a = m;
+        for (std::size_t step = 0; a.valid() && step <= n && !cycle; ++step) {
+            cycle = a.index() == i;
+            a = cm.clocks[a.index()].master;
+        }
+        if (cycle)
+            continue;
+        const int top = tree_->indexOfTopLevelItem(clockItems[i]);
+        if (top < 0)
+            continue;
+        tree_->takeTopLevelItem(top);
+        clockItems[m.index()]->insertChild(0, clockItems[i]);
+        clockItems[m.index()]->setExpanded(true);
+    }
 
     // Relation matrix.
     matrix_->setRowCount(static_cast<int>(n));

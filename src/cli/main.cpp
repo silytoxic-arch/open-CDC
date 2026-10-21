@@ -125,8 +125,11 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
                 os << " source=" << c.sourceName;
             if (c.master.valid())
                 os << " master=" << cm.clock(c.master).name;
-            if (c.periodNs)
-                os << " period=" << *c.periodNs << "ns";
+            if (c.periodNs && *c.periodNs > 0) {
+                char mhz[32];
+                std::snprintf(mhz, sizeof(mhz), "%.4g", 1000.0 / *c.periodNs);
+                os << " period=" << *c.periodNs << "ns (" << mhz << " MHz)";
+            }
             os << " registers=" << c.registers();
             if (c.negedgeRegisters)
                 os << " (" << c.negedgeRegisters << " negedge)";

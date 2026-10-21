@@ -1,0 +1,8 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "primitives",
+  "top": "top",
+  "sources": ["top.v"],
+  "constraints": ["clocks.sdc"]
+}

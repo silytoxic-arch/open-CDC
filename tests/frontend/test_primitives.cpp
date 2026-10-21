@@ -482,6 +482,7 @@ TEST_CASE("Primitives: block RAM, DDR and delay primitives", "[primitives]") {
     CHECK(run->count("FE-PRIMITIVE-PORT") == 2); // CASDINA, CASDOUTPA
     CHECK(run->count("FE-SLANG-ParameterDoesNotExist") == 0);
     CHECK(crosses(*run, "top.bram.mem_b", "top.bram.da")); // written on port B (clk_a), read on port A (clk_b)
+    CHECK_FALSE(crosses(*run, "top.bram.mem_a", "top.bram.db")); // WEA = 0: port A never writes
     CHECK(crosses(*run, "top.bram2.mem_b", "top.bram2.da"));
     CHECK(crosses(*run, "top.iddr.", "top.oddr.")); // clk_a DDR capture -> clk_b output register
     CHECK(run->path("top.ictl.RDY", "top.r") != nullptr); // RDY releases a clk_b reset unsynchronized
@@ -617,4 +618,22 @@ TEST_CASE("Primitives: Intel altera_syncram is altsyncram", "[primitives]") {
     REQUIRE(run->r->cdc);
     dumpPaths(*run);
     CHECK(crosses(*run, "top.m.mem_a", "top.m.qb"));
+}
+
+TEST_CASE("Registers whose enable is constant 0 through the hierarchy are no sources", "[primitives]") {
+    auto run = analyze("t.v",
+                       "module holder(input clk, input we, input [1:0] wm, input d, output reg q);\n"
+                       "  always @(posedge clk) if (we && |wm) q <= d;\n"
+                       "endmodule\n"
+                       "module top(input clk_a, input clk_b, input d, input e, output reg o1, output reg o2);\n"
+                       "  wire q1, q2;\n"
+                       "  holder off (.clk(clk_a), .we(1'b1), .wm(2'b00), .d(d), .q(q1));\n" // never loads
+                       "  holder on (.clk(clk_a), .we(1'b1), .wm({e, 1'b0}), .d(d), .q(q2));\n" // negative: e decides
+                       "  always @(posedge clk_b) begin o1 <= q1; o2 <= q2; end\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK_FALSE(crosses(*run, "top.off.q", "top.o1"));
+    CHECK(crosses(*run, "top.on.q", "top.o2"));
 }

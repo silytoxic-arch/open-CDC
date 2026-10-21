@@ -442,7 +442,7 @@ public:
                                  "mixed-language elaboration did not converge (Verilog <-> VHDL nesting deeper than " +
                                      std::to_string(kMaxRounds) + " levels?)",
                                  {}, {}});
-        // Unconnected outputs of vendor primitives are normal (an MMCM has 20).
+        // Unconnected pins of vendor primitives are normal (an MMCM has 20).
         std::set<std::tuple<std::string, std::uint32_t, std::uint32_t>> primitiveSites;
         if (finalDesign)
             for (const auto& b : finalDesign->bodies)
@@ -459,7 +459,7 @@ public:
                 if (std::regex_search(d.message, m, inRe) && models_.contains(m[1].str()))
                     continue;
             }
-            if (d.code == "FE-SLANG-UnconnectedOutputPort" &&
+            if ((d.code == "FE-SLANG-UnconnectedOutputPort" || d.code == "FE-SLANG-UnconnectedInputPort") &&
                 primitiveSites.contains({d.location.file, d.location.line, d.location.column}))
                 continue;
             if (!d.isError() && d.location.file.starts_with(primDirUtf8))

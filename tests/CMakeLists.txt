@@ -84,6 +84,9 @@ opencdc_cli_test(analyze_vhdl 3
 opencdc_cli_test(analyze_mixed 0
     "Language: verilog-2001 \\+ vhdl.*Instances: 8.*CDC     : 7 crossing path.*1 path\\(s\\) at potential risk, 4 path\\(s\\) need review"
     analyze ${PROJECT_SOURCE_DIR}/examples/mixed/smoke/smoke_mixed.ocdc.json)
+opencdc_cli_test(analyze_primitives 3
+    "Clocks  : 4.*top.u_mmcm.CLKOUT0  \\[divider\\].*period=5ns \\(200 MHz\\).*top.u_mmcm.CLKOUT1  \\[divider\\].*period=20ns.*FE-PRIMITIVES.*CDC     : 11 crossing path\\(s\\), 9 synchronized.*Rules   : 1 error violation"
+    analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json)
 
 # ---- Installed tree (install rules, Qt deployment on Windows) ----
 add_test(NAME package.install_smoke
@@ -131,13 +134,16 @@ if(TARGET opencdc-gui)
     add_test(NAME gui.vhdl_mixed
         COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/mixed/cdc_advanced/cdc_advanced_mixed.ocdc.json)
     set_tests_properties(gui.vhdl_mixed PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME gui.primitives
+        COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json)
+    set_tests_properties(gui.primitives PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_test(NAME gui.project_edit
         COMMAND opencdc-gui --edit-test ${PROJECT_SOURCE_DIR}/examples/mixed/cdc_advanced/cdc_advanced_mixed.ocdc.json)
     set_tests_properties(gui.project_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     if(WIN32)
         # Let the test find the Qt DLLs (and, through them, the platform plugins)
         # without running windeployqt first.
-        set_tests_properties(gui.smoke gui.cdc_rules gui.cdc_advanced gui.cdc_advanced_waived gui.vhdl_mixed gui.project_edit PROPERTIES
+        set_tests_properties(gui.smoke gui.cdc_rules gui.cdc_advanced gui.cdc_advanced_waived gui.vhdl_mixed gui.project_edit gui.primitives PROPERTIES
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
 endif()

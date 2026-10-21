@@ -147,12 +147,16 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
     // ---- Clocks ----
     if (r.clocks) {
         const auto& cm = *r.clocks;
-        o << "<h2 id=\"clocks\">Clocks</h2>\n<table><tr><th>Clock</th><th>Kind</th><th>Source</th><th>Period</th>"
-             "<th>Registers</th></tr>\n";
-        for (const auto& c : cm.clocks)
+        o << "<h2 id=\"clocks\">Clocks</h2>\n<table><tr><th>Clock</th><th>Kind</th><th>Source</th>"
+             "<th>Derived from</th><th>Period</th><th>Frequency</th><th>Registers</th></tr>\n";
+        for (const auto& c : cm.clocks) {
+            const bool known = c.periodNs && *c.periodNs > 0;
             o << "<tr><td>" << esc(c.name) << "</td><td>" << toString(c.kind) << "</td><td class=\"mono\">"
-              << esc(c.sourceName) << "</td><td>" << (c.periodNs ? fmt(*c.periodNs, "%.4g") + " ns" : "&ndash;")
-              << "</td><td>" << c.registers() << "</td></tr>\n";
+              << esc(c.sourceName) << "</td><td>" << (c.master.valid() ? esc(cm.clock(c.master).name) : "&ndash;")
+              << "</td><td>" << (known ? fmt(*c.periodNs, "%.4g") + " ns" : "&ndash;") << "</td><td>"
+              << (known ? fmt(1000.0 / *c.periodNs, "%.4g") + " MHz" : "&ndash;") << "</td><td>" << c.registers()
+              << "</td></tr>\n";
+        }
         o << "</table>\n";
         if (cm.clocks.size() > 1) {
             o << "<table><tr><th></th>";
