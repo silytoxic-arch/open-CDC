@@ -349,11 +349,15 @@ TEST_CASE("Primitives: MMCM/PLL output periods follow the multiply and divide pa
     REQUIRE(run->r->cdc);
     REQUIRE(run->r->clocks);
     auto period = [&](std::string_view name) -> std::optional<double> {
+        std::optional<double> found;
+        bool exists = false;
         for (const auto& c : run->r->clocks->clocks)
-            if (c.name == name)
-                return c.periodNs;
-        FAIL("no clock " << name);
-        return std::nullopt;
+            if (c.name == name) {
+                found = c.periodNs;
+                exists = true;
+            }
+        CHECK(exists); // single exit: MSVC C4702 after FAIL()
+        return found;
     };
     CHECK(period("top.m.CLKOUT0") == 5.0);  // 10 x 1 x 5 / 10
     CHECK(period("top.m.CLKOUT1") == 20.0); // 10 x 1 x 20 / 10
