@@ -255,6 +255,10 @@ void Elaborator::elaborateForeignInstance(const Stmt& s, Scope& scope, const std
     for (const auto& a : s.genericMap) {
         if (!a.actual || a.actual->kind == ExprKind::Open)
             continue;
+        // INIT_xx => (others => '0') on a vendor primitive: no type to give the
+        // aggregate, and the models ignore initial contents
+        if (a.actual->kind == ExprKind::Aggregate && opts_.lenientModules.contains(lower(module)))
+            continue;
         SVal v = evalActual(*a.actual, nullptr);
         if (!v.valid())
             return;
@@ -316,6 +320,13 @@ void Elaborator::elaborateForeignInstance(const Stmt& s, Scope& scope, const std
             for (std::size_t i = 0; i < ports.size(); ++i)
                 if (lower(ports[i].name) == f.ident.key)
                     return Formal{i, 0, cb.net(ports[i].net).width, {}, false};
+            if (opts_.lenientModules.contains(lower(module))) {
+                sink_.report({"FE-PRIMITIVE-PORT", Severity::Info,
+                              "port '" + f.ident.text + "' of vendor primitive '" + module +
+                                  "' is not modelled; its connection is ignored",
+                              srcLoc(f.loc), {}});
+                return std::nullopt;
+            }
             error("VHDL-PORT-MAP", "Verilog module '" + module + "' has no port '" + f.ident.text + "'", f.loc);
             return std::nullopt;
         }

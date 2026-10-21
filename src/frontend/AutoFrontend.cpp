@@ -297,6 +297,7 @@ public:
             RoundSink rs;
             detail::VerilogMixedOptions mo;
             mo.foreignModules = foreign;
+            mo.lenientModules = models_;
             std::map<std::string, std::vector<std::string>> params;
             mo.moduleParams = &params;
             const bool verilogTop = !input_.top.empty() && !vhdlEntities.contains(lower(input_.top));
@@ -361,8 +362,10 @@ public:
             o.generics = verilogTop ? std::vector<std::pair<std::string, std::string>>{} : input_.topParameters;
             o.design = design;
             o.foreignModules = verilogModules_;
-            for (const auto& [k, n] : primitiveModules_)
+            for (const auto& [k, n] : primitiveModules_) {
                 o.foreignModules.emplace(k, n);
+                o.lenientModules.insert(k);
+            }
             o.resolveForeign = [this](const std::string& module, const std::vector<ir::InstanceParam>& p) {
                 return resolve(module, p);
             };
@@ -449,6 +452,13 @@ public:
         for (auto& d : lastDiags) {
             if (d.location.file == wrapperUtf8)
                 continue;
+            if (d.code == "FE-SLANG-ParameterDoesNotExist") {
+                // vendor primitives take many parameters the models do not need
+                static const std::regex inRe("in '([^']+)'$");
+                std::smatch m;
+                if (std::regex_search(d.message, m, inRe) && models_.contains(m[1].str()))
+                    continue;
+            }
             if (d.code == "FE-SLANG-UnconnectedOutputPort" &&
                 primitiveSites.contains({d.location.file, d.location.line, d.location.column}))
                 continue;

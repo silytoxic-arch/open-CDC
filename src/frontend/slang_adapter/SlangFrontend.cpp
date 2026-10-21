@@ -13,6 +13,7 @@
 #include <slang/ast/symbols/CompilationUnitSymbols.h>
 #include <slang/ast/symbols/InstanceSymbols.h>
 #include <slang/diagnostics/DiagnosticEngine.h>
+#include <slang/diagnostics/DeclarationsDiags.h>
 #include <slang/diagnostics/Diagnostics.h>
 #include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Preprocessor.h>
@@ -70,10 +71,12 @@ Severity convertSeverity(slang::DiagnosticSeverity sev) {
     return Severity::Error;
 }
 
-void reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::SourceManager& sm,
-                            DiagnosticSink& sink) {
+/// Reports the diagnostics; returns whether any of them is an error.
+bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::SourceManager& sm, DiagnosticSink& sink,
+                            const std::set<std::string>* lenientModules = nullptr) {
     slang::DiagnosticEngine engine(sm);
     (void)engine.setWarningOptions({}); // slang's default warning set
+    bool errors = false;
 
     for (const auto& diag : diags) {
         auto sev = engine.getSeverity(diag.code, diag.location);
@@ -85,6 +88,22 @@ void reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
         out.severity = convertSeverity(sev);
         out.message = engine.formatMessage(diag);
         out.location = convertLocation(sm, diag.location);
+        if (lenientModules && diag.code == slang::diag::PortDoesNotExist) {
+            // port 'X' does not exist in 'FDRE'
+            const auto q = out.message.rfind(" in '");
+            if (q != std::string::npos && out.message.size() > q + 6) {
+                const std::string module = out.message.substr(q + 5, out.message.size() - q - 6);
+                if (lenientModules->contains(module)) {
+                    const auto p0 = out.message.find('\'');
+                    const auto p1 = out.message.find('\'', p0 + 1);
+                    out.code = "FE-PRIMITIVE-PORT";
+                    out.severity = Severity::Info;
+                    out.message = "port " + out.message.substr(p0, p1 - p0 + 1) + " of vendor primitive '" + module +
+                                  "' is not modelled; its connection is ignored";
+                }
+            }
+        }
+        errors = errors || out.isError();
         for (const auto& note : diag.notes) {
             std::string text = engine.formatMessage(note);
             if (auto loc = toString(convertLocation(sm, note.location)); !loc.empty())
@@ -93,6 +112,7 @@ void reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
         }
         sink.report(std::move(out));
     }
+    return errors;
 }
 
 class InstanceCollector {
@@ -263,8 +283,8 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     const auto& root = compilation.getRoot();
 
     const auto& slangDiags = compilation.getAllDiagnostics();
-    reportSlangDiagnostics(slangDiags, sourceManager, sink);
-    const bool hdlErrors = std::ranges::any_of(slangDiags, [](const slang::Diagnostic& d) { return d.isError(); });
+    const bool hdlErrors =
+        reportSlangDiagnostics(slangDiags, sourceManager, sink, mixed ? &mixed->lenientModules : nullptr);
 
     FrontendOutput output;
     ElaborationSummary& summary = output.summary;

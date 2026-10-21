@@ -27,4 +27,10 @@ package altera_mf_components is
     port (clk : in std_logic; reset_n : in std_logic; din : in std_logic_vector(width-1 downto 0);
           dout : out std_logic_vector(width-1 downto 0));
   end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component altsyncram port (clock0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component altddio_in port (inclock : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component altddio_out port (outclock : in std_ulogic); end component;
 end package;

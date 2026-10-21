@@ -61,4 +61,12 @@ package vcomponents is
           injectsbiterr : in std_logic := '0'; rd_clk : in std_logic; rd_en : in std_logic; rst : in std_logic;
           sleep : in std_logic := '0'; wr_clk : in std_logic; wr_en : in std_logic);
   end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component xpm_memory_sdpram port (clka : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component xpm_memory_tdpram port (clka : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component xpm_memory_spram port (clka : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component xpm_memory_dpdistram port (clka : in std_ulogic); end component;
 end package;

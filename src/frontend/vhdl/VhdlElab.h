@@ -337,6 +337,9 @@ struct ElabOptions {
         resolveForeign;
     /// Entities that must not be inferred as tops (instantiated from Verilog).
     std::set<std::string> excludeTops;
+    /// Lower-case names of vendor primitive models: associations with ports
+    /// they do not model are ignored (FE-PRIMITIVE-PORT information).
+    std::set<std::string> lenientModules;
 };
 
 /// One unique elaborated body (entity + architecture + generic values).

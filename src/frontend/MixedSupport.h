@@ -19,6 +19,9 @@ struct VerilogMixedOptions {
     std::vector<std::string> tops;
     /// Output: non-local parameter names of every module definition.
     std::map<std::string, std::vector<std::string>>* moduleParams = nullptr;
+    /// Built-in vendor primitive models: connections to ports they do not
+    /// model are reported as information (FE-PRIMITIVE-PORT), not errors.
+    std::set<std::string> lenientModules;
 };
 
 /// The slang frontend with mixed-language options.

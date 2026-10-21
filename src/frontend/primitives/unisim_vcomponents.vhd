@@ -154,4 +154,30 @@ package vcomponents is
   component PLLE4_BASE port (CLKIN : in std_ulogic); end component;
   -- clock generator: generics and ports are taken from the instance (bound to a generated model)
   component PLLE4_ADV port (CLKIN : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IDDR port (C : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IDDRE1 port (C : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component ODDR port (C : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component ODDRE1 port (C : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IDELAYE2 port (C : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component ODELAYE2 port (C : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IDELAYE3 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component ODELAYE3 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IDELAYCTRL port (REFCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAMB18E1 port (CLKARDCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAMB36E1 port (CLKARDCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAMB18E2 port (CLKARDCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAMB36E2 port (CLKARDCLK : in std_ulogic); end component;
 end package;

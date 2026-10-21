@@ -227,3 +227,208 @@ module xpm_fifo_async #(parameter integer CASCADE_HEIGHT = 0, parameter integer 
     assign wr_rst_busy = rst;
     assign wr_ack = 1'b0;
 endmodule
+
+// ---------------------------------------------------------------- XPM memories
+// Each write port writes its own array; every read port reads all arrays, so
+// data written in one clock and read in the other is a crossing. Output
+// pipeline stages follow READ_LATENCY_x.
+module xpm_memory_sdpram #(parameter integer ADDR_WIDTH_A = 6, parameter integer ADDR_WIDTH_B = 6,
+                           parameter AUTO_SLEEP_TIME = 0, parameter integer BYTE_WRITE_WIDTH_A = 32,
+                           parameter integer CASCADE_HEIGHT = 0, parameter CLOCKING_MODE = "common_clock",
+                           parameter ECC_MODE = "no_ecc", parameter MEMORY_INIT_FILE = "none",
+                           parameter MEMORY_INIT_PARAM = "0", parameter MEMORY_OPTIMIZATION = "true",
+                           parameter MEMORY_PRIMITIVE = "auto", parameter integer MEMORY_SIZE = 2048,
+                           parameter MESSAGE_CONTROL = 0, parameter integer READ_DATA_WIDTH_B = 32,
+                           parameter integer READ_LATENCY_B = 2, parameter READ_RESET_VALUE_B = "0",
+                           parameter RST_MODE_A = "SYNC", parameter RST_MODE_B = "SYNC",
+                           parameter SIM_ASSERT_CHK = 0, parameter USE_EMBEDDED_CONSTRAINT = 0,
+                           parameter USE_MEM_INIT = 1, parameter USE_MEM_INIT_MMI = 0,
+                           parameter WAKEUP_TIME = "disable_sleep", parameter integer WRITE_DATA_WIDTH_A = 32,
+                           parameter WRITE_MODE_B = "no_change", parameter WRITE_PROTECT = 1)
+                          (output dbiterrb, output [READ_DATA_WIDTH_B-1:0] doutb, output sbiterrb,
+                           input [ADDR_WIDTH_A-1:0] addra, input [ADDR_WIDTH_B-1:0] addrb, input clka,
+                           input clkb, input [WRITE_DATA_WIDTH_A-1:0] dina, input ena, input enb,
+                           input injectdbiterra, input injectsbiterra, input regceb, input rstb, input sleep,
+                           input [WRITE_DATA_WIDTH_A/BYTE_WRITE_WIDTH_A-1:0] wea);
+    localparam integer DEPTH = MEMORY_SIZE / WRITE_DATA_WIDTH_A;
+    reg [WRITE_DATA_WIDTH_A-1:0] mem [0:DEPTH-1];
+    always @(posedge clka) if (ena && |wea) mem[addra] <= dina;
+    wire rclk;
+    generate
+        if (CLOCKING_MODE == "independent_clock") begin : g_ind
+            assign rclk = clkb;
+        end else begin : g_com
+            assign rclk = clka;
+        end
+    endgenerate
+    localparam integer LAT = READ_LATENCY_B < 1 ? 1 : READ_LATENCY_B;
+    reg [READ_DATA_WIDTH_B-1:0] pipe [0:LAT-1];
+    integer k;
+    always @(posedge rclk)
+        if (rstb) begin
+            for (k = 0; k < LAT; k = k + 1) pipe[k] <= {READ_DATA_WIDTH_B{1'b0}};
+        end else begin
+            if (enb) pipe[0] <= mem[addrb];
+            for (k = 1; k < LAT; k = k + 1) pipe[k] <= pipe[k-1];
+        end
+    assign doutb = pipe[LAT-1];
+    assign dbiterrb = 1'b0;
+    assign sbiterrb = 1'b0;
+endmodule
+
+module xpm_memory_tdpram #(parameter integer ADDR_WIDTH_A = 6, parameter integer ADDR_WIDTH_B = 6,
+                           parameter AUTO_SLEEP_TIME = 0, parameter integer BYTE_WRITE_WIDTH_A = 32,
+                           parameter integer BYTE_WRITE_WIDTH_B = 32, parameter integer CASCADE_HEIGHT = 0,
+                           parameter CLOCKING_MODE = "common_clock", parameter ECC_MODE = "no_ecc",
+                           parameter MEMORY_INIT_FILE = "none", parameter MEMORY_INIT_PARAM = "0",
+                           parameter MEMORY_OPTIMIZATION = "true", parameter MEMORY_PRIMITIVE = "auto",
+                           parameter integer MEMORY_SIZE = 2048, parameter MESSAGE_CONTROL = 0,
+                           parameter integer READ_DATA_WIDTH_A = 32, parameter integer READ_DATA_WIDTH_B = 32,
+                           parameter integer READ_LATENCY_A = 2, parameter integer READ_LATENCY_B = 2,
+                           parameter READ_RESET_VALUE_A = "0", parameter READ_RESET_VALUE_B = "0",
+                           parameter RST_MODE_A = "SYNC", parameter RST_MODE_B = "SYNC",
+                           parameter SIM_ASSERT_CHK = 0, parameter USE_EMBEDDED_CONSTRAINT = 0,
+                           parameter USE_MEM_INIT = 1, parameter USE_MEM_INIT_MMI = 0,
+                           parameter WAKEUP_TIME = "disable_sleep", parameter integer WRITE_DATA_WIDTH_A = 32,
+                           parameter integer WRITE_DATA_WIDTH_B = 32, parameter WRITE_MODE_A = "no_change",
+                           parameter WRITE_MODE_B = "no_change", parameter WRITE_PROTECT = 1)
+                          (output dbiterra, output dbiterrb, output [READ_DATA_WIDTH_A-1:0] douta,
+                           output [READ_DATA_WIDTH_B-1:0] doutb, output sbiterra, output sbiterrb,
+                           input [ADDR_WIDTH_A-1:0] addra, input [ADDR_WIDTH_B-1:0] addrb, input clka,
+                           input clkb, input [WRITE_DATA_WIDTH_A-1:0] dina, input [WRITE_DATA_WIDTH_B-1:0] dinb,
+                           input ena, input enb, input injectdbiterra, input injectdbiterrb,
+                           input injectsbiterra, input injectsbiterrb, input regcea, input regceb, input rsta,
+                           input rstb, input sleep, input [WRITE_DATA_WIDTH_A/BYTE_WRITE_WIDTH_A-1:0] wea,
+                           input [WRITE_DATA_WIDTH_B/BYTE_WRITE_WIDTH_B-1:0] web);
+    localparam integer DEPTH = MEMORY_SIZE / WRITE_DATA_WIDTH_A;
+    reg [WRITE_DATA_WIDTH_A-1:0] mem_a [0:DEPTH-1];
+    reg [WRITE_DATA_WIDTH_A-1:0] mem_b [0:DEPTH-1];
+    wire cb;
+    generate
+        if (CLOCKING_MODE == "independent_clock") begin : g_ind
+            assign cb = clkb;
+        end else begin : g_com
+            assign cb = clka;
+        end
+    endgenerate
+    always @(posedge clka) if (ena && |wea) mem_a[addra] <= dina;
+    always @(posedge cb) if (enb && |web) mem_b[addrb] <= dinb;
+    localparam integer LA = READ_LATENCY_A < 1 ? 1 : READ_LATENCY_A;
+    localparam integer LB = READ_LATENCY_B < 1 ? 1 : READ_LATENCY_B;
+    reg [READ_DATA_WIDTH_A-1:0] pa [0:LA-1];
+    reg [READ_DATA_WIDTH_B-1:0] pb [0:LB-1];
+    integer k;
+    always @(posedge clka)
+        if (rsta) begin
+            for (k = 0; k < LA; k = k + 1) pa[k] <= {READ_DATA_WIDTH_A{1'b0}};
+        end else begin
+            if (ena) pa[0] <= mem_a[addra] ^ mem_b[addra];
+            for (k = 1; k < LA; k = k + 1) pa[k] <= pa[k-1];
+        end
+    always @(posedge cb)
+        if (rstb) begin
+            for (k = 0; k < LB; k = k + 1) pb[k] <= {READ_DATA_WIDTH_B{1'b0}};
+        end else begin
+            if (enb) pb[0] <= mem_a[addrb] ^ mem_b[addrb];
+            for (k = 1; k < LB; k = k + 1) pb[k] <= pb[k-1];
+        end
+    assign douta = pa[LA-1];
+    assign doutb = pb[LB-1];
+    assign dbiterra = 1'b0;
+    assign dbiterrb = 1'b0;
+    assign sbiterra = 1'b0;
+    assign sbiterrb = 1'b0;
+endmodule
+
+module xpm_memory_spram #(parameter integer ADDR_WIDTH_A = 6, parameter AUTO_SLEEP_TIME = 0,
+                          parameter integer BYTE_WRITE_WIDTH_A = 32, parameter integer CASCADE_HEIGHT = 0,
+                          parameter ECC_MODE = "no_ecc", parameter MEMORY_INIT_FILE = "none",
+                          parameter MEMORY_INIT_PARAM = "0", parameter MEMORY_OPTIMIZATION = "true",
+                          parameter MEMORY_PRIMITIVE = "auto", parameter integer MEMORY_SIZE = 2048,
+                          parameter MESSAGE_CONTROL = 0, parameter integer READ_DATA_WIDTH_A = 32,
+                          parameter integer READ_LATENCY_A = 2, parameter READ_RESET_VALUE_A = "0",
+                          parameter RST_MODE_A = "SYNC", parameter SIM_ASSERT_CHK = 0,
+                          parameter USE_MEM_INIT = 1, parameter USE_MEM_INIT_MMI = 0,
+                          parameter WAKEUP_TIME = "disable_sleep", parameter integer WRITE_DATA_WIDTH_A = 32,
+                          parameter WRITE_MODE_A = "read_first", parameter WRITE_PROTECT = 1)
+                         (output dbiterra, output [READ_DATA_WIDTH_A-1:0] douta, output sbiterra,
+                          input [ADDR_WIDTH_A-1:0] addra, input clka, input [WRITE_DATA_WIDTH_A-1:0] dina,
+                          input ena, input injectdbiterra, input injectsbiterra, input regcea, input rsta,
+                          input sleep, input [WRITE_DATA_WIDTH_A/BYTE_WRITE_WIDTH_A-1:0] wea);
+    localparam integer DEPTH = MEMORY_SIZE / WRITE_DATA_WIDTH_A;
+    reg [WRITE_DATA_WIDTH_A-1:0] mem [0:DEPTH-1];
+    localparam integer LA = READ_LATENCY_A < 1 ? 1 : READ_LATENCY_A;
+    reg [READ_DATA_WIDTH_A-1:0] pa [0:LA-1];
+    integer k;
+    always @(posedge clka) if (ena && |wea) mem[addra] <= dina;
+    always @(posedge clka)
+        if (rsta) begin
+            for (k = 0; k < LA; k = k + 1) pa[k] <= {READ_DATA_WIDTH_A{1'b0}};
+        end else begin
+            if (ena) pa[0] <= mem[addra];
+            for (k = 1; k < LA; k = k + 1) pa[k] <= pa[k-1];
+        end
+    assign douta = pa[LA-1];
+    assign dbiterra = 1'b0;
+    assign sbiterra = 1'b0;
+endmodule
+
+module xpm_memory_dpdistram #(parameter integer ADDR_WIDTH_A = 6, parameter integer ADDR_WIDTH_B = 6,
+                              parameter integer BYTE_WRITE_WIDTH_A = 32, parameter CLOCKING_MODE = "common_clock",
+                              parameter MEMORY_INIT_FILE = "none", parameter MEMORY_INIT_PARAM = "0",
+                              parameter MEMORY_OPTIMIZATION = "true", parameter integer MEMORY_SIZE = 2048,
+                              parameter MESSAGE_CONTROL = 0, parameter integer READ_DATA_WIDTH_A = 32,
+                              parameter integer READ_DATA_WIDTH_B = 32, parameter integer READ_LATENCY_A = 2,
+                              parameter integer READ_LATENCY_B = 2, parameter READ_RESET_VALUE_A = "0",
+                              parameter READ_RESET_VALUE_B = "0", parameter RST_MODE_A = "SYNC",
+                              parameter RST_MODE_B = "SYNC", parameter SIM_ASSERT_CHK = 0,
+                              parameter USE_EMBEDDED_CONSTRAINT = 0, parameter USE_MEM_INIT = 1,
+                              parameter USE_MEM_INIT_MMI = 0, parameter integer WRITE_DATA_WIDTH_A = 32)
+                             (output [READ_DATA_WIDTH_A-1:0] douta, output [READ_DATA_WIDTH_B-1:0] doutb,
+                              input [ADDR_WIDTH_A-1:0] addra, input [ADDR_WIDTH_B-1:0] addrb, input clka,
+                              input clkb, input [WRITE_DATA_WIDTH_A-1:0] dina, input ena, input enb,
+                              input regcea, input regceb, input rsta, input rstb,
+                              input [WRITE_DATA_WIDTH_A/BYTE_WRITE_WIDTH_A-1:0] wea);
+    localparam integer DEPTH = MEMORY_SIZE / WRITE_DATA_WIDTH_A;
+    reg [WRITE_DATA_WIDTH_A-1:0] mem [0:DEPTH-1];
+    always @(posedge clka) if (ena && |wea) mem[addra] <= dina;
+    wire cb;
+    generate
+        if (CLOCKING_MODE == "independent_clock") begin : g_ind
+            assign cb = clkb;
+        end else begin : g_com
+            assign cb = clka;
+        end
+    endgenerate
+    // READ_LATENCY 0 is an asynchronous read: the read data is not registered
+    generate
+        if (READ_LATENCY_A == 0) begin : g_a0
+            assign douta = mem[addra];
+        end else begin : g_a
+            reg [READ_DATA_WIDTH_A-1:0] pa [0:READ_LATENCY_A-1];
+            integer k;
+            always @(posedge clka)
+                if (rsta) begin
+                    for (k = 0; k < READ_LATENCY_A; k = k + 1) pa[k] <= {READ_DATA_WIDTH_A{1'b0}};
+                end else begin
+                    if (ena) pa[0] <= mem[addra];
+                    for (k = 1; k < READ_LATENCY_A; k = k + 1) pa[k] <= pa[k-1];
+                end
+            assign douta = pa[READ_LATENCY_A-1];
+        end
+        if (READ_LATENCY_B == 0) begin : g_b0
+            assign doutb = mem[addrb];
+        end else begin : g_b
+            reg [READ_DATA_WIDTH_B-1:0] pb [0:READ_LATENCY_B-1];
+            integer k;
+            always @(posedge cb)
+                if (rstb) begin
+                    for (k = 0; k < READ_LATENCY_B; k = k + 1) pb[k] <= {READ_DATA_WIDTH_B{1'b0}};
+                end else begin
+                    if (enb) pb[0] <= mem[addrb];
+                    for (k = 1; k < READ_LATENCY_B; k = k + 1) pb[k] <= pb[k-1];
+                end
+            assign doutb = pb[READ_LATENCY_B-1];
+        end
+    endgenerate
+endmodule

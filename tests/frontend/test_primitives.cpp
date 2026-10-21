@@ -71,7 +71,10 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
     for (const char* n : {"FDRE", "FDCE", "FDPE", "FDSE", "BUFG", "BUFGMUX", "IBUF", "xpm_cdc_single",
                           "xpm_cdc_array_single", "xpm_cdc_gray", "xpm_cdc_handshake", "xpm_cdc_pulse",
                           "xpm_cdc_async_rst", "xpm_cdc_sync_rst", "xpm_fifo_async", "dcfifo",
-                          "altera_std_synchronizer"})
+                          "altera_std_synchronizer", "IDDR", "ODDR", "IDDRE1", "ODDRE1", "IDELAYE2", "ODELAYE2",
+                          "IDELAYE3", "ODELAYE3", "IDELAYCTRL", "RAMB18E1", "RAMB36E1", "RAMB18E2", "RAMB36E2",
+                          "xpm_memory_sdpram", "xpm_memory_tdpram", "xpm_memory_spram", "xpm_memory_dpdistram",
+                          "altsyncram", "altddio_in", "altddio_out"})
         CHECK(lib.find(n).has_value());
     CHECK(lib.find("fdre") == std::optional<std::string>("FDRE")); // VHDL spelling
     CHECK(lib.find("MMCME2_ADV").has_value()); // clock generators are generated on demand
@@ -389,4 +392,168 @@ TEST_CASE("Primitives: generator input period from CLKIN1_PERIOD when the input 
             CHECK(c.periodNs == 4.0); // 8 x 1 x 2 / 4
         }
     CHECK(found);
+}
+
+namespace {
+[[nodiscard]] bool crosses(const Run& run, std::string_view srcPrefix, std::string_view dstPrefix) {
+    return std::ranges::any_of(run.r->cdc->paths, [&](const CdcPath& p) {
+        return p.srcName.starts_with(srcPrefix) && p.dstName.starts_with(dstPrefix);
+    });
+}
+void dumpPaths(const Run& run) {
+    for (const auto& p : run.r->cdc->paths)
+        UNSCOPED_INFO("path: " << p.srcName << " -> " << p.dstName);
+}
+} // namespace
+
+TEST_CASE("Primitives: XPM memories cross clocks only in independent-clock mode", "[primitives]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input [7:0] d, input [3:0] wa, input [3:0] ra, input we,\n"
+        "           output [7:0] q1, output [7:0] q2, output [7:0] q3, output [7:0] q4);\n"
+        "  reg [7:0] dr; reg [3:0] war, rar, rbr; reg wer;\n"
+        "  always @(posedge clk_a) begin dr <= d; war <= wa; wer <= we; end\n"
+        "  always @(posedge clk_b) rbr <= ra;\n"
+        "  xpm_memory_sdpram #(.ADDR_WIDTH_A(4), .ADDR_WIDTH_B(4), .MEMORY_SIZE(128), .WRITE_DATA_WIDTH_A(8),\n"
+        "    .READ_DATA_WIDTH_B(8), .BYTE_WRITE_WIDTH_A(8), .CLOCKING_MODE(\"independent_clock\"),\n"
+        "    .READ_LATENCY_B(2)) ind (.clka(clk_a), .ena(1'b1), .wea(wer), .addra(war), .dina(dr),\n"
+        "    .clkb(clk_b), .enb(1'b1), .addrb(rbr), .doutb(q1), .rstb(1'b0), .regceb(1'b1), .sleep(1'b0),\n"
+        "    .injectsbiterra(1'b0), .injectdbiterra(1'b0));\n"
+        "  xpm_memory_sdpram #(.ADDR_WIDTH_A(4), .ADDR_WIDTH_B(4), .MEMORY_SIZE(128), .WRITE_DATA_WIDTH_A(8),\n"
+        "    .READ_DATA_WIDTH_B(8), .BYTE_WRITE_WIDTH_A(8), .CLOCKING_MODE(\"common_clock\"))\n"
+        "    com (.clka(clk_a), .ena(1'b1), .wea(wer), .addra(war), .dina(dr), .clkb(clk_b), .enb(1'b1),\n"
+        "    .addrb(war), .doutb(q2), .rstb(1'b0), .regceb(1'b1), .sleep(1'b0), .injectsbiterra(1'b0),\n"
+        "    .injectdbiterra(1'b0));\n"
+        "  xpm_memory_tdpram #(.ADDR_WIDTH_A(4), .ADDR_WIDTH_B(4), .MEMORY_SIZE(128), .WRITE_DATA_WIDTH_A(8),\n"
+        "    .WRITE_DATA_WIDTH_B(8), .READ_DATA_WIDTH_A(8), .READ_DATA_WIDTH_B(8), .BYTE_WRITE_WIDTH_A(8),\n"
+        "    .BYTE_WRITE_WIDTH_B(8), .CLOCKING_MODE(\"independent_clock\")) td (.clka(clk_a), .ena(1'b1),\n"
+        "    .wea(wer), .addra(war), .dina(dr), .douta(q3), .clkb(clk_b), .enb(1'b1), .web(1'b0),\n"
+        "    .addrb(rbr), .dinb(8'd0), .doutb(q4), .rsta(1'b0), .rstb(1'b0), .regcea(1'b1), .regceb(1'b1));\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(crosses(*run, "top.ind.mem", "top.ind.pipe"));   // written in clk_a, read in clk_b
+    CHECK_FALSE(crosses(*run, "top.com.", "top.com."));     // one clock
+    CHECK_FALSE(crosses(*run, "top.", "top.com."));
+    CHECK(crosses(*run, "top.td.mem_a", "top.td.pb"));      // port A write -> port B read
+    CHECK_FALSE(crosses(*run, "top.td.mem_a", "top.td.pa")); // same port, same clock
+}
+
+TEST_CASE("Primitives: block RAM, DDR and delay primitives", "[primitives]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input d, input [31:0] din, input [15:0] aw, input [15:0] ar,\n"
+        "           output [31:0] dout, output q1, output q2, output o, output reg r, output [31:0] dout2,\n"
+        "           output [3:0] casc);\n"
+        "  reg [31:0] dr; reg [15:0] awr, arr;\n"
+        "  always @(posedge clk_a) begin dr <= din; awr <= aw; end\n"
+        "  always @(posedge clk_b) arr <= ar;\n"
+        "  RAMB36E1 #(.READ_WIDTH_A(36), .WRITE_WIDTH_B(36), .RAM_MODE(\"TDP\"), .INIT_00(256'h0)) bram (\n"
+        "    .CLKARDCLK(clk_b), .ENARDEN(1'b1), .ADDRARDADDR(arr), .DOADO(dout), .WEA(4'b0),\n"
+        "    .CLKBWRCLK(clk_a), .ENBWREN(1'b1), .ADDRBWRADDR(awr), .DIBDI(dr), .WEBWE(8'hff),\n"
+        "    .DIADI(32'd0), .DIPADIP(4'd0), .DIPBDIP(4'd0), .REGCEAREGCE(1'b1), .REGCEB(1'b1),\n"
+        "    .RSTRAMARSTRAM(1'b0), .RSTRAMB(1'b0), .RSTREGARSTREG(1'b0), .RSTREGB(1'b0),\n"
+        "    .CASCADEINA(1'b0), .CASCADEINB(1'b0), .INJECTDBITERR(1'b0), .INJECTSBITERR(1'b0));\n"
+        "  RAMB36E2 #(.READ_WIDTH_A(36)) bram2 (.CLKARDCLK(clk_b), .ENARDEN(1'b1), .ADDRARDADDR(arr[14:0]),\n"
+        "    .DOUTADOUT(dout2), .CLKBWRCLK(clk_a), .ENBWREN(1'b1), .ADDRBWRADDR(awr[14:0]), .DINBDIN(dr),\n"
+        "    .WEBWE(8'hff), .CASDINA(32'd0), .CASDOUTPA(casc));\n" // cascade pins are not modelled
+        "  IDDR #(.DDR_CLK_EDGE(\"SAME_EDGE_PIPELINED\")) iddr (.Q1(q1), .Q2(q2), .C(clk_a), .CE(1'b1), .D(d),\n"
+        "    .R(1'b0), .S(1'b0));\n"
+        "  ODDR oddr (.Q(o), .C(clk_b), .CE(1'b1), .D1(q1), .D2(q2), .R(1'b0), .S(1'b0));\n"
+        "  wire dly, rdy;\n"
+        "  IDELAYE2 #(.IDELAY_TYPE(\"FIXED\")) idl (.IDATAIN(d), .DATAOUT(dly), .C(1'b0), .CE(1'b0),\n"
+        "    .CINVCTRL(1'b0), .CNTVALUEIN(5'd0), .DATAIN(1'b0), .INC(1'b0), .LD(1'b0), .LDPIPEEN(1'b0),\n"
+        "    .REGRST(1'b0));\n"
+        "  IDELAYCTRL ictl (.RDY(rdy), .REFCLK(clk_a), .RST(1'b0));\n"
+        "  always @(posedge clk_b or negedge rdy) if (!rdy) r <= 1'b0; else r <= dly;\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-PRIMITIVE-PORT") == 2); // CASDINA, CASDOUTPA
+    CHECK(run->count("FE-SLANG-ParameterDoesNotExist") == 0);
+    CHECK(crosses(*run, "top.bram.mem_b", "top.bram.da")); // written on port B (clk_a), read on port A (clk_b)
+    CHECK(crosses(*run, "top.bram2.mem_b", "top.bram2.da"));
+    CHECK(crosses(*run, "top.iddr.", "top.oddr.")); // clk_a DDR capture -> clk_b output register
+    CHECK(run->path("top.ictl.RDY", "top.r") != nullptr); // RDY releases a clk_b reset unsynchronized
+    CHECK(run->hits("CDC-006") == 1);
+}
+
+TEST_CASE("Primitives negative: an unknown port of a user module is still an error", "[primitives]") {
+    auto run = analyze("t.v",
+                       "module mine(input a, output b); assign b = a; endmodule\n"
+                       "module top(input clk_a, input d, output q, output z);\n"
+                       "  FDRE f (.Q(q), .C(clk_a), .CE(1'b1), .D(d), .R(1'b0));\n"
+                       "  mine m (.a(d), .b(z), .c(d));\n"
+                       "endmodule\n",
+                       "top");
+    CHECK_FALSE(run->r->cdc);
+    CHECK(run->count("FE-SLANG-PortDoesNotExist") == 1);
+    CHECK(run->count("FE-PRIMITIVE-PORT") == 0);
+}
+
+TEST_CASE("Primitives: Intel altsyncram and DDR cells", "[primitives]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input [7:0] d, input [3:0] a, output [7:0] q, output [7:0] q1,\n"
+        "           output [1:0] h, output [1:0] l, output [1:0] o);\n"
+        "  reg [7:0] dr; reg [3:0] ar, br;\n"
+        "  always @(posedge clk_a) begin dr <= d; ar <= a; end\n"
+        "  always @(posedge clk_b) br <= a;\n"
+        "  altsyncram #(.operation_mode(\"DUAL_PORT\"), .width_a(8), .widthad_a(4), .numwords_a(16), .width_b(8),\n"
+        "    .widthad_b(4), .numwords_b(16), .address_reg_b(\"CLOCK1\"), .outdata_reg_b(\"UNREGISTERED\"))\n"
+        "    dual (.clock0(clk_a), .wren_a(1'b1), .address_a(ar), .data_a(dr), .clock1(clk_b), .address_b(br),\n"
+        "    .q_b(q));\n"
+        "  altsyncram #(.operation_mode(\"DUAL_PORT\"), .width_a(8), .widthad_a(4), .numwords_a(16), .width_b(8),\n"
+        "    .widthad_b(4), .numwords_b(16), .address_reg_b(\"CLOCK0\"), .outdata_reg_b(\"UNREGISTERED\"))\n"
+        "    single (.clock0(clk_a), .wren_a(1'b1), .address_a(ar), .data_a(dr), .clock1(clk_b), .address_b(ar),\n"
+        "    .q_b(q1));\n"
+        "  altddio_in #(.width(2)) din (.datain(d[1:0]), .inclock(clk_a), .dataout_h(h), .dataout_l(l));\n"
+        "  altddio_out #(.width(2)) dout (.datain_h(h), .datain_l(l), .outclock(clk_b), .dataout(o));\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(crosses(*run, "top.dual.mem_a", "top.dual.qb"));
+    CHECK_FALSE(crosses(*run, "top.", "top.single."));
+    CHECK(crosses(*run, "top.din.", "top.dout."));
+}
+
+TEST_CASE("Primitives: VHDL block RAM and XPM memory", "[primitives][vhdl]") {
+    auto run = analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "library unisim; use unisim.vcomponents.all;\n"
+                       "library xpm; use xpm.vcomponents.all;\n"
+                       "entity top is port (clk_a, clk_b : in std_logic; d : in std_logic_vector(31 downto 0);\n"
+                       "  a : in std_logic_vector(15 downto 0); q, q2 : out std_logic_vector(31 downto 0)); end;\n"
+                       "architecture rtl of top is\n"
+                       "  signal dr : std_logic_vector(31 downto 0); signal ar, br : std_logic_vector(15 downto 0);\n"
+                       "begin\n"
+                       "  process (clk_a) begin if rising_edge(clk_a) then dr <= d; ar <= a; end if; end process;\n"
+                       "  process (clk_b) begin if rising_edge(clk_b) then br <= a; end if; end process;\n"
+                       "  b : RAMB36E1 generic map (READ_WIDTH_A => 36, WRITE_WIDTH_B => 36, INIT_00 => (others => '0'))\n"
+                       "    port map (CLKARDCLK => clk_b, ENARDEN => '1', ADDRARDADDR => br, DOADO => q,\n"
+                       "              CLKBWRCLK => clk_a, ENBWREN => '1', ADDRBWRADDR => ar, DIBDI => dr,\n"
+                       "              WEBWE => x\"FF\", WEA => x\"0\", DIADI => (others => '0'), DIPADIP => x\"0\",\n"
+                       "              DIPBDIP => x\"0\", REGCEAREGCE => '1', REGCEB => '1', RSTRAMARSTRAM => '0',\n"
+                       "              RSTRAMB => '0', RSTREGARSTREG => '0', RSTREGB => '0', CASCADEINA => '0',\n"
+                       "              CASCADEINB => '0', INJECTDBITERR => '0', INJECTSBITERR => '0',\n"
+                       "              CASCADEOUTA => open, NOTAPORT => open);\n"
+                       "  m : xpm_memory_sdpram generic map (ADDR_WIDTH_A => 4, ADDR_WIDTH_B => 4, MEMORY_SIZE => 512,\n"
+                       "      WRITE_DATA_WIDTH_A => 32, READ_DATA_WIDTH_B => 32, BYTE_WRITE_WIDTH_A => 32,\n"
+                       "      CLOCKING_MODE => \"independent_clock\")\n"
+                       "    port map (clka => clk_a, ena => '1', wea => \"1\", addra => ar(3 downto 0), dina => dr,\n"
+                       "              clkb => clk_b, enb => '1', addrb => br(3 downto 0), doutb => q2, rstb => '0',\n"
+                       "              regceb => '1', sleep => '0', injectsbiterra => '0', injectdbiterra => '0');\n"
+                       "end;\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-PRIMITIVE-PORT") == 1); // NOTAPORT
+    CHECK(crosses(*run, "top.b.mem_b", "top.b.da"));
+    CHECK(crosses(*run, "top.m.mem", "top.m.pipe"));
 }
