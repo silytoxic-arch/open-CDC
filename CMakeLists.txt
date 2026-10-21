@@ -55,6 +55,9 @@ add_subdirectory(src/engine)
 add_subdirectory(src/cli)
 
 if(OPENCDC_BUILD_GUI)
+    # Found here (not only in src/gui) so that the imported Qt targets are
+    # visible to tests/ as well (the Windows GUI tests put Qt's bin/ on PATH).
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Concurrent)
     add_subdirectory(src/gui)
 endif()
 
