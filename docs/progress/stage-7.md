@@ -88,15 +88,15 @@
 
 | 环境 | 构建 | 测试 |
 |---|---|---|
-| Linux x64，GCC 13.3，Release，`-Werror` | ✅ 零警告 | ✅ 229/229 |
-| Linux x64，GCC 13.3，Debug，`-Werror` | ✅ 零警告 | ✅ 229/229 |
+| Linux x64，GCC 13.3，Release，`-Werror` | ✅ 零警告 | ✅ 230/230 |
+| Linux x64，GCC 13.3，Debug，`-Werror` | ✅ 零警告 | ✅ 230/230 |
 | Linux 安装树、TGZ、DEB（cpack） | ✅ 安装后的 CLI 和 GUI 自测通过 | ✅ |
-| Linux x64，Clang 18，Debug，`-Werror` | ✅ 零警告 | ✅ 229/229 |
-| Linux x64，GCC，ASan + UBSan + `_GLIBCXX_DEBUG`（检查迭代器的 STL） | ✅ | ✅ 225/225（不含 GUI），真实工程和基准设计均无报错 |
-| Windows x64 + VS2022 | ⚠️ 仍未实际验证；CI 配置和一键脚本 `tools/ci/verify-windows.ps1` 已就绪 | — |
+| Linux x64，Clang 18，Debug，`-Werror` | ✅ 零警告 | ✅ 230/230 |
+| Linux x64，GCC，ASan + UBSan + `_GLIBCXX_DEBUG`（检查迭代器的 STL） | ✅ | ✅ 226/226（不含 GUI），真实工程和基准设计均无报错 |
+| Windows x64 + VS2022（GitHub Actions），Debug / Release，`/W4 /WX` | ✅ 零警告 | ✅ 230/230；安装测试在 PATH 中去掉 Qt 后运行安装好的 GUI；生成 ZIP 和 NSIS 安装包 |
 
-229 个 CTest 测试：
-- 212 个 Catch2 用例，本阶段新增 7 个，主要在 `test_waivers.cpp` 和 `test_report.cpp`；
+230 个 CTest 测试：
+- 213 个 Catch2 用例，本阶段新增 8 个，主要在 `test_waivers.cpp`、`test_report.cpp`，另有 CRLF 约束文件的回归测试；
 - 11 个 CLI 端到端测试；
 - 4 个 GUI 无头测试；
 - 1 个安装测试；
@@ -108,12 +108,11 @@
 
 ## 5. 已知限制
 
-1. **Windows/MSVC 仍未实际编译。** 本环境无法访问 GitHub，也无法安装 Windows 交叉编译工具链。已经做的替代验证：
-   - GCC 和 Clang 两种编译器零警告；
-   - ASan/UBSan 加检查迭代器的 STL（对应 MSVC Debug 的迭代器检查）全部通过；
-   - 静态检查了 Windows 专用代码路径（UTF-8 路径转换、`gmtime_s`、控制台代码页、`/utf-8`）。
-
-   在 Windows 上一条命令即可验证：`tools/ci/verify-windows.ps1`，它会依次完成配置、Debug/Release 构建（`/W4 /WX`）、全部测试和打包，并写出日志。第一次构建可能需要修正 MSVC 特有的警告。
+1. Windows 版通过 GitHub Actions 验证（`silytoxic-arch/open-CDC`），但还没有在一台全新的 Windows 机器上手动安装试用过。安装包已自带 Qt 和 MSVC 运行库，安装测试也在 PATH 中去掉 Qt 后运行；不过 CI 机器装有 VC++ 运行库，"全新系统上完全不依赖外部运行库"这一点只能靠文件检查来保证。
+   Windows CI 首次运行发现并修复了 3 个问题：
+   - **约束文件为 CRLF 换行时，Tcl 的反斜杠续行失效**（真实 bug，已加回归测试）；
+   - 测试代码中的 MSVC C4702 警告；
+   - 安装包缺少 MSVC 运行库。
 2. 分析是单线程的。在 10⁶ 寄存器的设计上，前端（slang）约占四分之一的时间。
 3. 豁免按名称和指纹匹配。寄存器改名后指纹会变，豁免会变成 `WAIVER-UNUSED`。这是有意的设计，但需要人工更新豁免。
 4. GUI 的层次树仍然为每个实例创建一个条目（34 万个实例时填充约 2 s）。

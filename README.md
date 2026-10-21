@@ -1,5 +1,7 @@
 # OpenCDC Analyzer
 
+[![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
+
 FPGA clock-domain-crossing (CDC) static analysis tool. Current status is **stage 7, engineering (reports, waivers, performance, packaging)**: all planned stages are done.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
@@ -32,7 +34,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Waivers: by rule, path fingerprint, source/destination glob; reason required, optional expiry; waived hits stay visible everywhere ([docs/waivers.md](docs/waivers.md)) | ✅ |
 | Reports: self-contained HTML (summary, stages, clocks, rules, every path with its schematic, structures, waivers, diagnostics, unanalyzed constructs), CSV (paths, rule hits), JSON (streamed) — from the CLI and the GUI | ✅ |
 | Scale: 10⁶ registers analyzed in ~19 s / 2.6 GB on 2 vCPUs; GUI tables are model/view ([docs/benchmarks.md](docs/benchmarks.md)) | ✅ |
-| Install rules and packages: Windows ZIP + NSIS installer with the Qt runtime deployed (windeployqt), Linux TGZ/DEB | ✅ |
+| Install rules and packages: Windows ZIP + NSIS installer with the Qt and MSVC runtimes bundled, Linux TGZ/DEB; built and tested by CI on Windows (MSVC `/W4 /WX`) and Linux (GCC, Clang, sanitizers) | ✅ |
 
 Constructs that can't be modelled are listed as `IR-UNSUPPORTED-*` diagnostics and in the report's "not analyzed" table. They are never silently dropped.
 
@@ -78,7 +80,7 @@ cmake --install build/<preset> --config Release --prefix <dir>       # installed
 cpack --config build/<preset>/CPackConfig.cmake -C Release -B dist    # packages
 ```
 
-On Windows this produces `OpenCDC-<version>-windows-x64.zip`, and an NSIS installer when `makensis` is on `PATH`. The installer adds a Start-menu entry and can optionally add the CLI to `PATH`. `opencdc-gui.exe` comes with the Qt runtime deployed next to it, so neither package needs a Qt installation. Programs are in `bin/`; `docs/`, `examples/` and `tools/` are next to it. On Linux, CPack produces a TGZ and a DEB that use the system Qt; data files go to `share/opencdc/`. The CTest test `package.install_smoke` installs the tree and runs the installed CLI and GUI.
+On Windows this produces `OpenCDC-<version>-windows-x64.zip`, and an NSIS installer when `makensis` is on `PATH`. The installer adds a Start-menu entry and can optionally add the CLI to `PATH`. The Qt runtime (deployed by windeployqt) and the Visual C++ runtime are next to the executables, so neither package needs a Qt installation or the VC++ Redistributable. Every CI run uploads these packages as build artifacts (Actions → the run → Artifacts). Programs are in `bin/`; `docs/`, `examples/` and `tools/` are next to it. On Linux, CPack produces a TGZ and a DEB that use the system Qt; data files go to `share/opencdc/`. The CTest test `package.install_smoke` installs the tree and runs the installed CLI and GUI.
 
 ### Linux / macOS (development)
 

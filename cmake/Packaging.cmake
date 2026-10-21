@@ -20,6 +20,15 @@ install(TARGETS opencdc
 
 # opencdc-gui is installed (with the Qt deployment) by src/gui/CMakeLists.txt.
 
+if(MSVC)
+    # The Visual C++ runtime (vcruntime140*.dll, msvcp140*.dll) next to the
+    # executables: the package must run on a machine without the VC++
+    # Redistributable. (The UCRT is part of Windows 10 and later.)
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ${CMAKE_INSTALL_BINDIR})
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT ${OPENCDC_COMPONENT})
+    include(InstallRequiredSystemLibraries)
+endif()
+
 install(FILES README.md DESTINATION ${OPENCDC_DATA_DIR} COMPONENT ${OPENCDC_COMPONENT})
 install(FILES third_party/README.md DESTINATION ${OPENCDC_DATA_DIR}
     RENAME THIRD_PARTY_NOTICES.md COMPONENT ${OPENCDC_COMPONENT})

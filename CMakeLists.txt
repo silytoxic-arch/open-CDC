@@ -5,6 +5,11 @@ project(OpenCDC
     DESCRIPTION "OpenCDC Analyzer - FPGA clock domain crossing static analysis"
     LANGUAGES CXX)
 
+# CMake >= 3.31: normalize install() destinations ("./docs" -> "docs").
+if(POLICY CMP0177)
+    cmake_policy(SET CMP0177 NEW)
+endif()
+
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
     message(FATAL_ERROR "In-source builds are not allowed. Use a separate build directory or CMake presets.")
 endif()
