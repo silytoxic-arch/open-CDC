@@ -107,6 +107,11 @@ open(os.path.join(work, "cm7.sdc"), "w").write(
     "create_clock -name clkIn -period 8 [get_ports clkIn]\n"
     "create_clock -name axilClk -period 6.4 [get_ports axilClk]\n"
     "set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks clkIn] -group [get_clocks axilClk]\n")
+open(os.path.join(work, "gty.sdc"), "w").write(
+    "create_clock -name ref -period 6.4 [get_ports {qPllRefClk[0]}]\n"
+    "create_clock -name axil -period 6.4 [get_ports axilClk]\n"
+    "set_clock_groups -asynchronous -group ref -group axil\n")
+surf.append("xilinx/UltraScale+/gtyUs+/rtl/GtyUltraScaleQuadPll.vhd")
 open(os.path.join(work, "fifo.sdc"), "w").write(
     "create_clock -name wr -period 8 [get_ports wr_clk]\n"
     "create_clock -name rd -period 6 [get_ports rd_clk]\n"
@@ -118,7 +123,8 @@ for name, top, gen, sdc in [
         ("surf_cm7_pll", "ClockManager7", {"TYPE_G": '"PLL"', "NUM_CLOCKS_G": 3, "CLKFBOUT_MULT_G": 8,
                                            "CLKOUT0_DIVIDE_G": 4, "CLKOUT1_DIVIDE_G": 8, "CLKOUT2_DIVIDE_G": 16},
          "cm7.sdc"),
-        ("surf_fifo_async", "FifoAsync", {"DATA_WIDTH_G": 8, "ADDR_WIDTH_G": 4}, "fifo.sdc")]:
+        ("surf_fifo_async", "FifoAsync", {"DATA_WIDTH_G": 8, "ADDR_WIDTH_G": 4}, "fifo.sdc"),
+        ("surf_gty_qpll", "GtyUltraScaleQuadPll", {}, "gty.sdc")]:
     json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": top,
                "sources": [{"file": os.path.join(work, "surf", f), "library": "surf"} for f in surf],
                "parameters": gen, "constraints": [sdc]},
@@ -143,5 +149,6 @@ check olo_base_fifo_async.ocdc.json   "0 latches.*gray x2.*Summary : 0 error.*CD
 check surf_cm7_mmcm.ocdc.json         "Clocks  : 5.*reset-sync x3.*MMCME2_ADV.*Summary : 0 error.*CDC     : 3 crossing path\(s\), 3 synchronized"
 check surf_cm7_pll.ocdc.json          "Clocks  : 5.*reset-sync x3.*PLLE2_ADV.*Summary : 0 error.*CDC     : 3 crossing path\(s\), 3 synchronized"
 check surf_fifo_async.ocdc.json       "Summary : 0 error.*CDC     : 7 crossing path\(s\).*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 0 path\(s\) at potential risk"
+check surf_gty_qpll.ocdc.json         "GTYE4_COMMON.*Summary : 0 error\(s\), 0 warning\(s\)"
 check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodies, 7[0-9][0-9] registers.*0 latches.*Summary : 0 error"
 exit $fail

@@ -449,6 +449,43 @@ public:
                 for (const auto& c : b.children)
                     if (models_.contains(c.definition) || primitiveModules_.contains(lower(c.definition)))
                         primitiveSites.emplace(c.loc.file, c.loc.line, c.loc.column);
+        // Unmodelled pins: one note per primitive instance (a GT has ~200 pins)
+        // instead of one per pin.
+        {
+            std::vector<Diagnostic> merged;
+            std::map<std::string, std::size_t> group; // "module|file|instance line" -> index in merged
+            std::map<std::size_t, std::vector<std::string>> pins;
+            static const std::regex pinRe("^port '([^']+)' of vendor primitive '([^']+)'");
+            for (auto& d : lastDiags) {
+                std::smatch m;
+                if (d.code != "FE-PRIMITIVE-PORT" || !std::regex_search(d.message, m, pinRe)) {
+                    merged.push_back(std::move(d));
+                    continue;
+                }
+                const std::string module = m[2].str();
+                const std::string key = module + "|" + d.location.file;
+                auto [it, inserted] = group.try_emplace(key, merged.size());
+                if (inserted)
+                    merged.push_back(d);
+                pins[it->second].push_back(m[1].str());
+            }
+            for (auto& [idx, list] : pins) {
+                std::smatch m;
+                std::regex_search(merged[idx].message, m, pinRe);
+                const std::string module = m[2].str();
+                std::string names;
+                for (std::size_t k = 0; k < list.size() && k < 8; ++k)
+                    names += (k ? ", " : "") + list[k];
+                if (list.size() > 8)
+                    names += ", ... (" + std::to_string(list.size() - 8) + " more)";
+                merged[idx].message = list.size() == 1
+                                          ? "port '" + list.front() + "' of vendor primitive '" + module +
+                                                "' is not modelled; its connection is ignored"
+                                          : std::to_string(list.size()) + " ports of vendor primitive '" + module +
+                                                "' are not modelled; their connections are ignored: " + names;
+            }
+            lastDiags = std::move(merged);
+        }
         for (auto& d : lastDiags) {
             if (d.location.file == wrapperUtf8)
                 continue;

@@ -9,6 +9,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -487,7 +490,12 @@ TEST_CASE("Primitives: block RAM, DDR and delay primitives", "[primitives]") {
     REQUIRE(run->r->cdc);
     dumpPaths(*run);
     CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
-    CHECK(run->count("FE-PRIMITIVE-PORT") == 2); // CASDINA, CASDOUTPA
+    REQUIRE(run->count("FE-PRIMITIVE-PORT") == 1); // one note for the instance
+    for (const auto& d : run->r->diagnostics)
+        if (d.code == "FE-PRIMITIVE-PORT") {
+            CHECK(d.message.find("2 ports of vendor primitive 'RAMB36E2'") == 0);
+            CHECK(d.message.find("CASDINA, CASDOUTPA") != std::string::npos);
+        }
     CHECK(run->count("FE-SLANG-ParameterDoesNotExist") == 0);
     CHECK(crosses(*run, "top.bram.mem_b", "top.bram.da")); // written on port B (clk_a), read on port A (clk_b)
     CHECK_FALSE(crosses(*run, "top.bram.mem_a", "top.bram.db")); // WEA = 0: port A never writes
@@ -730,4 +738,19 @@ TEST_CASE("Primitives: UltraScale GT channel and common from VHDL", "[primitives
     for (const auto& c : run->r->clocks->clocks)
         rx = rx || c.name == "top.ch.RXOUTCLK";
     CHECK(rx);
+}
+
+TEST_CASE("Primitive library: every model is documented in docs/primitives.md", "[primitives][docs]") {
+    std::ifstream in(std::filesystem::path(OPENCDC_TESTS_DIR) / ".." / "docs" / "primitives.md");
+    REQUIRE(in);
+    const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto& lib = frontend::PrimitiveLibrary::instance();
+    for (const auto& n : lib.names()) {
+        if (lib.isClockGenerator(n))
+            continue; // documented as MMCME2/3/4_BASE ...
+        INFO(n);
+        CHECK(doc.find("`" + n + "`") != std::string::npos);
+    }
+    CHECK(doc.find("`MMCME2/3/4_BASE`") != std::string::npos);
+    CHECK(doc.find("`PLLE2/3/4_ADV`") != std::string::npos);
 }

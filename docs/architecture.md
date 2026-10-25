@@ -879,3 +879,17 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 - **常量控制**：`SeqGraph::constantBit` 沿层次和简单逻辑（非、与、或、归约、逻辑与/或、MUX）求常量。使能恒为 0 的寄存器（只读 RAM 端口的写侧）不再加载，`neverLoads` 标记它，CDC 分析不把它当作源；使能恒为 1 的仍按原来的方式去掉。
 - **显示**：CLI、HTML、JSON（`frequencyMHz`）给出频率；HTML 时钟表列出主时钟；GUI 时钟树把派生时钟放在主时钟之下（防环：沿主时钟链最多走时钟数步）。
 - **SystemVerilog**：modport 表达式端口（`input .g(gray)`）按其表达式读写，表达式中的接口成员照常成为端口；接口中的函数经 modport `import` 调用时在调用处内联。
+
+## 19. GT 收发器与周期推导（阶段 12）
+
+- **GT 模型**由 `tools/primitives/gen_gt.py` 生成，追加在 `xilinx_unisim.v` 末尾。
+  - 通道的 `RXOUTCLK`/`TXOUTCLK`/`*OUTCLKPCS` 各由一个 `opencdc_async_source` 驱动，并带 `OPENCDC_CLOCK_PIN`。时钟分析建立黑盒时钟时按这个属性命名（`实例.RXOUTCLK`）。
+  - 恢复时钟与任何时钟都没有已知关系：未约束时，跨域路径为待复核（CDC-010）。
+  - Vivado 写法的 `create_clock [get_pins u/RXOUTCLK]` 匹配到模型的端口线网；约束源在追溯时截断，所以约束优先于黑盒。
+  - `TXDATA` 在 `TXUSRCLK2` 上寄存，`RXDATA` 在 `RXUSRCLK2` 上输出（数据来自串行线：无时钟域）。复位完成和锁定输出无时钟域。DRP 为组合直通，不在模型中引入不确定的时钟。
+- **周期推导**：`Clock::periodRatio` 和 `periodBasis` 记录派生时钟周期的来源：
+  - SDC 生成时钟：`divide_by / multiply_by`，基准为主时钟；
+  - 时钟生成器和分频缓冲器：属性中的比例，基准为主时钟，或 `CLKIN1_PERIOD`。
+
+  CLI 显示为 `period=5ns (200 MHz) = clk_in x 0.5`；HTML 报告和 GUI 显示 `= clk_in × 0.5`；JSON 增加 `periodRatio`、`periodBasis` 两个字段。
+- **原语文档**：`docs/primitives.md` 列出每个模型描述了什么、忽略了什么。单元测试检查库中每个模型都出现在文档中。
