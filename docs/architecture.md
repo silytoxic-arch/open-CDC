@@ -915,5 +915,44 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 
 - 新增 `OPENCDC_CLOCK_FREQ_IN`、`OPENCDC_CLOCK_FREQ_OUT` 两个属性，值为频率字符串（`"125.000000 MHz"`；没有单位时按 MHz）。时钟分析由它们计算比例 fin/fout 和输入周期，用于 `altera_pll` 和 Gowin（`FCLKIN`）。
 - `altpll`：比例 `clkN_divide_by / clkN_multiply_by`，输入周期为 `inclk0_input_frequency`（ps）/ 1000。
-- Lattice ECP5 `EHXPLLL`：反馈取自 CLKOP，CLKOP 的周期比例为 `CLKI_DIV / CLKFB_DIV`，CLKOSx 的比例在此基础上乘 `CLKOSx_DIV / CLKOP_DIV`。iCE40：比例 (DIVR+1)·2^DIVQ / (DIVF+1)。Gowin `rPLL`：(IDIV_SEL+1)/(FBDIV_SEL+1)，`CLKOUTD` 再乘 `DYN_SDIV_SEL`。
+- Lattice ECP5 `EHXPLLL`：VCO 周期比例为 `CLKI_DIV / (CLKFB_DIV × 反馈输出的分频)`，各输出再乘自己的分频；反馈输出由 `FEEDBK_PATH` 选择（阶段 14 起；阶段 13 只支持 CLKOP）。iCE40：比例 (DIVR+1)·2^DIVQ / (DIVF+1)。Gowin `rPLL`：(IDIV_SEL+1)/(FBDIV_SEL+1)，`CLKOUTD` 再乘 `DYN_SDIV_SEL`。
 - Gowin 的通用单元名（`DFF`、`CLKDIV` 等）不建模：它们和常见的用户模块重名，缺失的用户模块必须仍然报错。
+
+## 21. 约束一致性、Vivado 时钟报告与 Lattice/Gowin 扩展（阶段 14）
+
+### 21.1 约束一致性检查（`clock/ClockAnalyzer` 的 `checkConstraints`）
+
+| 代码 | 级别 | 条件 |
+|---|---|---|
+| `CON-INPUT-PERIOD` | warning | 时钟生成器配置的输入周期（`CLKIN1_PERIOD` 等）与驱动它的时钟周期相差超过 0.1%；输出周期按实际输入时钟计算 |
+| `CON-PERIOD-MISMATCH` | warning | 生成器输出上的约束（`create_clock`/`create_generated_clock`）周期与模型推导的周期不一致 |
+| `CON-GROUP-SINGLE` | info | `set_clock_groups` 只有一个组，不起作用 |
+| `CON-GROUP-OVERLAP` | warning | 同一时钟出现在一条约束的多个组中 |
+| `CON-GROUP-RELATED` | warning | 同一时钟族（共同的主时钟）的时钟被声明为异步 |
+
+### 21.2 Vivado 时钟报告（`engine/VivadoClocks`）
+
+- 解析：查找以 `Clock` 开头且含 `Period`、`Waveform` 列的表头。`Period` 在 `Waveform` 之前是新格式（`Clock Period Waveform Attributes Sources`），否则是旧格式（`Clock Waveform Period Frequency`，`report_timing_summary` 的 Clock Summary 也是这种）。行内 `{…}` 作为一个记号；表在空行处结束。旧格式的来源从 "Generated Clock / Generated Sources" 详情中补充。
+- 命名（`engine/ClockNaming.h`，与约束建议共用）：端口 → 端口名；厂商模型引脚 → `inst/CLKOUT0`；逻辑分频 → `cnt_reg[2]/Q`。比较时忽略大小写，`.` 与 `/` 等价（Vivado 保留 generate 作用域里的点）。
+- 匹配顺序：来源引脚 → 时钟名（SDC 名、相对层次名、Tcl 安全名）。虚拟时钟（无来源）和只有 `CLKFBOUT` 来源的反馈时钟不参与"未匹配"统计。
+- 诊断：`VIV-PERIOD-MISMATCH`（warning，差异 > 0.1%，附 OpenCDC 的推导式）、`VIV-PERIOD-UNKNOWN`（OpenCDC 没有周期，建议补 `create_clock` 或 `create_generated_clock`）、`VIV-CLOCK-UNMATCHED`、`VIV-CLOCK-MISSING`（info；逻辑分频缺失意味着 Vivado 不对它做时序分析）、`VIV-REPORT-READ`（error）。
+- 集成：工程字段 `vivadoClockReports`、CLI `--vivado-clocks`（可重复）、GUI 工程编辑器；在会话中作为时钟分析之后的一个阶段，仅在配置了报告时出现。
+
+### 21.3 Lattice/Gowin 扩展
+
+- 新模型：ECP5 `IDDRX1F`/`ODDRX1F`/`DP16KD`，iCE40 `SB_RAM40_4K*`，Gowin `SDPB`/`DPB`。Gowin `IDDR`/`ODDR` 与 Xilinx 同名，不建模。
+- VHDL 组件包：嵌入文件可在首行注释 `-- OPENCDC-LIBRARIES: a b c` 中声明它提供的库，每个库得到一份副本（`ecp5u`、`ecp5um`、`ecp5um5g`、`sb_ice40_components_syn`、`ice40up`；`gw1n`、`gw1nr`、`gw1ns`、`gw1nz`、`gw2a`、`gw2ar`、`gw5a`、`gw5ast`）。
+- 纯 VHDL 设计中本地声明的原语组件（没有厂商库子句）：先用 VHDL 前端分析，若有黑盒实例的名字是已建模原语，则改用混合链接器重新分析（与纯 Verilog 设计的做法相同）。
+
+### 21.4 在 microwatt 上发现并修正的前端问题
+
+| 问题 | 修正 |
+|---|---|
+| `data(f + 63 downto f)`：边界随变量变化但长度固定的切片报 `VHDL-NOT-STATIC` | 把两个边界分解为"同一表达式 + 常数"，长度静态时生成 `DynSelect`，索引取右边界（右边界的元素位于最低位） |
+| `numeric_std` 缺少 `std_match(std_ulogic)`、`std_match(std_ulogic_vector)`、`is_x(unsigned/signed)` | 补齐重载 |
+| `(39 downto 0 => vec, others => '0')`：VHDL-2008 中范围选择可对应一个数组值 | 按范围逐元素展开，长度不符报 `VHDL-LENGTH` |
+| `tab(i)(j) <= …`：两个变量索引 | 合并为扁平行的一个索引：offset(i) × 行长 + offset(j) |
+| 覆盖枚举全部字面量的 `case`（三个字面量用两位编码）被判为锁存器 | VHDL 规定 case 必须覆盖子类型的全部值，前面的分支都不匹配时最后一个分支必然匹配 |
+| textio 例程带参数调用（`endfile(f)`、`readline(f, l)`）报无匹配重载 | 无参数声明的忽略型例程接受任意参数 |
+| Verilog：列出选择信号全部取值、没有 default 的 `case`（uart16550）被判为锁存器 | 选择信号不超过 12 位且各项为常数时检查覆盖（casez/casex 的通配位展开），全覆盖则最后一项不再需要条件 |
+| ECP5 PLL 反馈取自 CLKOS 时周期错误（microwatt 的 CLKOP 应为 53.33 MHz/40 MHz） | 支持 `FEEDBK_PATH` |

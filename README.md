@@ -2,20 +2,20 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 13, suggested constraints, Intel/Lattice/Gowin PLL models**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 14, constraint consistency checks, Vivado clock report cross-check, Lattice/Gowin memories and VHDL packages**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–13)
+## What works today (stages 1–14)
 
 | Feature | Status |
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
 | SystemVerilog interfaces: interface instances (with their own logic), modport/generic interface ports, interface arrays, ports passed down the hierarchy; verified on PULP `axi_cdc_intf` | ✅ |
-| VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM and surf | ✅ |
+| VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM, surf and the microwatt POWER SoC | ✅ |
 | Mixed Verilog/VHDL designs in both directions, with parameters/generics and ports converted across the border; VHDL records ↔ SystemVerilog packed structs, and VHDL element associations (`p.f`, `p(i)`, `p(h downto l)`) on Verilog ports | ✅ |
-| Built-in models of vendor primitives, used when the design instantiates them without a definition: Xilinx UNISIM flip-flops/latches/buffers/SRLs/LUTs/block RAM/DDR/I-O delays, XPM CDC macros, `xpm_fifo_async` and XPM memories, MMCM/PLL clock generators (outputs become clocks derived from the input clock, with periods from the multiply/divide parameters), GT transceivers (recovered/transmit clocks as clock sources of their own), Intel `altera_std_synchronizer`/`dcfifo`/`altsyncram`/`altddio`/`altpll`/`altera_pll`, Lattice ECP5/iCE40 and Gowin PLLs; also from VHDL via `unisim.vcomponents`, `xpm.vcomponents`, `altera_mf.altera_mf_components` | ✅ |
+| Built-in models of vendor primitives, used when the design instantiates them without a definition: Xilinx UNISIM flip-flops/latches/buffers/SRLs/LUTs/block RAM/DDR/I-O delays, XPM CDC macros, `xpm_fifo_async` and XPM memories, MMCM/PLL clock generators (outputs become clocks derived from the input clock, with periods from the multiply/divide parameters), GT transceivers (recovered/transmit clocks as clock sources of their own), Intel `altera_std_synchronizer`/`dcfifo`/`altsyncram`/`altddio`/`altpll`/`altera_pll`, Lattice ECP5/iCE40 PLLs, block RAMs and DDR cells, Gowin PLLs and block RAMs; also from VHDL via `unisim.vcomponents`, `xpm.vcomponents`, `altera_mf.altera_mf_components`, the Lattice (`ecp5u`, iCE40) and Gowin (`gw1n`, `gw2a`, …) `components` packages, or a locally declared component | ✅ |
 | Module list and elaborated instance hierarchy | ✅ |
 | Frontend diagnostics with file/line, including unsupported or erroneous code | ✅ |
 | CLI `opencdc analyze`, with a JSON result | ✅ |
@@ -24,6 +24,8 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | `opencdc analyze --dump-ir`, and a JSON register list | ✅ |
 | SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins) | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
+| Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), clock groups with one group, overlapping groups, or related clocks declared asynchronous (`CON-GROUP-*`) | ✅ |
+| Vivado clock report cross-check (`--vivado-clocks`, project field `vivadoClockReports`, GUI project editor): `report_clocks` / `report_timing_summary` output read back, clocks matched by source pin or name, period mismatches (`VIV-PERIOD-MISMATCH`) and clocks only one side knows reported | ✅ |
 | Clock domain analysis: register clock tracing through hierarchy, inverters, gating, clock muxes, dividers; clock relation matrix (same / synchronous / asynchronous / exclusive / **unknown**, with a reason for each pair) | ✅ |
 | GUI Clock Domain Viewer (frequency, derived clocks under their master, period derivation such as `clk_in × 0.5`), JSON `clockAnalysis` section | ✅ |
 | Sequential dependency graph: register inputs traced back through logic and hierarchy | ✅ |
@@ -111,6 +113,7 @@ opencdc analyze examples/cdc_advanced/cdc_advanced_waived.ocdc.json    # same de
 opencdc analyze examples/cdc_advanced/cdc_advanced.ocdc.json -q --html report.html --csv report/
 opencdc analyze examples/primitives/primitives.ocdc.json      # MMCM (derived clocks with periods), XPM, block RAM
 opencdc analyze my.ocdc.json -q --suggest-sdc suggested.sdc    # constraints for missing clocks and unknown relations
+opencdc analyze examples/primitives/primitives.ocdc.json --vivado-clocks examples/primitives/vivado_clocks.rpt   # compare periods with Vivado
 python3 tools/bench/gen_bench.py soc --domains 8 --blocks 1250 --out bench/soc_100k   # benchmark design
 opencdc-gui examples/smoke/smoke.ocdc.json
 ```
@@ -137,7 +140,8 @@ In the HTML report, a design with more than 5000 paths lists only the paths that
   "defines": {"WIDTH": "8", "USE_FIFO": null},
   "constraints": ["constraints/clocks.sdc"],
   "options": {"unknownClockRelation": "report", "minSyncStages": 2, "reconvergenceDepth": 2},
-  "waivers": ["waivers.json"]
+  "waivers": ["waivers.json"],
+  "vivadoClockReports": ["impl/clocks.rpt"]
 }
 ```
 
@@ -151,6 +155,8 @@ Different clock names alone never make two clocks asynchronous.
 `options.minSyncStages` (default 2) is the minimum flop-chain length accepted by CDC-002, and the minimum reset synchronizer length for CDC-006.
 
 `waivers` lists waiver files (see [docs/waivers.md](docs/waivers.md)).
+
+`vivadoClockReports` (optional) lists outputs of Vivado `report_clocks` (or `report_timing_summary`). Their clocks are matched to the clock model by source pin or name, and differing periods are reported as `VIV-PERIOD-MISMATCH`. The CLI option `--vivado-clocks <file>` adds a report for one run.
 
 `options.reconvergenceDepth` (default 2, range 0–8) is the number of register levels after synchronizer outputs that CDC-005 searches for reconvergence.
 
