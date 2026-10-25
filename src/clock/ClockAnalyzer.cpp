@@ -185,8 +185,41 @@ private:
                 return std::nullopt;
             }
         };
-        const auto ratio = attrNumber("OPENCDC_CLOCK_RATIO");
-        const auto inPeriod = attrNumber("OPENCDC_CLOCK_INPUT_PERIOD");
+        // frequencies as written on Intel/Gowin PLLs: "200.000000 MHz", "100" (MHz)
+        auto attrFrequencyMHz = [&](std::string_view key) -> std::optional<double> {
+            const auto* a = net.findAttr(key);
+            if (!a)
+                return std::nullopt;
+            std::string v = a->value;
+            std::erase(v, '"');
+            try {
+                std::size_t used = 0;
+                double x = std::stod(v, &used);
+                std::string unit = v.substr(used);
+                std::erase_if(unit, [](unsigned char ch) { return std::isspace(ch) != 0; });
+                std::ranges::transform(unit, unit.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                if (unit == "ghz")
+                    x *= 1000.0;
+                else if (unit == "khz")
+                    x /= 1000.0;
+                else if (unit == "hz")
+                    x /= 1e6;
+                else if (!unit.empty() && unit != "mhz")
+                    return std::nullopt;
+                return x > 0 && std::isfinite(x) ? std::optional(x) : std::nullopt;
+            }
+            catch (const std::exception&) {
+                return std::nullopt;
+            }
+        };
+        auto ratio = attrNumber("OPENCDC_CLOCK_RATIO");
+        auto inPeriod = attrNumber("OPENCDC_CLOCK_INPUT_PERIOD");
+        if (const auto fin = attrFrequencyMHz("OPENCDC_CLOCK_FREQ_IN")) {
+            if (const auto fout = attrFrequencyMHz("OPENCDC_CLOCK_FREQ_OUT"); fout && !ratio)
+                ratio = *fin / *fout;
+            if (!inPeriod)
+                inPeriod = 1000.0 / *fin;
+        }
         if (const auto* pin = net.findAttr("OPENCDC_CLOCK_PIN"); pin && c.name.size() >= net.name.size()) {
             std::string v = pin->value;
             std::erase(v, '"');

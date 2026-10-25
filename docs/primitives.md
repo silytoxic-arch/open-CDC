@@ -12,6 +12,7 @@ Common rules:
   - `library unisim; use unisim.vcomponents.all;`
   - `library xpm; use xpm.vcomponents.all;`
   - `library altera_mf; use altera_mf.altera_mf_components.all;`
+- (the Lattice and Gowin models are available from Verilog/SystemVerilog only)
 - "No clock domain" means the signal is driven by the internal black box `opencdc_async_source`. Such a signal used as an asynchronous reset is checked by CDC-006. As data, it is listed as `CDC-NO-DOMAIN` and not checked.
 
 Sources:
@@ -67,13 +68,31 @@ Sources:
 | `dcfifo` | Asynchronous FIFO with Gray pointers synchronized in both directions (`rdsync_delaypipe` − 2 stages, at least 2) |
 | `altsyncram`, `altera_syncram` | Port A on `clock0`; port B on `clock1` when `address_reg_b` or `outdata_reg_b` is `"CLOCK1"`, otherwise on `clock0`; per-port write arrays as for block RAM |
 | `altddio_in`, `altddio_out` | DDR input (falling-edge capture) and output registers |
+| `altpll` | `clk[n]` are clocks derived from `inclk[0]`, period = input period × `clkN_divide_by` / `clkN_multiply_by`; the input period comes from the input clock or from `inclk0_input_frequency` (ps); `locked` has no clock domain |
+| `altera_pll` | `outclk[n]` derived from `refclk`; period ratio = `reference_clock_frequency` / `output_clock_frequencyN` (strings such as `"125.000000 MHz"`); `locked` has no clock domain |
+
+## Lattice
+
+| Primitive | Model |
+|---|---|
+| `EHXPLLL` (ECP5) | `CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3` derived from `CLKI`: f(CLKOP) = f(CLKI) × `CLKFB_DIV` / `CLKI_DIV`, f(CLKOSx) = f(CLKOP) × `CLKOP_DIV` / `CLKOSx_DIV` (feedback from `CLKOP`); input period from the input clock or `FREQUENCY_PIN_CLKI` (MHz); `LOCK` has no clock domain |
+| `SB_PLL40_CORE`, `SB_PLL40_PAD` (iCE40) | `PLLOUTCORE`/`PLLOUTGLOBAL` derived from the reference: f = f(ref) × (`DIVF`+1) / ((`DIVR`+1) × 2^`DIVQ`); `LOCK` has no clock domain |
+| `SB_GB`, `SB_DFF`, `SB_DFFE`, `SB_DFFR`, `SB_DFFS`, `SB_DFFER` (iCE40) | Global buffer (wire) and flip-flops |
+
+## Gowin
+
+| Primitive | Model |
+|---|---|
+| `rPLL`, `PLLVR` | `CLKOUT`/`CLKOUTP` derived from `CLKIN`: f = f(in) × (`FBDIV_SEL`+1) / (`IDIV_SEL`+1); `CLKOUTD` = `CLKOUT` / `DYN_SDIV_SEL`, `CLKOUTD3` = `CLKOUT` / 3; input frequency from the input clock or `FCLKIN` (MHz); `LOCK` has no clock domain |
+
+Generic Gowin cell names (`DFF`, `DFFE`, `CLKDIV`, …) are deliberately not modelled: they collide with common user module names, and a missing user module must remain an error.
 
 ## Not modelled
 
 These primitives are still reported as `FE-UNKNOWN-MODULE`:
 - Xilinx: `ICAPE2`/`ICAPE3`, `STARTUPE2/3`, `DSP48E1`/`DSP48E2`, `PCIE*`, `CMAC*`, `HBM*`;
-- Intel: transceiver and PLL IP;
-- Lattice, Gowin and Microchip primitives.
+- Intel: transceiver IP, `altlvds`, `altiobuf`;
+- Lattice: SERDES, DDR and memory primitives; Gowin: memory and DDR primitives; Microchip primitives.
 
 For each one you can:
 - provide your own behavioral model in the sources (it replaces the built-in lookup), or

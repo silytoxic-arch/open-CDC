@@ -217,3 +217,81 @@ module altera_syncram #(parameter address_aclr_a = "NONE", parameter address_acl
     assign q_b = qb;
     assign eccstatus = 8'd0;
 endmodule
+
+// ---------------------------------------------------------------- PLLs
+// altpll: clkN period = input period x clkN_divide_by / clkN_multiply_by
+// (inclk0_input_frequency is the input period in ps). locked has no clock
+// domain.
+module altpll #(parameter bandwidth_type = "AUTO", parameter compensate_clock = "CLK0",
+                parameter integer inclk0_input_frequency = 10000, parameter intended_device_family = "",
+                parameter lpm_type = "altpll", parameter operation_mode = "NORMAL",
+                parameter pll_type = "AUTO", parameter port_locked = "PORT_USED", parameter width_clock = 5,
+                parameter integer clk0_multiply_by = 1, parameter integer clk0_divide_by = 1,
+                parameter integer clk1_multiply_by = 1, parameter integer clk1_divide_by = 1,
+                parameter integer clk2_multiply_by = 1, parameter integer clk2_divide_by = 1,
+                parameter integer clk3_multiply_by = 1, parameter integer clk3_divide_by = 1,
+                parameter integer clk4_multiply_by = 1, parameter integer clk4_divide_by = 1,
+                parameter clk0_duty_cycle = 50, parameter clk0_phase_shift = "0",
+                parameter clk1_duty_cycle = 50, parameter clk1_phase_shift = "0",
+                parameter clk2_duty_cycle = 50, parameter clk2_phase_shift = "0",
+                parameter clk3_duty_cycle = 50, parameter clk3_phase_shift = "0",
+                parameter clk4_duty_cycle = 50, parameter clk4_phase_shift = "0")
+               (input [1:0] inclk, input areset, input pfdena, input clkswitch, input fbin,
+                output [width_clock-1:0] clk, output locked, output fbout, output activeclock);
+    wire ref = inclk[0];
+    localparam real INP = inclk0_input_frequency / 1000.0;
+    (* OPENCDC_CLOCK_PIN = "clk[0]", OPENCDC_CLOCK_RATIO = (1.0 * clk0_divide_by) / clk0_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c0 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[1]", OPENCDC_CLOCK_RATIO = (1.0 * clk1_divide_by) / clk1_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c1 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[2]", OPENCDC_CLOCK_RATIO = (1.0 * clk2_divide_by) / clk2_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c2 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[3]", OPENCDC_CLOCK_RATIO = (1.0 * clk3_divide_by) / clk3_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c3 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[4]", OPENCDC_CLOCK_RATIO = (1.0 * clk4_divide_by) / clk4_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c4 = 1'b0;
+    always @(posedge ref) begin c0 <= ~c0; c1 <= ~c1; c2 <= ~c2; c3 <= ~c3; c4 <= ~c4; end
+    wire [4:0] all = {c4, c3, c2, c1, c0};
+    assign clk = all[width_clock-1:0];
+    opencdc_async_source u_locked (locked);
+    assign fbout = ref;
+    assign activeclock = 1'b0;
+endmodule
+
+// altera_pll (Quartus Prime): frequencies are strings such as "200.000000 MHz";
+// the clock analysis derives each output period from them.
+module altera_pll #(parameter fractional_vco_multiplier = "false",
+                    parameter reference_clock_frequency = "100.0 MHz", parameter operation_mode = "direct",
+                    parameter integer number_of_clocks = 1,
+                    parameter output_clock_frequency0 = "100.0 MHz", parameter output_clock_frequency1 = "100.0 MHz",
+                    parameter output_clock_frequency2 = "100.0 MHz", parameter output_clock_frequency3 = "100.0 MHz",
+                    parameter output_clock_frequency4 = "100.0 MHz", parameter output_clock_frequency5 = "100.0 MHz",
+                    parameter output_clock_frequency6 = "100.0 MHz", parameter output_clock_frequency7 = "100.0 MHz",
+                    parameter phase_shift0 = "0 ps", parameter duty_cycle0 = 50, parameter pll_type = "General",
+                    parameter pll_subtype = "General")
+                   (input refclk, input rst, input fbclk, output [number_of_clocks-1:0] outclk, output locked,
+                    output fboutclk);
+    (* OPENCDC_CLOCK_PIN = "outclk[0]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency0 *) reg o0 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "outclk[1]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency1 *) reg o1 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "outclk[2]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency2 *) reg o2 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "outclk[3]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency3 *) reg o3 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "outclk[4]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency4 *) reg o4 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "outclk[5]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency5 *) reg o5 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "outclk[6]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency6 *) reg o6 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "outclk[7]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency7 *) reg o7 = 1'b0;
+    always @(posedge refclk) begin
+        o0 <= ~o0; o1 <= ~o1; o2 <= ~o2; o3 <= ~o3; o4 <= ~o4; o5 <= ~o5; o6 <= ~o6; o7 <= ~o7;
+    end
+    wire [7:0] all = {o7, o6, o5, o4, o3, o2, o1, o0};
+    assign outclk = all[number_of_clocks-1:0];
+    opencdc_async_source u_locked (locked);
+    assign fboutclk = refclk;
+endmodule

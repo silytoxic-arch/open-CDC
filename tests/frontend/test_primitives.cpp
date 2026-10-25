@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -753,4 +754,49 @@ TEST_CASE("Primitive library: every model is documented in docs/primitives.md", 
     }
     CHECK(doc.find("`MMCME2/3/4_BASE`") != std::string::npos);
     CHECK(doc.find("`PLLE2/3/4_ADV`") != std::string::npos);
+}
+
+TEST_CASE("Primitives: Intel, Lattice and Gowin PLL output periods", "[primitives][pll]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input d, output [5:0] q);\n"
+        "  wire [4:0] ac; wire [1:0] ap; wire op, os, ice, g, gd;\n"
+        "  altpll #(.inclk0_input_frequency(20000), .clk0_multiply_by(5), .clk0_divide_by(2), .width_clock(5))\n"
+        "    a1 (.inclk({1'b0, clk_b}), .clk(ac), .areset(1'b0));\n" // 20 ns x 2/5 = 8 ns
+        "  altera_pll #(.reference_clock_frequency(\"50.0 MHz\"), .number_of_clocks(2),\n"
+        "    .output_clock_frequency0(\"125.000000 MHz\"), .output_clock_frequency1(\"25 MHz\"))\n"
+        "    a2 (.refclk(clk_b), .rst(1'b0), .outclk(ap));\n"
+        "  EHXPLLL #(.CLKI_DIV(1), .CLKFB_DIV(4), .CLKOP_DIV(6), .CLKOS_DIV(12), .FREQUENCY_PIN_CLKI(25.0))\n"
+        "    l1 (.CLKI(clk_b), .CLKFB(op), .CLKOP(op), .CLKOS(os), .RST(1'b0), .STDBY(1'b0));\n"
+        "  SB_PLL40_CORE #(.DIVR(4'd0), .DIVF(7'd66), .DIVQ(3'd5)) i1 (.REFERENCECLK(clk_a), .PLLOUTCORE(ice),\n"
+        "    .RESETB(1'b1), .BYPASS(1'b0));\n"
+        "  rPLL #(.FCLKIN(\"27\"), .IDIV_SEL(3), .FBDIV_SEL(54), .DYN_SDIV_SEL(2)) g1 (.CLKIN(clk_b), .CLKOUT(g),\n"
+        "    .CLKOUTD(gd), .RESET(1'b0), .RESET_P(1'b0));\n"
+        "  reg [5:0] r;\n"
+        "  always @(posedge ac[0]) r[0] <= d;\n"
+        "  always @(posedge ap[0]) r[1] <= d;\n"
+        "  always @(posedge op) r[2] <= d;\n"
+        "  always @(posedge os) r[3] <= d;\n"
+        "  always @(posedge ice) r[4] <= d;\n"
+        "  always @(posedge gd) r[5] <= d;\n"
+        "  assign q = r;\n"
+        "endmodule\n",
+        "top", "create_clock -name clk_a -period 83.333 [get_ports clk_a]\n");
+    REQUIRE(run->r->clocks);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    std::map<std::string, double> period;
+    for (const auto& c : run->r->clocks->clocks)
+        if (c.periodNs)
+            period[c.name] = *c.periodNs;
+    auto near = [&](const char* name, double expected) {
+        INFO(name);
+        REQUIRE(period.contains(name));
+        CHECK(std::abs(period[name] - expected) < 1e-3 * expected);
+    };
+    near("top.a1.clk[0]", 8.0);                       // inclk0 period 20 ns x 2 / 5
+    near("top.a2.outclk[0]", 8.0);                    // 1000 / 125 MHz
+    near("top.l1.CLKOP", 10.0);                       // 40 ns x 1 / 4
+    near("top.l1.CLKOS", 20.0);                       // CLKOP x 12 / 6
+    near("top.i1.PLLOUTCORE", 83.333 * 32.0 / 67.0);  // master clk_a x (DIVR+1) 2^DIVQ / (DIVF+1)
+    near("top.g1.CLKOUTD", 1000.0 / 27.0 * 4.0 / 55.0 * 2.0);
 }

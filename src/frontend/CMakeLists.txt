@@ -6,6 +6,7 @@ set(_prim_files
     ${_prim_dir}/xilinx_unisim.v
     ${_prim_dir}/xilinx_xpm.v
     ${_prim_dir}/intel.v
+    ${_prim_dir}/lattice_gowin.v
     ${_prim_dir}/unisim_vcomponents.vhd
     ${_prim_dir}/xpm_vcomponents.vhd
     ${_prim_dir}/altera_mf_components.vhd)
