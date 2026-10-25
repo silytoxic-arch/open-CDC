@@ -228,6 +228,12 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     // slang's default (131072) guards against runaway generate loops; large
     // flat designs (a 300k-iteration generate) legitimately need more.
     compOptions.maxGenerateSteps = 1U << 24;
+    // Design elements without `timescale next to ones with it are accepted
+    // (as by FPGA tools): they get 1ns/1ps. The generated mixed-language
+    // wrapper relies on this as well.
+    compOptions.defaultTimeScale = slang::TimeScale(
+        slang::TimeScaleValue(slang::TimeUnit::Nanoseconds, slang::TimeScaleMagnitude::One),
+        slang::TimeScaleValue(slang::TimeUnit::Picoseconds, slang::TimeScaleMagnitude::One));
     for (const auto& def : input.defines)
         ppOptions.predefines.push_back(def.value ? def.name + "=" + *def.value : def.name);
     for (const auto& dir : input.includeDirs)

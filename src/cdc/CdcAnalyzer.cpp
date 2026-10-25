@@ -4,6 +4,7 @@
 #include "ir/Dump.h"
 
 #include <algorithm>
+#include <functional>
 #include <cctype>
 #include <cstdio>
 #include <map>
@@ -88,9 +89,9 @@ public:
         classify();
         detail::classifyResetPaths(st_);
         detail::recognizeProtocols(st_);
+        detail::buildStructures(st_); // before convergence: reconvergence inside one FIFO is its protocol
         detail::analyzeConvergence(st_);
         finish();
-        detail::buildStructures(st_);
         st_.result->nodes = st_.sg.takeNodes();
         return st_.result;
     }
@@ -709,21 +710,34 @@ private:
             const auto bit = view.bitOf(inst, reg.d, b);
             if (!bit)
                 return std::nullopt;
-            const graph::Driver d = view.driver(*bit);
-            if (d.kind != graph::DriverKind::Cell)
+            // the bit is an AND tree (through inverters) with a synchronizer output as one leaf
+            std::function<std::optional<SyncOut>(const graph::BitRef&, int)> gate =
+                [&](const graph::BitRef& at, int depth) -> std::optional<SyncOut> {
+                const graph::Driver d = view.driver(at);
+                if (d.kind == graph::DriverKind::Register) {
+                    const auto node = SeqGraph::registerNode(st_.sg.globalRegisterOf(d.bit.inst, d.index));
+                    if (auto it = st_.syncOutputs.find(node);
+                        it != st_.syncOutputs.end() && st_.related(it->second.srcClock, p.srcClock))
+                        return it->second;
+                    return std::nullopt;
+                }
+                if (d.kind != graph::DriverKind::Cell || depth > 8)
+                    return std::nullopt;
+                const auto k = view.bodyOf(d.bit.inst).cells.at(d.index).kind;
+                const bool andLike = k == ir::CellKind::And || k == ir::CellKind::LogicAnd;
+                const bool inverter = k == ir::CellKind::Not || k == ir::CellKind::LogicNot;
+                if (!andLike && !inverter)
+                    return std::nullopt;
+                for (const auto& in : st_.sg.cellInputs(d.bit.inst, d.index, d.bit.bit))
+                    if (auto q = gate(in.bit, depth + 1))
+                        return q;
                 return std::nullopt;
-            const auto& cell = view.bodyOf(d.bit.inst).cells.at(d.index);
-            if (cell.kind != ir::CellKind::And)
-                return std::nullopt;
+            };
             std::optional<SyncOut> here;
-            for (const auto& in : st_.sg.cellInputs(d.bit.inst, d.index, d.bit.bit)) {
-                const graph::Driver id = view.driver(in.bit);
-                if (id.kind != graph::DriverKind::Register)
-                    continue;
-                const auto node = SeqGraph::registerNode(st_.sg.globalRegisterOf(id.bit.inst, id.index));
-                if (auto it = st_.syncOutputs.find(node);
-                    it != st_.syncOutputs.end() && st_.related(it->second.srcClock, p.srcClock))
-                    here = it->second;
+            {
+                const graph::Driver root = view.driver(*bit);
+                if (root.kind == graph::DriverKind::Cell) // the qualifier alone is no gate
+                    here = gate(*bit, 0);
             }
             if (!here)
                 return std::nullopt;

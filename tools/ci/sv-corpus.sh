@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# SystemVerilog regression on real open-source code, pinned to fixed commits.
+# SystemVerilog / Verilog regression on real open-source code, pinned to fixed commits.
 #
 #   tools/ci/sv-corpus.sh <bin-dir> [work-dir]
 #
 # Analyzes PULP's AXI clock-domain crossing through its interface wrapper
 # (axi_cdc_intf: AXI_BUS interfaces with modports, packages, typedef macros,
-# common_cells Gray FIFOs); the CDC summary must match.
+# common_cells Gray FIFOs), and alexforencich's verilog-ethernet RGMII MAC with
+# its asynchronous frame FIFOs (Xilinx IDDR/ODDR/BUFR/BUFIO, four clocks); the
+# CDC summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -23,6 +25,7 @@ fetch() { # name url commit
 }
 fetch axi          https://github.com/pulp-platform/axi          39f5f2d51c5e524f6fc5cf8b6e901f7dcc5622d7
 fetch common_cells https://github.com/pulp-platform/common_cells c27bce39ebb2e6bae52f60960814a2afca7bd4cb
+fetch verilog-ethernet https://github.com/alexforencich/verilog-ethernet 77320a9471d19c7dd383914bc049e02d9f4f1ffb
 
 cat > axi_cdc_top.sv <<'SV'
 module top (input logic src_clk, input logic src_rst_n, input logic dst_clk, input logic dst_rst_n);
@@ -48,6 +51,26 @@ cat > axi_cdc.ocdc.json <<'JSON'
  "constraints": ["axi_cdc.sdc"]}
 JSON
 
+cat > rgmii.sdc <<'SDC'
+create_clock -name gtx_clk -period 8 [get_ports gtx_clk]
+create_generated_clock -name gtx_clk90 -source [get_ports gtx_clk] -divide_by 1 [get_ports gtx_clk90]
+create_clock -name logic_clk -period 6.4 [get_ports logic_clk]
+create_clock -name rgmii_rx_clk -period 8 [get_ports rgmii_rx_clk]
+set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks gtx_clk] -group logic_clk -group rgmii_rx_clk
+SDC
+cat > rgmii.ocdc.json <<'JSON'
+{"format": "opencdc-project", "version": 1, "name": "rgmii", "top": "eth_mac_1g_rgmii_fifo",
+ "sources": ["verilog-ethernet/rtl/eth_mac_1g_rgmii_fifo.v", "verilog-ethernet/rtl/eth_mac_1g_rgmii.v",
+  "verilog-ethernet/rtl/rgmii_phy_if.v", "verilog-ethernet/rtl/ssio_ddr_in.v", "verilog-ethernet/rtl/oddr.v",
+  "verilog-ethernet/rtl/iddr.v", "verilog-ethernet/rtl/eth_mac_1g.v", "verilog-ethernet/rtl/axis_gmii_rx.v",
+  "verilog-ethernet/rtl/axis_gmii_tx.v", "verilog-ethernet/rtl/lfsr.v", "verilog-ethernet/rtl/mac_ctrl_rx.v",
+  "verilog-ethernet/rtl/mac_ctrl_tx.v", "verilog-ethernet/rtl/mac_pause_ctrl_rx.v",
+  "verilog-ethernet/rtl/mac_pause_ctrl_tx.v", "verilog-ethernet/lib/axis/rtl/axis_async_fifo_adapter.v",
+  "verilog-ethernet/lib/axis/rtl/axis_async_fifo.v", "verilog-ethernet/lib/axis/rtl/axis_adapter.v"],
+ "parameters": {"TARGET": "\"XILINX\"", "IODDR_STYLE": "\"IODDR\"", "CLOCK_INPUT_STYLE": "\"BUFR\""},
+ "constraints": ["rgmii.sdc"]}
+JSON
+
 fail=0
 check() { # project expected-regex
     local out
@@ -59,4 +82,5 @@ check() { # project expected-regex
     fi
 }
 check axi_cdc.ocdc.json "80 registers.*0 unsupported construct.*80/80 registers resolved.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 52 crossing path\(s\), 50 synchronized.*Rules   : 0 error violation"
+check rgmii.ocdc.json "179/179 registers resolved.*async-fifo x2.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 30 crossing path\(s\), 29 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 1 path\(s\) at potential risk, 1 path\(s\) need review"
 exit $fail

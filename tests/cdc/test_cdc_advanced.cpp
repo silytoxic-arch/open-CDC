@@ -835,3 +835,71 @@ TEST_CASE("Gray through a mux of Gray-encoded arms; jump not provable", "[cdc][g
     CHECK(p.syncStatus == SyncStatus::ProtocolUnverified); // the drop arm jumps
     CHECK(r.hits("CDC-008") == 0);
 }
+
+// ===========================================================================
+// Stage 17: frame FIFO (pointer committed through a handshake), crossings of
+// one FIFO instance as one structure
+// ===========================================================================
+
+namespace {
+// alexforencich axis_async_fifo (FRAME_FIFO = 1), reduced: the write pointer is
+// committed to the read side under a toggle flag with acknowledge; the read
+// pointer returns as Gray; the read side compares binary pointers.
+std::string frameFifo(bool topCombine) {
+    return std::string(
+               "module fifo(input clk_a, input clk_b, input [7:0] din, input we, input last, input re,\n"
+               "            output reg [7:0] dout, output reg [1:0] st);\n"
+               "  reg [7:0] mem [0:15];\n"
+               "  reg [4:0] wr_ptr = 0, wr_ptr_commit = 0, wr_ptr_sync_commit = 0, rd_ptr_gray_sync1 = 0,\n"
+               "            rd_ptr_gray_sync2 = 0;\n"
+               "  reg upd = 0, ack1 = 0, ack2 = 0;\n"
+               "  reg u1 = 0, u2 = 0, u3 = 0;\n"
+               "  reg [4:0] wr_ptr_commit_sync = 0, rd_ptr = 0, rd_ptr_gray = 0;\n"
+               "  always @(posedge clk_a) begin\n"
+               "    if (we) begin mem[wr_ptr[3:0]] <= din; wr_ptr <= wr_ptr + 1; end\n"
+               "    if (we && last) wr_ptr_commit <= wr_ptr + 1;\n"
+               "    ack1 <= u3; ack2 <= ack1;\n"
+               "    if (upd == ack2 && wr_ptr_sync_commit != wr_ptr_commit) begin\n"
+               "      wr_ptr_sync_commit <= wr_ptr_commit; upd <= ~upd; end\n"
+               "    rd_ptr_gray_sync1 <= rd_ptr_gray; rd_ptr_gray_sync2 <= rd_ptr_gray_sync1;\n"
+               "    st <= {ack2, rd_ptr_gray_sync2 == (wr_ptr ^ (wr_ptr >> 1))};\n"
+               "  end\n"
+               "  wire empty = rd_ptr == wr_ptr_commit_sync;\n"
+               "  always @(posedge clk_b) begin\n"
+               "    u1 <= upd; u2 <= u1; u3 <= u2;\n"
+               "    if (u2 ^ u3) wr_ptr_commit_sync <= wr_ptr_sync_commit;\n"
+               "    if (re && !empty) begin dout <= mem[rd_ptr[3:0]]; rd_ptr <= rd_ptr + 1; end\n"
+               "    rd_ptr_gray <= rd_ptr ^ (rd_ptr >> 1);\n"
+               "  end\n"
+               "endmodule\n"
+               "module top(input clk_a, input clk_b, input [7:0] din, input we, input last, input re, input x, input y,\n"
+               "           output [7:0] dout, output [1:0] st, output reg z);\n"
+               "  fifo u_fifo (.clk_a(clk_a), .clk_b(clk_b), .din(din), .we(we), .last(last), .re(re), .dout(dout),\n"
+               "               .st(st));\n") +
+           (topCombine ? "  reg xa, ya, x1, x2, y1, y2;\n"
+                         "  always @(posedge clk_a) begin xa <= x; ya <= y; end\n"
+                         "  always @(posedge clk_b) begin x1 <= xa; x2 <= x1; y1 <= ya; y2 <= y1; z <= x2 & y2; end\n"
+                       : "  always @(posedge clk_b) z <= 1'b0;\n") +
+           "endmodule\n";
+}
+} // namespace
+
+TEST_CASE("Frame FIFO: pointer committed through a handshake, Gray read pointer back", "[cdc][fifo]") {
+    auto r = analyze(frameFifo(false));
+    const auto& m = r.path("top.u_fifo.mem", "top.u_fifo.dout");
+    CHECK(m.syncType == SyncType::AsyncFifo);
+    const auto* s = structureOf(r, m);
+    REQUIRE(s);
+    // pointers, update flag, acknowledge: all crossings of the instance in one structure
+    for (const auto& p : r.cdc->paths)
+        CHECK(p.structure == m.structure);
+    // the acknowledge and the read pointer meet in 'st': part of the FIFO protocol
+    CHECK(r.hits("CDC-005") == 0);
+}
+
+TEST_CASE("Frame FIFO negative: independent synchronizers outside the FIFO still reconverge", "[cdc][fifo][CDC-005]") {
+    auto r = analyze(frameFifo(true));
+    CHECK(r.path("top.u_fifo.mem", "top.u_fifo.dout").syncType == SyncType::AsyncFifo);
+    CHECK(r.hits("CDC-005") == 2); // x and y meet in z
+    CHECK(r.path("top.xa", "top.x1").structure != r.path("top.u_fifo.mem", "top.u_fifo.dout").structure);
+}

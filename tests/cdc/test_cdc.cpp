@@ -312,7 +312,7 @@ TEST_CASE("Decoded source data under a qualifier is no flop chain behind logic",
     // microwatt DMI write flag: we <= (op == WR) when the synchronized request
     // is high, then registered again; without the qualifier it stays CDC-004
     auto r = analyze("module top(input clk_a, input clk_b, input [1:0] o, input v, output reg w2, output reg u2,\n"
-                     "           output reg x1, output reg x2);\n"
+                     "           output reg x1, output reg x2, output reg x3, output reg x4, input le);\n"
                      "  reg [1:0] op; reg valid, v1, v2, w1, u1;\n"
                      "  always @(posedge clk_a) begin op <= o; valid <= v; end\n"
                      "  always @(posedge clk_b) begin\n"
@@ -321,11 +321,15 @@ TEST_CASE("Decoded source data under a qualifier is no flop chain behind logic",
                      "    u1 <= (op == 2'd1); u2 <= u1;\n"
                      "    x1 <= v2 & op[0];                // AND with the qualifier\n"
                      "    x2 <= v2 | op[0];                // OR does not block the source\n"
+                     "    x3 <= op[1] & (le & v2);         // AND tree\n"
+                     "    x4 <= op[1] & ~v2;               // inverted qualifier\n"
                      "  end\n"
                      "endmodule\n");
     CHECK(r.path("top.op", "top.w1").syncType == SyncType::QualifiedData);
     CHECK(r.path("top.op", "top.x1").syncType == SyncType::QualifiedData);
     CHECK(r.path("top.op", "top.x2").syncStatus != SyncStatus::ProtocolUnverified);
+    CHECK(r.path("top.op", "top.x3").syncType == SyncType::QualifiedData);
+    CHECK(r.path("top.op", "top.x4").syncType == SyncType::QualifiedData);
     const auto& u = r.path("top.op", "top.u1");
     CHECK(u.syncType == SyncType::TwoFlop);
     CHECK(r.hits("CDC-004") == 1);

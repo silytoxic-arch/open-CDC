@@ -49,6 +49,53 @@ std::string lower(std::string s) {
     return s;
 }
 
+/// slang reports every unconnected port of an instance on its own; generated
+/// code (LiteX, vendor wrappers) leaves dozens open. One note per instance:
+/// FE-UNCONNECTED-PORTS listing the inputs and outputs.
+void mergeUnconnectedPorts(std::vector<Diagnostic>& diags) {
+    static const std::regex nameRe("port '([^']+)'");
+    std::vector<Diagnostic> out;
+    std::map<std::tuple<std::string, std::uint32_t, std::uint32_t>, std::size_t> site;
+    std::map<std::size_t, std::pair<std::vector<std::string>, std::vector<std::string>>> ports; // inputs, outputs
+    for (auto& d : diags) {
+        const bool in = d.code == "FE-SLANG-UnconnectedInputPort";
+        const bool outp = d.code == "FE-SLANG-UnconnectedOutputPort";
+        std::smatch m;
+        if ((!in && !outp) || !std::regex_search(d.message, m, nameRe)) {
+            out.push_back(std::move(d));
+            continue;
+        }
+        const auto key = std::make_tuple(d.location.file, d.location.line, d.location.column);
+        auto [it, added] = site.try_emplace(key, out.size());
+        if (added) {
+            Diagnostic g = d;
+            g.code = "FE-UNCONNECTED-PORTS";
+            out.push_back(std::move(g));
+        }
+        (in ? ports[it->second].first : ports[it->second].second).push_back(m[1].str());
+    }
+    auto list = [](const std::vector<std::string>& v) {
+        std::string s;
+        for (std::size_t k = 0; k < v.size() && k < 8; ++k)
+            s += (k ? ", " : "") + v[k];
+        if (v.size() > 8)
+            s += ", ... (" + std::to_string(v.size() - 8) + " more)";
+        return s;
+    };
+    for (auto& [idx, io] : ports) {
+        const auto& [ins, outs] = io;
+        std::string msg = std::to_string(ins.size() + outs.size()) + " port(s) of this instance have no connection";
+        if (!ins.empty())
+            msg += "; inputs: " + list(ins);
+        if (!outs.empty())
+            msg += "; outputs: " + list(outs);
+        out[idx].message = msg;
+        // open outputs are common practice; an open input floats
+        out[idx].severity = ins.empty() ? Severity::Info : Severity::Warning;
+    }
+    diags = std::move(out);
+}
+
 /// Verilog text of a parameter value.
 std::string verilogValue(const ir::InstanceParam& p) {
     if (p.str) {
@@ -488,9 +535,20 @@ public:
             }
             lastDiags = std::move(merged);
         }
+        // pins of primitives are dropped below; the remaining open ports are merged per instance
+        std::erase_if(lastDiags, [&](const Diagnostic& d) {
+            return (d.code == "FE-SLANG-UnconnectedOutputPort" || d.code == "FE-SLANG-UnconnectedInputPort") &&
+                   primitiveSites.contains({d.location.file, d.location.line, d.location.column});
+        });
+        mergeUnconnectedPorts(lastDiags);
         for (auto& d : lastDiags) {
-            if (d.location.file == wrapperUtf8)
-                continue;
+            if (d.location.file == wrapperUtf8) {
+                if (!d.isError())
+                    continue;
+                // never drop an error: it explains why there is no design
+                d.message = "in the generated mixed-language wrapper: " + d.message;
+                d.location = {};
+            }
             if (d.code == "FE-SLANG-ParameterDoesNotExist") {
                 // vendor primitives take many parameters the models do not need
                 static const std::regex inRe("in '([^']+)'$");
@@ -657,6 +715,7 @@ public:
                 MixedLinker linker(input, sink);
                 return linker.run();
             }
+            mergeUnconnectedPorts(first.diags);
             for (auto& d : first.diags)
                 sink.report(std::move(d));
             return r;

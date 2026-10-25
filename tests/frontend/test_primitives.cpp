@@ -1027,3 +1027,46 @@ TEST_CASE("Primitives: DSP48 slices, BSCANE2 JTAG clock, differential I/O buffer
     CHECK(tck);
     CHECK(crosses(*run, "top.bs.", "top.sel_q")); // TAP state in the TCK domain
 }
+
+TEST_CASE("Sources with `timescale and the primitive linker", "[primitives][timescale]") {
+    // verilog-ethernet: every file starts with `timescale; the generated
+    // wrapper has none, which slang rejected silently (0 errors, no design)
+    auto run = analyze("t.v",
+                       "`timescale 1ns / 1ps\n"
+                       "module sub(input c, input d, output reg q); always @(posedge c) q <= d; endmodule\n"
+                       "module top(input clk, input d, output q);\n"
+                       "  wire c; BUFG b (.I(clk), .O(c));\n"
+                       "  sub s (.c(c), .d(d), .q(q));\n"
+                       "endmodule\n",
+                       "top");
+    CHECK_FALSE(run->r->hasErrors());
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("FE-SLANG-MissingTimeScale") == 0);
+}
+
+TEST_CASE("Unconnected ports are reported once per instance", "[primitives][unconnected]") {
+    auto run = analyze("t.v",
+                       "module sub(input a, input b, input c, output x, output y); assign x = a & b & c; assign y = a;\n"
+                       "endmodule\n"
+                       "module top(input clk_a, input d, output q, output q2);\n"
+                       "  sub u1 (.a(d), .x(q));\n"           // b, c open inputs, y open output
+                       "  sub u2 (.a(d), .b(d), .c(d), .x(q2));\n" // only y open
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->count("FE-UNCONNECTED-PORTS") == 2);
+    CHECK(run->count("FE-SLANG-UnconnectedInputPort") == 0);
+    CHECK(run->count("FE-SLANG-UnconnectedOutputPort") == 0);
+    for (const auto& d : run->r->diagnostics) {
+        if (d.code != "FE-UNCONNECTED-PORTS")
+            continue;
+        if (d.message.find("inputs: b, c") != std::string::npos) {
+            CHECK(d.severity == Severity::Warning);
+            CHECK(d.message.find("3 port(s)") == 0);
+            CHECK(d.message.find("outputs: y") != std::string::npos);
+        }
+        else {
+            CHECK(d.severity == Severity::Info); // open outputs only
+            CHECK(d.message.find("1 port(s)") == 0);
+        }
+    }
+}

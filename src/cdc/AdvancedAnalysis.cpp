@@ -1007,27 +1007,75 @@ private:
         // Asynchronous FIFO: the write pointer (qualifier) is Gray, and the
         // read pointer of this FIFO - a register in the read data's control
         // cone (empty = rgray != wptr_sync) - returns to the write clock as Gray.
-        if (req.syncType == SyncType::Gray) {
-            const auto cone = controlCone(d.dstRegister, 2);
+        // The write pointer may also cross as a multi-bit value captured under
+        // a synchronized update flag (frame FIFOs commit the pointer this way).
+        const auto isPointer = [&](const CdcPath& c) {
+            return c.syncType == SyncType::Gray ||
+                   (c.width > 1 && (c.syncType == SyncType::Handshake || c.syncType == SyncType::QualifiedData));
+        };
+        // The qualifier itself is the write pointer, or (frame FIFOs) a 1-bit
+        // update flag next to a pointer that crosses into a register of the
+        // read data's control cone.
+        const auto cone = controlCone(d.dstRegister, 2);
+        const CdcPath* wptr = isPointer(req) ? &req : nullptr;
+        if (!wptr)
+            for (std::size_t k = 0; k < paths.size() && !wptr; ++k) {
+                const CdcPath& c = paths[k];
+                if (k != i && c.pin == Pin::Data && isPointer(c) && st_.related(c.srcClock, d.srcClock) &&
+                    st_.related(c.dstClock, d.dstClock) && st_.sg.nodes()[c.srcNode].elemWidth == 0 &&
+                    cone.contains(SeqGraph::registerNode(c.dstRegister)))
+                    wptr = &c;
+            }
+        const bool grayPtr = wptr && wptr->syncType == SyncType::Gray;
+        if (wptr) {
+            // the read pointer returning as Gray: a register of the cone, or
+            // (frame FIFOs compare the binary pointer) one computed from it
+            auto fedByCone = [&](std::uint32_t n) {
+                if (!st_.isRegister(n))
+                    return false;
+                ConeEntry scratch;
+                for (const auto& bi : st_.sg.pinBits(n, Pin::Data))
+                    for (const auto& e : st_.sg.entries(bi, scratch))
+                        if (cone.contains(e.node))
+                            return true;
+                return false;
+            };
+            std::optional<std::size_t> backPath;
             std::vector<std::uint32_t> sorted(cone.begin(), cone.end());
             std::ranges::sort(sorted);
             for (const auto n : sorted)
-                if (auto it = grayBySource_.find(n); it != grayBySource_.end())
+                if (auto it = grayBySource_.find(n); it != grayBySource_.end() && !backPath)
                     for (const auto k : it->second)
-                        if (backMatches(k)) {
-                            const CdcPath& back = paths[k];
-                            d.syncType = SyncType::AsyncFifo;
-                            d.conditions.push_back(
-                                {"the write pointer '" + req.srcName + "' reaches the read clock as Gray code", true});
-                            d.conditions.push_back({"the read pointer '" + back.srcName +
-                                                        "' returns to the write clock as Gray code",
-                                                    true});
-                            d.unverified.clear();
-                            d.unverified.push_back("the full/empty comparison of the pointers and a power-of-two "
-                                                   "depth are not checked");
-                            st_.ackPath.emplace(i, k);
-                            return;
-                        }
+                        if (!backPath && backMatches(k))
+                            backPath = k;
+            if (!backPath) {
+                std::vector<std::uint32_t> sources;
+                for (const auto& [n, ks] : grayBySource_)
+                    sources.push_back(n);
+                std::ranges::sort(sources);
+                for (const auto n : sources)
+                    if (!backPath && st_.domain[n] == st_.domain[d.dstRegister] && fedByCone(n))
+                        for (const auto k : grayBySource_.at(n))
+                            if (!backPath && backMatches(k))
+                                backPath = k;
+            }
+            if (backPath) {
+                const std::size_t k = *backPath;
+                const CdcPath& back = paths[k];
+                d.syncType = SyncType::AsyncFifo;
+                d.conditions.push_back({"the write pointer '" + wptr->srcName + "' reaches the read clock " +
+                                            (grayPtr ? std::string("as Gray code")
+                                                     : std::string("as a value captured under a synchronized "
+                                                                   "update flag")),
+                                        true});
+                d.conditions.push_back(
+                    {"the read pointer '" + back.srcName + "' returns to the write clock as Gray code", true});
+                d.unverified.clear();
+                d.unverified.push_back("the full/empty comparison of the pointers and a power-of-two depth are not "
+                                       "checked");
+                st_.ackPath.emplace(i, k);
+                return;
+            }
         }
         d.notes.push_back("memory read qualified by a synchronized signal; no Gray pointer pair in both "
                           "directions was found, so this is not recognized as an asynchronous FIFO");
@@ -1376,6 +1424,19 @@ void analyzeConvergence(State& st) {
         frontier = std::move(next);
     }
 
+    // Pointers, requests and acknowledges of FIFOs and handshakes: signals the
+    // protocol combines on purpose (other flags of the same scope are not).
+    std::unordered_set<std::size_t> roles;
+    for (const auto& [d, q] : st.qualifierPath)
+        if (paths[d].syncType == SyncType::Handshake || paths[d].syncType == SyncType::AsyncFifo)
+            roles.insert(q);
+    for (const auto& [d, a] : st.ackPath)
+        roles.insert(a);
+    auto protocolMember = [&](std::size_t k) {
+        const auto t = paths[k].syncType;
+        return t == SyncType::Gray || t == SyncType::Handshake || t == SyncType::AsyncFifo || roles.contains(k);
+    };
+
     // Report: each path gets one record per meeting register, listing (up to
     // kMaxListed of) the related paths it meets in any bit of that register.
     for (const auto& [reg, meetingSets] : points) {
@@ -1398,6 +1459,21 @@ void analyzeConvergence(State& st) {
         for (auto& [pa, shown] : listed) {
             if (shown.empty() || paths[pa].reconvergences.size() >= 4)
                 continue;
+            // inside one asynchronous FIFO or handshake the synchronized
+            // signals are combined by the protocol itself
+            const auto sp = paths[pa].structure;
+            if (sp != kNoIndex &&
+                (st.result->structures[sp].type == SyncType::AsyncFifo ||
+                 st.result->structures[sp].type == SyncType::Handshake) &&
+                protocolMember(pa) &&
+                std::ranges::all_of(shown, [&](std::size_t k) {
+                    return paths[k].structure == sp && protocolMember(k);
+                })) {
+                paths[pa].notes.push_back("reconverges at '" + nodes[reg].name + "' with other synchronized signals "
+                                          "of the same " + std::string(toString(st.result->structures[sp].type)) +
+                                          " structure (part of its protocol, not reported)");
+                continue;
+            }
             Reconvergence rv;
             rv.at = nodes[reg].name;
             rv.loc = nodes[reg].loc;
@@ -1480,6 +1556,35 @@ void buildStructures(State& st) {
         for (const auto x : siblings(k))
             attach(it->second, x);
         res.structures[it->second].registers.push_back(p.dstName);
+    }
+    // The other crossings of an asynchronous FIFO instance (further pointers,
+    // update/acknowledge flags, reset synchronizers between the same two
+    // clocks, inside the instance of its memory) belong to the FIFO.
+    for (std::size_t s = 0; s < res.structures.size(); ++s) {
+        if (res.structures[s].type != SyncType::AsyncFifo || res.structures[s].paths.empty())
+            continue;
+        const CdcPath& m = paths[res.structures[s].paths.front()];
+        const auto dot = m.srcName.rfind('.');
+        if (dot == std::string::npos)
+            continue;
+        const std::string scope = m.srcName.substr(0, dot + 1);
+        // only a FIFO instance of its own: in the top module the scope would take everything
+        if (std::ranges::count(scope, '.') < 2)
+            continue;
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            const CdcPath& p = paths[i];
+            if (p.syncType == SyncType::None || p.pin == Pin::AsyncReset)
+                continue;
+            // a pointer handshake of the same FIFO (frame commit) joins it as well
+            if (p.structure != kNoIndex && res.structures[p.structure].type != SyncType::Handshake)
+                continue;
+            const bool sameClocks = (st.related(p.srcClock, m.srcClock) && st.related(p.dstClock, m.dstClock)) ||
+                                    (st.related(p.srcClock, m.dstClock) && st.related(p.dstClock, m.srcClock));
+            if (sameClocks && p.srcName.starts_with(scope) && p.dstName.starts_with(scope)) {
+                paths[i].structure = kNoIndex; // the FIFO is the enclosing structure
+                attach(s, i);
+            }
+        }
     }
     for (std::size_t i = 0; i < paths.size(); ++i) {
         const CdcPath& p = paths[i];
