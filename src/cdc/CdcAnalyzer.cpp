@@ -599,7 +599,8 @@ private:
             CdcPath& p = paths[i];
             if (p.syncType != SyncType::None || p.pin == Pin::AsyncReset)
                 continue;
-            if (p.pin == Pin::Data) {
+            if (p.pin == Pin::Data || p.pin == Pin::Enable) {
+                // data, or an enable computed from source data, under a synchronized qualifier
                 if (auto q = findQualifier(p)) {
                     p.syncType = SyncType::QualifiedData;
                     p.syncStatus = SyncStatus::ProtocolUnverified;
@@ -674,7 +675,21 @@ private:
                     }
             }
         };
-        pushControls(g, 0, false);
+        // When the source reaches the destination only as a mux select (q <=
+        // match(src) ? req_sync : 0, an AND with the source decode), the
+        // selected data values are the qualifier candidates as well.
+        bool srcOnlySelect = p.pin == Pin::Data;
+        bool srcSeen = false;
+        {
+            ConeEntry scratch;
+            for (const auto& bi : st_.sg.pinBits(g, Pin::Data))
+                for (const auto& e : st_.sg.entries(bi, scratch))
+                    if (e.node == p.srcNode) {
+                        srcSeen = true;
+                        srcOnlySelect = srcOnlySelect && (e.flags & ConeEntry::kSelect) != 0;
+                    }
+        }
+        pushControls(g, 0, srcSeen && srcOnlySelect);
         for (std::size_t w = 0; w < work.size(); ++w) {
             const auto [node, depth] = work[w];
             if (!st_.isRegister(node))

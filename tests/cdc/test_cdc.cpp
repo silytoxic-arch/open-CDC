@@ -272,6 +272,30 @@ TEST_CASE("Qualifier through one registered level of control logic", "[cdc][sync
     CHECK(r.path("top.data", "top.q").syncType == SyncType::QualifiedData);
 }
 
+TEST_CASE("Source data decoded under a synchronized qualifier", "[cdc][sync]") {
+    // microwatt DMI: the address from the JTAG domain is decoded in the system
+    // domain only while the synchronized request is high
+    auto r = analyze("module top(input clk_a, input clk_b, input [3:0] a, input v, input [7:0] x,\n"
+                     "           output reg [7:0] q, output reg req, output reg q2, output reg q3);\n"
+                     "  reg [3:0] addr; reg valid, v1, v2;\n"
+                     "  always @(posedge clk_a) begin addr <= a; valid <= v; end\n"
+                     "  always @(posedge clk_b) begin\n"
+                     "    v1 <= valid; v2 <= v1;\n"
+                     "    if (v2 && addr == 4'd3) q <= x;        // enable from the source, qualified\n"
+                     "    req <= (addr == 4'd5) ? v2 : 1'b0;     // the source selects the qualifier\n"
+                     "    q2 <= (addr == 4'd6) ? x[0] : 1'b0;    // no qualifier\n"
+                     "    q3 <= addr[0] ^ v2;                    // source as data next to the qualifier\n"
+                     "  end\n"
+                     "endmodule\n");
+    const auto& e = r.path("top.addr", "top.q");
+    CHECK(e.pin == Pin::Enable);
+    CHECK(e.syncType == SyncType::QualifiedData);
+    CHECK(e.syncRegisters == std::vector<std::string>{"top.v2"});
+    CHECK(r.path("top.addr", "top.req").syncType == SyncType::QualifiedData);
+    CHECK(r.path("top.addr", "top.q2").syncStatus == SyncStatus::NotSynchronized);
+    CHECK(r.path("top.addr", "top.q3").syncStatus == SyncStatus::NotSynchronized);
+}
+
 // ---------------------------------------------------------------------------
 // Rules: positive and negative examples
 // ---------------------------------------------------------------------------

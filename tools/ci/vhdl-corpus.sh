@@ -219,6 +219,6 @@ check surf_fifo_async.ocdc.json       "Summary : 0 error.*CDC     : 7 crossing p
 check surf_gty_qpll.ocdc.json         "GTYE4_COMMON.*Summary : 0 error\(s\), 0 warning\(s\)"
 check microwatt.ocdc.json             "RTL     : 50 module bodies, 1217 registers.*0 latches.*CLKOP  \\[divider\\].*\\(40 MHz\\).*1217/1217 registers resolved.*EHXPLLL.*Summary : 0 error\\(s\\), 1 warning"
 check microwatt_arty.ocdc.json        "IR-MULTIDRIVER.*ddram_clk_p_vec.*IR-MULTIDRIVER.*ddram_clk_n_vec.*IR-MULTIDRIVER.*uart1_txd.*Summary : 3 error\\(s\\), 2 warning"
-check microwatt_arty_fixed.ocdc.json  "Clocks  : 8 \\(2445/2445 registers resolved\\).*bscan.TCK.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 173 crossing path\\(s\\), 145 synchronized"
+check microwatt_arty_fixed.ocdc.json  "Clocks  : 8 \\(2445/2445 registers resolved\\).*bscan.TCK.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 173 crossing path\\(s\\), 153 synchronized"
 check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodies, 7[0-9][0-9] registers.*0 latches.*Summary : 0 error"
 exit $fail
