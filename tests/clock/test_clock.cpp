@@ -320,3 +320,31 @@ TEST_CASE("Async FIFO example with its XDC", "[clock][example]") {
     CHECK(run.rel("wclk", "rclk") == ClockRelation::Asynchronous);
     CHECK(run.model->unresolvedRegisters() == 0);
 }
+
+TEST_CASE("Constraint checks: clock group mistakes", "[clock][constraints][checks]") {
+    const char* design = "module top(input clk_a, input clk_b, input d, output reg q1, output reg q2);\n"
+                         "  reg div = 1'b0;\n"
+                         "  always @(posedge clk_a) div <= ~div;\n"
+                         "  always @(posedge div) q1 <= d;\n"
+                         "  always @(posedge clk_b) q2 <= q1;\n"
+                         "endmodule\n";
+    auto r = analyze(design,
+                     "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                     "create_clock -name clk_b -period 7 [get_ports clk_b]\n"
+                     "create_generated_clock -name half -source [get_pins div_reg/C] -divide_by 2 [get_pins div_reg/Q]\n"
+                     "set_clock_groups -asynchronous -group clk_a\n"                        // single group
+                     "set_clock_groups -asynchronous -group {clk_a clk_b} -group clk_b\n"   // clk_b twice
+                     "set_clock_groups -asynchronous -group clk_a -group half\n");          // half derives from clk_a
+    CHECK(r.countCode("CON-GROUP-SINGLE") == 1);
+    CHECK(r.countCode("CON-GROUP-OVERLAP") == 1);
+    CHECK(r.countCode("CON-GROUP-RELATED") == 1);
+    // negative: a correct group declaration triggers none of them
+    auto ok = analyze(design,
+                      "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                      "create_clock -name clk_b -period 7 [get_ports clk_b]\n"
+                      "set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks clk_a] "
+                      "-group clk_b\n");
+    CHECK(ok.countCode("CON-GROUP-SINGLE") == 0);
+    CHECK(ok.countCode("CON-GROUP-OVERLAP") == 0);
+    CHECK(ok.countCode("CON-GROUP-RELATED") == 0);
+}

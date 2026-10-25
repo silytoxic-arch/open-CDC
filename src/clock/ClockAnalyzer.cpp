@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cctype>
 #include <map>
 #include <unordered_map>
@@ -80,6 +81,7 @@ public:
         resolveGeneratedMasters();
         resolveDividerPeriods();
         computeRelations();
+        checkConstraints();
         reportSummary();
         return model_;
     }
@@ -627,6 +629,9 @@ private:
                 if (c.master.valid() && model_->clocks[c.master.index()].periodNs) {
                     base = model_->clocks[c.master.index()].periodNs;
                     basis = model_->clocks[c.master.index()].name;
+                    // the generator was configured for another input period
+                    if (r.second > 0 && std::abs(*base - r.second) > 0.01 * *base)
+                        inputPeriodMismatch_.push_back({c.name, basis, r.second, *base});
                 }
                 else if (r.second > 0) {
                     base = r.second;
@@ -647,6 +652,107 @@ private:
     // ------------------------------------------------------------------
     // Relations
     // ------------------------------------------------------------------
+
+    /// Constraints that contradict the design or each other.
+    void checkConstraints() {
+        auto& m = *model_;
+        const std::size_t n = m.clocks.size();
+        auto fmt = [](double v) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.4g", v);
+            return std::string(buf);
+        };
+        // generator input period differs from the clock that drives it
+        for (const auto& e : inputPeriodMismatch_)
+            sink_.report({"CON-INPUT-PERIOD", Severity::Warning,
+                          "clock generator output '" + e.clock + "': the generator is configured for an input period of " +
+                              fmt(e.configured) + " ns (CLKIN1_PERIOD) but its input clock '" + e.input + "' has " +
+                              fmt(e.actual) + " ns; the output period follows the input clock",
+                          {}, {}});
+
+        // a constraint on a clock generator output that the generator does not produce
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto& c = m.clocks[i];
+            if ((c.kind != ClockKind::Constraint && c.kind != ClockKind::Generated) || !c.periodNs || !c.source.valid())
+                continue;
+            const Driver d = view_.driver(c.source);
+            if (d.kind != DriverKind::Register)
+                continue;
+            const ir::Net& net = view_.bodyOf(d.bit.inst).net(d.bit.net);
+            const auto* ra = net.findAttr("OPENCDC_CLOCK_RATIO");
+            if (!ra)
+                continue;
+            double ratio = 0.0;
+            try {
+                std::string v = ra->value;
+                std::erase(v, '"');
+                ratio = std::stod(v);
+            }
+            catch (const std::exception&) {
+                continue;
+            }
+            const auto& rc = m.registers.at(view_.globalRegister(d.bit.inst, d.index));
+            if (rc.clocks.empty() || ratio <= 0)
+                continue;
+            const auto& in = m.clocks[rc.clocks.front().clock.index()];
+            if (!in.periodNs)
+                continue;
+            const double expected = *in.periodNs * ratio;
+            if (std::abs(expected - *c.periodNs) > 0.001 * expected)
+                sink_.report({"CON-PERIOD-MISMATCH", Severity::Warning,
+                              "clock '" + c.name + "' is constrained to " + fmt(*c.periodNs) + " ns, but the generator output " +
+                                  view_.name(d.bit) + " has " + fmt(expected) + " ns (input clock '" + in.name + "' " +
+                                  fmt(*in.periodNs) + " ns x " + fmt(ratio) + ")",
+                              c.definedAt, {}});
+        }
+
+        // set_clock_groups: fewer than two groups, a clock in two groups, related clocks declared asynchronous
+        auto rootOf = [&](ClockId c) {
+            const auto a = ancestors(c);
+            return a.back();
+        };
+        for (const auto& g : cons_.groups) {
+            if (g.groups.size() < 2) {
+                sink_.report({"CON-GROUP-SINGLE", Severity::Warning,
+                              "set_clock_groups with a single group relates nothing (each -group lists clocks that "
+                              "are exclusive or asynchronous to the clocks of the other groups)",
+                              g.loc, {}});
+                continue;
+            }
+            std::vector<std::vector<std::size_t>> members(g.groups.size());
+            for (std::size_t k = 0; k < g.groups.size(); ++k)
+                for (const auto& p : g.groups[k])
+                    for (std::size_t c = 0; c < n; ++c)
+                        if (constraints::globMatch(p, m.clocks[c].name) &&
+                            std::ranges::find(members[k], c) == members[k].end())
+                            members[k].push_back(c);
+            std::vector<int> seenIn(n, -1);
+            for (std::size_t k = 0; k < members.size(); ++k)
+                for (const auto c : members[k]) {
+                    if (seenIn[c] >= 0 && seenIn[c] != static_cast<int>(k))
+                        sink_.report({"CON-GROUP-OVERLAP", Severity::Warning,
+                                      "set_clock_groups: clock '" + m.clocks[c].name + "' is in more than one group",
+                                      g.loc, {}});
+                    seenIn[c] = static_cast<int>(k);
+                }
+            if (g.kind != constraints::GroupKind::Asynchronous)
+                continue;
+            for (std::size_t k = 0; k < members.size(); ++k)
+                for (std::size_t l = k + 1; l < members.size(); ++l)
+                    for (const auto a : members[k])
+                        for (const auto b : members[l]) {
+                            const ClockId ia{static_cast<std::uint32_t>(a)}, ib{static_cast<std::uint32_t>(b)};
+                            if (a == b || rootOf(ia) != rootOf(ib))
+                                continue;
+                            sink_.report({"CON-GROUP-RELATED", Severity::Info,
+                                          "set_clock_groups -asynchronous separates '" + m.clocks[a].name + "' and '" +
+                                              m.clocks[b].name + "', which are derived from the same clock '" +
+                                              m.clocks[rootOf(ia).index()].name +
+                                              "'; crossings between them are then checked as asynchronous",
+                                          g.loc, {}});
+                        }
+        }
+    }
 
     std::vector<ClockId> ancestors(ClockId c) const {
         std::vector<ClockId> out{c};
@@ -805,6 +911,11 @@ private:
     std::unordered_map<BitRef, ClockId, BitRefHash> primary_;
     std::unordered_map<BitRef, ClockId, BitRefHash> divider_;
     std::map<std::uint32_t, std::pair<double, double>> ratio_; ///< clock -> (period ratio, input period)
+    struct InputPeriodMismatch {
+        std::string clock, input;
+        double configured, actual;
+    };
+    std::vector<InputPeriodMismatch> inputPeriodMismatch_;
     std::unordered_map<BitRef, ClockId, BitRefHash> blackBox_;
     std::unordered_set<BitRef, BitRefHash> knownRoots_;
     std::unordered_map<BitRef, Trace, BitRefHash> memo_;

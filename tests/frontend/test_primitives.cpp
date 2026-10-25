@@ -800,3 +800,26 @@ TEST_CASE("Primitives: Intel, Lattice and Gowin PLL output periods", "[primitive
     near("top.i1.PLLOUTCORE", 83.333 * 32.0 / 67.0);  // master clk_a x (DIVR+1) 2^DIVQ / (DIVF+1)
     near("top.g1.CLKOUTD", 1000.0 / 27.0 * 4.0 / 55.0 * 2.0);
 }
+
+TEST_CASE("Constraint checks: generator input period and constrained generator outputs", "[primitives][checks]") {
+    const char* v = "module top(input clk_a, input d, output reg q);\n"
+                    "  wire c0;\n"
+                    "  MMCME2_BASE #(.CLKIN1_PERIOD(8.0), .CLKFBOUT_MULT_F(10.0), .CLKOUT0_DIVIDE_F(5.0))\n"
+                    "    m (.CLKIN1(clk_a), .CLKOUT0(c0), .RST(1'b0), .PWRDWN(1'b0));\n"
+                    "  always @(posedge c0) q <= d;\n"
+                    "endmodule\n";
+    // the input clock is 10 ns, the MMCM was configured for 8 ns; c0 is constrained to 4 ns but is 5 ns
+    auto bad = analyze("t.v", v, "top",
+                       "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                       "create_clock -name fast -period 4 [get_nets c0]\n");
+    CHECK(bad->count("CON-INPUT-PERIOD") == 0); // c0's own constraint stops the derived clock
+    CHECK(bad->count("CON-PERIOD-MISMATCH") == 1);
+    auto in = analyze("t.v", v, "top", "create_clock -name clk_a -period 10 [get_ports clk_a]\n");
+    CHECK(in->count("CON-INPUT-PERIOD") == 1);
+    // negative: matching constraints are silent
+    auto good = analyze("t.v", v, "top",
+                        "create_clock -name clk_a -period 8 [get_ports clk_a]\n"
+                        "create_clock -name fast -period 4 [get_nets c0]\n");
+    CHECK(good->count("CON-INPUT-PERIOD") == 0);
+    CHECK(good->count("CON-PERIOD-MISMATCH") == 0);
+}
