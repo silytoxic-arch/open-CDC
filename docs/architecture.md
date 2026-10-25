@@ -956,3 +956,29 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 | textio 例程带参数调用（`endfile(f)`、`readline(f, l)`）报无匹配重载 | 无参数声明的忽略型例程接受任意参数 |
 | Verilog：列出选择信号全部取值、没有 default 的 `case`（uart16550）被判为锁存器 | 选择信号不超过 12 位且各项为常数时检查覆盖（casez/casex 的通配位展开），全覆盖则最后一项不再需要条件 |
 | ECP5 PLL 反馈取自 CLKOS 时周期错误（microwatt 的 CLKOP 应为 53.33 MHz/40 MHz） | 支持 `FEEDBK_PATH` |
+
+## 22. 真实多时钟 SoC：microwatt Arty A7（阶段 15）
+
+工程：microwatt 的 `arty_a7-35` 目标（`microwatt.core` 中的文件集与参数），包括 34 个核心 VHDL 文件、SoC、LiteX 生成的 LiteDRAM（DDR3 PHY，含 PLLE2、ISERDESE2/OSERDESE2、IDELAYE2）、LiteEth（MII，两个外部时钟）、LiteSDCard、UART16550 和 JTAG 调试（BSCANE2），约束为仓库中的 `arty_a7.xdc`。
+
+### 22.1 新支持的结构
+
+| 结构 | 处理 |
+|---|---|
+| `set_clock_groups -group [get_clocks -include_generated_clocks -of [get_nets system_clk]]` | `get_clocks -of_objects` 返回带有网线位的时钟对象；时钟组记录这些位（`ClockGroups::memberBits`）。时钟追踪完成后，在追踪缓存中查找这些位上的时钟，或在约束时钟的源中查找；不追踪数据网线，以免凭空产生时钟。找不到时报 `CON-UNMATCHED` |
+| Tcl 选项缩写（`-of`、`-per`、`-async`） | 唯一前缀匹配；有歧义时仍报 `CON-UNKNOWN-OPTION` |
+| `DSP48E1`/`DSP48E2` | 任一流水寄存器打开时 `P` 在 `CLK` 上寄存（`CEP`、`RSTP`），否则为组合逻辑；`P` 依赖全部数据与控制输入 |
+| `BSCANE2` | `TCK` 为独立时钟源（与 GT 恢复时钟相同的黑盒时钟机制），TAP 状态输出位于 `TCK` 时钟域 |
+| `IOBUFDS`、`OBUFTDS` | I/O 缓冲：连线 |
+| LiteX 重复写出的相同连续赋值 | 目标与源完全相同的两条连续赋值视为一个驱动，不报 `IR-MULTIDRIVER` |
+| `mem[adr][i*8 +: 8] <= …`（动态索引元素中的静态部分） | 读-改-写：`DynSelect` 取出元素，替换该部分后 `DynInsert` 写回 |
+| VHDL 初始化函数中的文件读取（`readline`/`read`/`hread`） | 子程序在第一次读取处停止，函数结果为未知值，信号报 `IR-UNSUPPORTED-INIT`；不再按循环上界展开到越界 |
+| `d((w + 1) * 64 - 1 downto w * 64)` | 线性分解扩展到乘常数：边界写成 k·x + c，两端 k 相同时长度静态 |
+| 空切片目标（`q(q'left downto N) <= (others => '0')`，N 等于位宽） | 目标类型为空数组，赋值无效果 |
+| `with a & b select`（无上下文类型的拼接） | 候选中只有一个结果为预定义向量类型（`std_ulogic_vector`、`bit_vector`、`string`）时选它，不再报歧义 |
+
+### 22.2 结果
+
+- 原样分析：报告 3 个 `IR-MULTIDRIVER` 错误，均为设计本身的多驱动：`ddram_clk_p_vec`/`ddram_clk_n_vec` 既由 LiteDRAM 包装器的输出驱动，又由 `ddram_clk_p_vec <= (others => ddram_clk_p)` 驱动（方向写反，顶层输出 `ddram_clk_p` 在使用 DRAM 时没有驱动）；`uart1_txd` 既被赋值为 `'1'`，又由 SoC 的 UART1 输出驱动（`HAS_UART1` 为真）。
+- 修正这三行后：8 个时钟（100 MHz 输入、PLLE2 的 4 个输出、两个以太网时钟、JTAG TCK），2445 个寄存器全部解析，173 条跨域路径，其中 145 条已同步，32 个同步器结构（LiteEth 的 Gray 计数器、脉冲同步器、异步 FIFO，PLL `LOCKED` 的复位同步器等）。
+- XDC 中的三条 `set_clock_groups` 生效后，系统时钟与以太网时钟之间不再有未知关系。剩余的"需复核"路径全部来自 JTAG 时钟：XDC 没有约束 TCK。

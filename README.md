@@ -2,27 +2,27 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 14, constraint consistency checks, Vivado clock report cross-check, Lattice/Gowin memories and VHDL packages**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 15, real multi-clock SoC (microwatt on Arty A7 with LiteDRAM/LiteEth), `get_clocks -of_objects`, DSP and JTAG primitives**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–14)
+## What works today (stages 1–15)
 
 | Feature | Status |
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
 | SystemVerilog interfaces: interface instances (with their own logic), modport/generic interface ports, interface arrays, ports passed down the hierarchy; verified on PULP `axi_cdc_intf` | ✅ |
-| VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM, surf and the microwatt POWER SoC | ✅ |
+| VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM, surf and the microwatt POWER SoC (ECP5 and Arty A7 builds, the latter with the LiteX-generated LiteDRAM/LiteEth/LiteSDCard cores) | ✅ |
 | Mixed Verilog/VHDL designs in both directions, with parameters/generics and ports converted across the border; VHDL records ↔ SystemVerilog packed structs, and VHDL element associations (`p.f`, `p(i)`, `p(h downto l)`) on Verilog ports | ✅ |
-| Built-in models of vendor primitives, used when the design instantiates them without a definition: Xilinx UNISIM flip-flops/latches/buffers/SRLs/LUTs/block RAM/DDR/I-O delays, XPM CDC macros, `xpm_fifo_async` and XPM memories, MMCM/PLL clock generators (outputs become clocks derived from the input clock, with periods from the multiply/divide parameters), GT transceivers (recovered/transmit clocks as clock sources of their own), Intel `altera_std_synchronizer`/`dcfifo`/`altsyncram`/`altddio`/`altpll`/`altera_pll`, Lattice ECP5/iCE40 PLLs, block RAMs and DDR cells, Gowin PLLs and block RAMs; also from VHDL via `unisim.vcomponents`, `xpm.vcomponents`, `altera_mf.altera_mf_components`, the Lattice (`ecp5u`, iCE40) and Gowin (`gw1n`, `gw2a`, …) `components` packages, or a locally declared component | ✅ |
+| Built-in models of vendor primitives, used when the design instantiates them without a definition: Xilinx UNISIM flip-flops/latches/buffers/SRLs/LUTs/block RAM/DDR/I-O delays/DSP48 slices, BSCANE2 (JTAG clock), XPM CDC macros, `xpm_fifo_async` and XPM memories, MMCM/PLL clock generators (outputs become clocks derived from the input clock, with periods from the multiply/divide parameters), GT transceivers (recovered/transmit clocks as clock sources of their own), Intel `altera_std_synchronizer`/`dcfifo`/`altsyncram`/`altddio`/`altpll`/`altera_pll`, Lattice ECP5/iCE40 PLLs, block RAMs and DDR cells, Gowin PLLs and block RAMs; also from VHDL via `unisim.vcomponents`, `xpm.vcomponents`, `altera_mf.altera_mf_components`, the Lattice (`ecp5u`, iCE40) and Gowin (`gw1n`, `gw2a`, …) `components` packages, or a locally declared component | ✅ |
 | Module list and elaborated instance hierarchy | ✅ |
 | Frontend diagnostics with file/line, including unsupported or erroneous code | ✅ |
 | CLI `opencdc analyze`, with a JSON result | ✅ |
 | Qt6 GUI: project explorer, design hierarchy, messages, source viewer with jump-to-source, run report; new/edit/save-as project (sources and their VHDL library, constraints, waivers, parameters, defines, include directories, options) | ✅ |
 | RTL extraction into a word-level Design IR: registers with clock, async resets, sync reset and enable; latches; combinational cells; memories; instance tree | ✅ |
 | `opencdc analyze --dump-ir`, and a JSON register list | ✅ |
-| SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins) | ✅ |
+| SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins, `get_clocks -of_objects [get_nets …]` in clock groups, abbreviated options such as `-of`) | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
 | Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), clock groups with one group, overlapping groups, or related clocks declared asynchronous (`CON-GROUP-*`) | ✅ |
 | Vivado clock report cross-check (`--vivado-clocks`, project field `vivadoClockReports`, GUI project editor): `report_clocks` / `report_timing_summary` output read back, clocks matched by source pin or name, period mismatches (`VIV-PERIOD-MISMATCH`) and clocks only one side knows reported | ✅ |
