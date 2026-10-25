@@ -47,14 +47,15 @@ struct Run {
     }
 };
 
-std::unique_ptr<Run> analyze(const std::string& file, const std::string& text, const std::string& top) {
+std::unique_ptr<Run> analyze(const std::string& file, const std::string& text, const std::string& top,
+                             const std::string& sdc = kSdc) {
     auto run = std::make_unique<Run>();
     engine::ProjectConfig cfg;
     cfg.name = "prim";
     cfg.top = top;
     cfg.sources = {run->dir.write(file, text)};
     cfg.sourceLibraries = {""};
-    cfg.constraints = {run->dir.write("c.sdc", kSdc)};
+    cfg.constraints = {run->dir.write("c.sdc", sdc)};
     engine::AnalysisSession session;
     NullProgressSink progress;
     CancellationToken cancel;
@@ -636,4 +637,90 @@ TEST_CASE("Registers whose enable is constant 0 through the hierarchy are no sou
     dumpPaths(*run);
     CHECK_FALSE(crosses(*run, "top.off.q", "top.o1"));
     CHECK(crosses(*run, "top.on.q", "top.o2"));
+}
+
+namespace {
+constexpr const char* kGtTop =
+    "module top(input refclk_p, input refclk_n, input rxp, input rxn, output txp, output txn, input clk_a,\n"
+    "           input [31:0] tx_in, output reg [31:0] rx_out, output reg flag);\n"
+    "  wire refclk, rxoutclk, txoutclk, rxusrclk, txusrclk, rxdone;\n"
+    "  wire [63:0] rxdata;\n"
+    "  reg [31:0] tx_q;\n"
+    "  IBUFDS_GTE2 rb (.I(refclk_p), .IB(refclk_n), .CEB(1'b0), .O(refclk));\n"
+    "  GTXE2_CHANNEL ch (.GTREFCLK0(refclk), .GTXRXP(rxp), .GTXRXN(rxn), .GTXTXP(txp), .GTXTXN(txn),\n"
+    "    .RXOUTCLK(rxoutclk), .TXOUTCLK(txoutclk), .RXUSRCLK(rxusrclk), .RXUSRCLK2(rxusrclk),\n"
+    "    .TXUSRCLK(txusrclk), .TXUSRCLK2(txusrclk), .TXDATA({32'd0, tx_q}), .RXDATA(rxdata),\n"
+    "    .RXRESETDONE(rxdone), .RXBUFSTATUS());\n"
+    "  BUFG b1 (.I(rxoutclk), .O(rxusrclk));\n"
+    "  BUFG b2 (.I(txoutclk), .O(txusrclk));\n"
+    "  always @(posedge clk_a) tx_q <= tx_in;\n"
+    "  always @(posedge rxusrclk) rx_out <= rxdata[31:0];\n"
+    "  always @(posedge clk_a or negedge rxdone) if (!rxdone) flag <= 1'b0; else flag <= 1'b1;\n"
+    "endmodule\n";
+} // namespace
+
+TEST_CASE("Primitives: GT transceiver clocks are sources of their own", "[primitives][gt]") {
+    auto run = analyze("t.v", kGtTop, "top", "create_clock -name clk_a -period 10 [get_ports clk_a]\n");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-PRIMITIVE-PORT") == 1); // RXBUFSTATUS
+    CHECK(run->count("CLK-UNRESOLVED") == 0);
+    std::vector<std::string> names;
+    for (const auto& c : run->r->clocks->clocks)
+        names.push_back(c.name);
+    CHECK(std::ranges::find(names, "top.ch.RXOUTCLK") != names.end());
+    CHECK(std::ranges::find(names, "top.ch.TXOUTCLK") != names.end());
+    // unconstrained: the relation to clk_a is unknown, the crossing needs review
+    const auto* p = run->path("top.tx_q", "top.ch.tx_q");
+    REQUIRE(p);
+    CHECK(std::ranges::any_of(p->hits, [](const auto& h) { return h.ruleId == "CDC-010"; }));
+    CHECK(run->hits("CDC-006") == 1); // RXRESETDONE releases a clk_a reset unsynchronized
+}
+
+TEST_CASE("Primitives: GT output pins constrained like in Vivado", "[primitives][gt]") {
+    auto run = analyze("t.v", kGtTop, "top",
+                       "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                       "create_clock -name rxclk -period 3.2 [get_pins ch/RXOUTCLK]\n"
+                       "create_clock -name txclk -period 3.2 [get_pins ch/TXOUTCLK]\n"
+                       "set_clock_groups -asynchronous -group clk_a -group rxclk -group txclk\n");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    const auto* p = run->path("top.tx_q", "top.ch.tx_q");
+    REQUIRE(p);
+    CHECK(p->dstClockName == "txclk");
+    CHECK(std::ranges::any_of(p->hits, [](const auto& h) { return h.ruleId == "CDC-003"; }));
+    CHECK(run->path("top.ch.rx_q", "top.rx_out") == nullptr); // same recovered clock
+}
+
+TEST_CASE("Primitives: UltraScale GT channel and common from VHDL", "[primitives][gt][vhdl]") {
+    auto run = analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "library unisim; use unisim.vcomponents.all;\n"
+                       "entity top is port (clk_a, refclk_p, refclk_n, rxp, rxn : in std_logic; txp, txn : out std_logic;\n"
+                       "  q : out std_logic_vector(127 downto 0)); end;\n"
+                       "architecture rtl of top is\n"
+                       "  signal refclk, rxoutclk, rxusr, qclk, qref : std_logic;\n"
+                       "  signal rxdata : std_logic_vector(127 downto 0);\n"
+                       "begin\n"
+                       "  rb : IBUFDS_GTE4 port map (I => refclk_p, IB => refclk_n, CEB => '0', O => refclk, ODIV2 => open);\n"
+                       "  cm : GTYE4_COMMON port map (GTREFCLK00 => refclk, QPLL0OUTCLK => qclk, QPLL0OUTREFCLK => qref,\n"
+                       "                              QPLL0LOCKDETCLK => clk_a, QPLL0RESET => '0', BGBYPASSB => '1');\n"
+                       "  ch : GTYE4_CHANNEL generic map (SIM_RECEIVER_DETECT_PASS => \"TRUE\", RX_DATA_WIDTH => 128)\n"
+                       "    port map (GTREFCLK0 => refclk, QPLL0CLK => qclk, QPLL0REFCLK => qref, GTYRXP => rxp,\n"
+                       "              GTYRXN => rxn, GTYTXP => txp, GTYTXN => txn, RXOUTCLK => rxoutclk,\n"
+                       "              RXUSRCLK => rxusr, RXUSRCLK2 => rxusr, RXDATA => rxdata, TXDATA => (others => '0'));\n"
+                       "  b : BUFG_GT port map (I => rxoutclk, O => rxusr, CE => '1', CEMASK => '0', CLR => '0',\n"
+                       "                        CLRMASK => '0', DIV => \"000\");\n"
+                       "  process (rxusr) begin if rising_edge(rxusr) then q <= rxdata; end if; end process;\n"
+                       "end;\n",
+                       "top", "create_clock -name clk_a -period 10 [get_ports clk_a]\n");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-PRIMITIVE-PORT") == 1); // BGBYPASSB
+    CHECK(run->r->cdc->paths.empty()); // RX data stays in the recovered clock domain
+    bool rx = false;
+    for (const auto& c : run->r->clocks->clocks)
+        rx = rx || c.name == "top.ch.RXOUTCLK";
+    CHECK(rx);
 }

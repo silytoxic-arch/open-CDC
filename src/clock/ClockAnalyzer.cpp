@@ -145,6 +145,13 @@ private:
         c.source = b;
         c.sourceName = c.name;
         c.definedAt = netLoc(b);
+        // clock outputs of vendor models (GT RXOUTCLK) are named after their pin
+        const ir::Net& net = view_.bodyOf(b.inst).net(b.net);
+        if (const auto* pin = net.findAttr("OPENCDC_CLOCK_PIN"); pin && c.name.size() >= net.name.size()) {
+            std::string v = pin->value;
+            std::erase(v, '"');
+            c.name = c.name.substr(0, c.name.size() - net.name.size()) + v;
+        }
         const ClockId id = addClock(std::move(c));
         blackBox_.emplace(b, id);
         return id;

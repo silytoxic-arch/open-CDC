@@ -192,4 +192,36 @@ package vcomponents is
   component OSERDESE3 port (CLK : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component URAM288 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTXE2_CHANNEL port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTHE2_CHANNEL port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTPE2_CHANNEL port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTHE3_CHANNEL port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTHE4_CHANNEL port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTYE3_CHANNEL port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTYE4_CHANNEL port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTXE2_COMMON port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTHE2_COMMON port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTPE2_COMMON port (GTREFCLK0 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTHE3_COMMON port (GTREFCLK00 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTHE4_COMMON port (GTREFCLK00 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTYE3_COMMON port (GTREFCLK00 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component GTYE4_COMMON port (GTREFCLK00 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IBUFDS_GTE3 port (I : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IBUFDS_GTE4 port (I : in std_ulogic); end component;
 end package;
