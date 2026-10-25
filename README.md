@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 16, qualifier recognition through decode logic, crossings summarized by clock pair**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 17, frame FIFOs and FIFO structures, clock-level exceptions, verified on verilog-ethernet**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–16)
+## What works today (stages 1–17)
 
 | Feature | Status |
 |---|---|
@@ -22,7 +22,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Qt6 GUI: project explorer, design hierarchy, messages, source viewer with jump-to-source, run report; new/edit/save-as project (sources and their VHDL library, constraints, waivers, parameters, defines, include directories, options) | ✅ |
 | RTL extraction into a word-level Design IR: registers with clock, async resets, sync reset and enable; latches; combinational cells; memories; instance tree | ✅ |
 | `opencdc analyze --dump-ir`, and a JSON register list | ✅ |
-| SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins, `get_clocks -of_objects [get_nets …]` in clock groups and `set_input_delay -clock`, abbreviated options such as `-of`) | ✅ |
+| SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins, `get_clocks -of_objects [get_nets …]` in clock groups and `set_input_delay -clock`, clock-level `set_false_path` / `set_max_delay -datapath_only` (`-from [get_clocks a] -to [get_clocks b]`), abbreviated options such as `-of`) | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
 | Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), clock groups with one group, overlapping groups, or related clocks declared asynchronous (`CON-GROUP-*`) | ✅ |
 | Vivado clock report cross-check (`--vivado-clocks`, project field `vivadoClockReports`, GUI project editor): `report_clocks` / `report_timing_summary` output read back, clocks matched by source pin or name, period mismatches (`VIV-PERIOD-MISMATCH`) and clocks only one side knows reported | ✅ |
@@ -31,7 +31,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Sequential dependency graph: register inputs traced back through logic and hierarchy | ✅ |
 | CDC path search between asynchronous / unknown-relation clocks; single-bit / multi-bit; control / data; full hierarchical path | ✅ |
 | Synchronizer recognition: 1/2/3/N-flop chains (including vector shift registers and chains across modules) with checked conditions; data qualified by a synchronized enable/select, also when the source data is decoded into the enable, selects the qualifier, or is ANDed with it (`q <= req_sync & f(src)`, `q <= req_sync ? f(src) : 0`). Results are reported in three levels: structure recognized, necessary conditions verified, protocol conditions unverified | ✅ |
-| Protocol synchronizers: toggle (pulse), Gray code (encoder and ±1 step proven), request/acknowledge handshake, asynchronous FIFO (memory + Gray pointers in both directions), reset synchronizers; grouped into synchronizer structures | ✅ |
+| Protocol synchronizers: toggle (pulse), Gray code (encoder and ±1 step proven), request/acknowledge handshake, asynchronous FIFO (memory + Gray pointers in both directions, or a write pointer committed through a handshake as in frame FIFOs), reset synchronizers; grouped into synchronizer structures (all crossings of one FIFO instance form one structure, and reconvergence among its pointers, requests and acknowledges is part of its protocol) | ✅ |
 | Asynchronous reset crossings (grouped per reset source and clock), reconvergence (bit-level, configurable depth), multi-bit incoherency, pulse loss (with clock periods), multi-domain logic | ✅ |
 | Rules CDC-001 … CDC-010, all ten (specs in [docs/rules](docs/rules)) | ✅ |
 | GUI CDC Path Viewer and Rule Violation Viewer with filters, details (structure, reconvergence, grouped registers), fix suggestions and jump-to-source | ✅ |
