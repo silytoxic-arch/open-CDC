@@ -1,4 +1,6 @@
 #include "engine/Report.h"
+
+#include "engine/ClockPairs.h"
 #include "engine/SdcSuggest.h"
 
 #include "core/PathUtil.h"
@@ -222,6 +224,19 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
               << "</td><td>" << n.first << "</td><td>" << n.second << "</td></tr>\n";
         }
         o << "</table>\n";
+
+        // ---- Clock pairs ----
+        if (const auto pairs = summarizeClockPairs(c); !pairs.empty()) {
+            o << "<h2 id=\"pairs\">Crossings by clock pair</h2>\n<table><tr><th>Source clock</th>"
+                 "<th>Dest. clock</th><th>Relation</th><th>Paths</th><th>Synchronized</th><th>Violations</th>"
+                 "<th>Potential risk</th><th>Needs review</th></tr>\n";
+            for (const auto& cp : pairs)
+                o << "<tr><td>" << esc(cp.srcClock) << "</td><td>" << esc(cp.dstClock) << "</td><td>"
+                  << esc(cp.relation) << "</td><td>" << cp.paths << "</td><td>" << cp.synchronized << "</td><td>"
+                  << cp.violations << "</td><td>" << cp.potentialRisk << "</td><td>" << cp.needsReview
+                  << "</td></tr>\n";
+            o << "</table>\n";
+        }
 
         // ---- Paths table ----
         // Large designs: only the paths that need attention are listed.

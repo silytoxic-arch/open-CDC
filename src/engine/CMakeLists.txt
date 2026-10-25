@@ -10,6 +10,8 @@ add_library(opencdc_engine STATIC
     SdcSuggest.cpp
     SdcSuggest.h
     ClockNaming.h
+    ClockPairs.cpp
+    ClockPairs.h
     VivadoClocks.cpp
     VivadoClocks.h
     WaiverFile.cpp

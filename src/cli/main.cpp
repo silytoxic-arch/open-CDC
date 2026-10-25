@@ -15,6 +15,7 @@
 #include "core/Progress.h"
 #include "core/Version.h"
 #include "engine/AnalysisSession.h"
+#include "engine/ClockPairs.h"
 #include "engine/ProjectConfig.h"
 #include "engine/Report.h"
 #include "engine/SdcSuggest.h"
@@ -24,6 +25,7 @@
 
 #include <CLI/CLI.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -188,6 +190,27 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
         if (!c.waivers.empty())
             os << ", " << result->waivedHits() << " hit(s) waived";
         os << "\n";
+        // where the crossings are: one line per clock pair (the busiest first)
+        const auto pairs = engine::summarizeClockPairs(*result);
+        for (std::size_t k = 0; k < pairs.size() && k < 12; ++k) {
+            const auto& cp = pairs[k];
+            os << "  " << cp.srcClock << " -> " << cp.dstClock << " (" << cp.relation << "): " << cp.paths
+               << " path(s), " << cp.synchronized << " synchronized";
+            if (cp.violations)
+                os << ", " << cp.violations << " violation(s)";
+            if (cp.potentialRisk)
+                os << ", " << cp.potentialRisk << " at risk";
+            if (cp.needsReview)
+                os << ", " << cp.needsReview << " need review";
+            os << "\n";
+        }
+        if (pairs.size() > 12)
+            os << "  ... " << pairs.size() - 12 << " more clock pair(s)\n";
+        if (std::ranges::any_of(pairs, [](const engine::ClockPairSummary& cp) {
+                return cp.relation == "unknown" && cp.needsReview > 0;
+            }))
+            os << "  (paths need review because clock relations are unknown: --suggest-sdc proposes the missing "
+                  "constraints)\n";
         if (!quiet) {
             for (const auto& p : c.paths) {
                 os << "  #" << p.id << " [" << cdc::toString(p.status) << "] " << p.srcName << " (" << p.srcClockName

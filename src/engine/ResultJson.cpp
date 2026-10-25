@@ -1,5 +1,7 @@
 #include "engine/ResultJson.h"
 
+#include "engine/ClockPairs.h"
+
 #include "core/PathUtil.h"
 #include "core/Version.h"
 #include "ir/Dump.h"
@@ -321,6 +323,17 @@ json cdcSmall(const cdc::CdcResult& c) {
     for (const auto& [id, n] : rules::countHits(c))
         byRule[id] = n;
     j["hitsByRule"] = std::move(byRule);
+    json pairs = json::array();
+    for (const auto& cp : summarizeClockPairs(c))
+        pairs.push_back({{"sourceClock", cp.srcClock},
+                         {"destinationClock", cp.dstClock},
+                         {"relation", cp.relation},
+                         {"paths", cp.paths},
+                         {"synchronized", cp.synchronized},
+                         {"violations", cp.violations},
+                         {"potentialRisk", cp.potentialRisk},
+                         {"needsReview", cp.needsReview}});
+    j["clockPairs"] = std::move(pairs);
 
     json rulesMeta = json::array();
     const auto registry = rules::RuleRegistry::standard();
@@ -368,6 +381,7 @@ void writeCdc(JsonWriter& w, int level, const cdc::CdcResult& c) {
     const json small = cdcSmall(c);
     auto member = [&](const char* key) { return [&w, &small, key](int l) { w.value(l, small.at(key)); }; };
     w.object(level, {
+        {"clockPairs", member("clockPairs")},
         {"hitsByRule", member("hitsByRule")},
         {"paths",
          [&](int l) {
