@@ -129,6 +129,8 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
                 char mhz[32];
                 std::snprintf(mhz, sizeof(mhz), "%.4g", 1000.0 / *c.periodNs);
                 os << " period=" << *c.periodNs << "ns (" << mhz << " MHz)";
+                if (c.periodRatio && !c.periodBasis.empty())
+                    os << " = " << c.periodBasis << " x " << *c.periodRatio;
             }
             os << " registers=" << c.registers();
             if (c.negedgeRegisters)

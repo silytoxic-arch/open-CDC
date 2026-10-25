@@ -365,6 +365,11 @@ TEST_CASE("Primitives: MMCM/PLL output periods follow the multiply and divide pa
     CHECK(period("top.m.CLKOUT0") == 5.0);  // 10 x 1 x 5 / 10
     CHECK(period("top.m.CLKOUT1") == 20.0); // 10 x 1 x 20 / 10
     CHECK(period("top.p.CLKOUT2") == 7.0);  // master clk_b is 7 ns: 7 x 2 x 4 / 8
+    for (const auto& c : run->r->clocks->clocks)
+        if (c.name == "top.m.CLKOUT1") {
+            CHECK(c.periodRatio == 2.0);
+            CHECK(c.periodBasis == "clk_a");
+        }
     CHECK(run->count("FE-SLANG-UnconnectedOutputPort") == 0);
     const auto* fast = run->path("top.a", "top.s1");
     REQUIRE(fast);
@@ -397,6 +402,8 @@ TEST_CASE("Primitives: generator input period from CLKIN1_PERIOD when the input 
         if (c.name == "top.m.CLKOUT0") {
             found = true;
             CHECK(c.periodNs == 4.0); // 8 x 1 x 2 / 4
+            CHECK(c.periodRatio == 0.5);
+            CHECK(c.periodBasis == "CLKIN1_PERIOD"); // the input clock has no constraint
         }
     CHECK(found);
 }

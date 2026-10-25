@@ -571,8 +571,11 @@ private:
             }
             auto& c = model_->clocks[id.index()];
             c.master = master;
-            if (master.valid() && !c.periodNs && model_->clocks[master.index()].periodNs)
-                c.periodNs = *model_->clocks[master.index()].periodNs * def.divideBy / def.multiplyBy;
+            if (master.valid() && !c.periodNs && model_->clocks[master.index()].periodNs) {
+                c.periodRatio = static_cast<double>(def.divideBy) / def.multiplyBy;
+                c.periodBasis = model_->clocks[master.index()].name;
+                c.periodNs = *model_->clocks[master.index()].periodNs * *c.periodRatio;
+            }
         }
         // Derived clocks without constraints inherit nothing but the master link.
     }
@@ -587,12 +590,19 @@ private:
                 if (c.periodNs)
                     continue;
                 std::optional<double> base;
-                if (c.master.valid() && model_->clocks[c.master.index()].periodNs)
+                std::string basis;
+                if (c.master.valid() && model_->clocks[c.master.index()].periodNs) {
                     base = model_->clocks[c.master.index()].periodNs;
-                else if (r.second > 0)
+                    basis = model_->clocks[c.master.index()].name;
+                }
+                else if (r.second > 0) {
                     base = r.second;
+                    basis = "CLKIN1_PERIOD";
+                }
                 if (base) {
                     c.periodNs = *base * r.first;
+                    c.periodRatio = r.first;
+                    c.periodBasis = basis;
                     changed = true;
                 }
             }

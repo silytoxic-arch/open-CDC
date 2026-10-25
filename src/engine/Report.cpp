@@ -64,7 +64,7 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:18px;margin:28px 0 8px;border-bott
 h3{font-size:15px;margin:18px 0 6px}.nowrap{white-space:nowrap}
 table{border-collapse:collapse;margin:6px 0 12px}td,th{border:1px solid #d6d6d6;padding:3px 7px;text-align:left;vertical-align:top}
 th{background:#f3f3f3}tr:nth-child(even) td{background:#fafafa}
-.meta{color:#666}.mono{font-family:Consolas,Menlo,monospace;font-size:12px}
+.meta{color:#666}.muted{color:#777;font-size:12px}.mono{font-family:Consolas,Menlo,monospace;font-size:12px}
 .cards{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
 .card{border:1px solid #ddd;border-radius:6px;padding:8px 14px;min-width:120px}
 .card b{display:block;font-size:22px}
@@ -153,7 +153,12 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
             const bool known = c.periodNs && *c.periodNs > 0;
             o << "<tr><td>" << esc(c.name) << "</td><td>" << toString(c.kind) << "</td><td class=\"mono\">"
               << esc(c.sourceName) << "</td><td>" << (c.master.valid() ? esc(cm.clock(c.master).name) : "&ndash;")
-              << "</td><td>" << (known ? fmt(*c.periodNs, "%.4g") + " ns" : "&ndash;") << "</td><td>"
+              << "</td><td>" << (known ? fmt(*c.periodNs, "%.4g") + " ns" : "&ndash;")
+              << (c.periodRatio && !c.periodBasis.empty()
+                      ? " <span class=\"muted\">= " + esc(c.periodBasis) + " &times; " + fmt(*c.periodRatio, "%.4g") +
+                            "</span>"
+                      : std::string())
+              << "</td><td>"
               << (known ? fmt(1000.0 / *c.periodNs, "%.4g") + " MHz" : "&ndash;") << "</td><td>" << c.registers()
               << "</td></tr>\n";
         }

@@ -120,6 +120,12 @@ void ClockView::setResult(const engine::AnalysisResult& result) {
         QString tip = tr("%1 clock").arg(qs(std::string(clock::toString(c.kind))));
         if (c.master.valid())
             tip += tr(", derived from '%1'").arg(qs(cm.clock(c.master).name));
+        if (c.periodRatio && !c.periodBasis.empty()) {
+            const QString how = tr("%1 \u00d7 %2").arg(qs(c.periodBasis)).arg(*c.periodRatio, 0, 'g', 4);
+            tip += tr("; period = %1").arg(how);
+            item->setToolTip(3, tr("period = %1").arg(how));
+            item->setText(3, item->text(3) + QStringLiteral("  (= %1)").arg(how));
+        }
         item->setToolTip(0, tip);
         setLocation(item, c.definedAt);
         clockItems[i] = item;

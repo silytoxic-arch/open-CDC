@@ -204,6 +204,8 @@ json clocksJson(const clock::ClockModel& m, const constraints::ConstraintSet* co
                   {"master", c.master.valid() ? json(m.clock(c.master).name) : json(nullptr)},
                   {"periodNs", c.periodNs ? json(*c.periodNs) : json(nullptr)},
                   {"frequencyMHz", c.periodNs && *c.periodNs > 0 ? json(1000.0 / *c.periodNs) : json(nullptr)},
+                  {"periodRatio", c.periodRatio ? json(*c.periodRatio) : json(nullptr)},
+                  {"periodBasis", c.periodBasis.empty() ? json(nullptr) : json(c.periodBasis)},
                   {"waveform", c.waveform},
                   {"definedAt", locationJson(c.definedAt)},
                   {"posedgeRegisters", c.posedgeRegisters},

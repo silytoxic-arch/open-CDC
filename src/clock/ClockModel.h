@@ -32,6 +32,10 @@ struct Clock {
     std::string sourceName;            ///< hierarchical name of the source bit
     ClockId master;                    ///< Generated / Divider: the clock it is derived from
     std::optional<double> periodNs;
+    /// How the period was obtained for a derived clock: periodNs = basis period
+    /// x periodRatio, basis = the master clock's name or "CLKIN1_PERIOD".
+    std::optional<double> periodRatio;
+    std::string periodBasis;
     std::vector<double> waveform;
     SourceLocation definedAt;          ///< constraint line, or declaration of the source net
     std::size_t posedgeRegisters = 0;  ///< registers clocked on the rising edge of this clock

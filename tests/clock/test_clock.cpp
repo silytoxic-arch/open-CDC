@@ -204,6 +204,8 @@ TEST_CASE("Generated clock constraint on a divider", "[clock][divider][constrain
     CHECK(half.kind == ClockKind::Generated);
     CHECK(r.model->clock(half.master).name == "sys");
     CHECK(half.periodNs == 20.0);
+    CHECK(half.periodRatio == 2.0);
+    CHECK(half.periodBasis == "sys");
     CHECK(r.clockName("top.q") == "half");
     CHECK(r.rel("sys", "half") == ClockRelation::Synchronous);
 }
