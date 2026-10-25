@@ -60,6 +60,8 @@ public:
     /// Writes the HTML report / the CSV tables of the last result.
     bool exportHtmlReport(const QString& file) const;
     bool exportCsv(const QString& dir) const;
+    /// Writes the suggested constraints (engine::suggestConstraints) of the last result.
+    bool exportSuggestedSdc(const QString& file) const;
 
 private slots:
     void onOpenProject();
@@ -108,6 +110,7 @@ private:
     QAction* cancelAction_ = nullptr;
     QAction* exportHtmlAction_ = nullptr;
     QAction* exportCsvAction_ = nullptr;
+    QAction* exportSdcAction_ = nullptr;
 };
 
 } // namespace opencdc::gui

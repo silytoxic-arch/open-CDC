@@ -2,7 +2,7 @@
 //
 //   opencdc --version
 //   opencdc analyze <project.ocdc.json> [--json <out.json>] [--dump-ir <out.txt>]
-//                   [--schematic-dir <dir>] [--html <report.html>] [--csv <dir>] [--quiet]
+//                   [--schematic-dir <dir>] [--html <report.html>] [--csv <dir>] [--suggest-sdc <file>] [--quiet]
 //
 // Exit codes: 0 = ran, no errors and no error-severity CDC violations;
 //             1 = ran, errors reported (HDL/constraint errors);
@@ -16,6 +16,7 @@
 #include "engine/AnalysisSession.h"
 #include "engine/ProjectConfig.h"
 #include "engine/Report.h"
+#include "engine/SdcSuggest.h"
 #include "engine/ResultJson.h"
 #include "ir/Dump.h"
 #include "schematic/Schematic.h"
@@ -54,6 +55,7 @@ struct Outputs {
     std::string schematicDir;
     std::string html;
     std::string csvDir;
+    std::string suggestSdc;
 };
 
 bool writeText(const std::filesystem::path& file, const std::string& text) {
@@ -279,6 +281,20 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
         os << "CSV     : " << outs.csvDir << " (paths.csv, violations.csv)\n";
     }
 
+    if (!outs.suggestSdc.empty()) {
+        if (!result->clocks) {
+            os << "Suggested SDC: not written (clock analysis did not run)\n";
+        }
+        else {
+            const auto sug = engine::suggestConstraints(*result);
+            if (!writeText(fromUtf8(outs.suggestSdc), sug.text))
+                return kExitUsage;
+            os << "Suggested SDC: " << outs.suggestSdc << " (" << sug.clocks << " clock(s), " << sug.groups
+               << " clock group(s), " << sug.todos << " TODO period(s); resolves " << sug.unknownPairs.size()
+               << " unknown clock relation(s))\n";
+        }
+    }
+
     if (result->hasErrors())
         return kExitAnalysisErrors;
     return result->violations(Severity::Error) > 0 ? kExitViolations : kExitOk;
@@ -303,6 +319,8 @@ int main(int argc, char** argv) {
     analyze->add_option("--dump-ir", outs.ir, "Write a text dump of the extracted Design IR to this file");
     analyze->add_option("--html", outs.html, "Write a self-contained HTML report (with schematics) to this file");
     analyze->add_option("--csv", outs.csvDir, "Write paths.csv and violations.csv into this directory");
+    analyze->add_option("--suggest-sdc", outs.suggestSdc,
+                        "Write suggested constraints (missing clocks, clock groups for unknown relations) to this file");
     analyze->add_option("--schematic-dir", outs.schematicDir,
                         "Write the CDC schematic of every path as path-<id>.svg into this directory");
     analyze->add_flag("-q,--quiet", quiet, "Print only the summary");

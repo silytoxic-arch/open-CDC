@@ -7,6 +7,8 @@ add_library(opencdc_engine STATIC
     Report.h
     ResultJson.cpp
     ResultJson.h
+    SdcSuggest.cpp
+    SdcSuggest.h
     WaiverFile.cpp
     WaiverFile.h)
 

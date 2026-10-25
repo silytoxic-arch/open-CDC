@@ -1,4 +1,5 @@
 #include "engine/Report.h"
+#include "engine/SdcSuggest.h"
 
 #include "core/PathUtil.h"
 #include "core/Version.h"
@@ -179,6 +180,29 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
                 o << "</tr>\n";
             }
             o << "</table>\n";
+        }
+        // ---- Unknown relations and the constraints that would resolve them ----
+        std::vector<std::pair<std::string, std::string>> unknown;
+        for (std::size_t i = 0; i < cm.clocks.size(); ++i)
+            for (std::size_t j = i + 1; j < cm.clocks.size(); ++j) {
+                const clock::ClockId a{static_cast<std::uint32_t>(i)}, b{static_cast<std::uint32_t>(j)};
+                if (cm.relation(a, b) == clock::ClockRelation::Unknown)
+                    unknown.emplace_back(cm.clocks[i].name + " <-> " + cm.clocks[j].name, cm.reason(a, b));
+            }
+        const auto sug = suggestConstraints(r);
+        if (!unknown.empty() || sug.clocks > 0) {
+            o << "<h2 id=\"unknown\">Unknown clock relations and suggested constraints</h2>\n";
+            if (!unknown.empty()) {
+                o << "<p>" << unknown.size()
+                  << " clock pair(s) have an unknown relation; crossings between them are analyzed as asynchronous "
+                     "and flagged for review (CDC-010).</p>\n<table><tr><th>Clocks</th><th>Reason</th></tr>\n";
+                for (const auto& [pair, reason] : unknown)
+                    o << "<tr><td>" << esc(pair) << "</td><td>" << esc(reason) << "</td></tr>\n";
+                o << "</table>\n";
+            }
+            o << "<p>Constraints that would complete the clock model (also written by "
+                 "<code>opencdc analyze --suggest-sdc</code>). Review every TODO and VERIFY before using them.</p>\n"
+              << "<pre class=\"mono\">" << esc(sug.text) << "</pre>\n";
         }
     }
 

@@ -4,6 +4,7 @@
 #include "core/PathUtil.h"
 #include "core/Version.h"
 #include "engine/Report.h"
+#include "engine/SdcSuggest.h"
 #include "rules/RuleEngine.h"
 #include "gui/CdcViews.h"
 #include "gui/ClockView.h"
@@ -11,6 +12,8 @@
 #include "gui/SourceViewer.h"
 
 #include <QAction>
+
+#include <fstream>
 #include <QApplication>
 #include <QDockWidget>
 #include <QDir>
@@ -202,6 +205,13 @@ void MainWindow::createActions() {
         if (!dir.isEmpty() && !exportCsv(dir))
             QMessageBox::warning(this, tr("Export"), tr("Could not write CSV files into %1").arg(dir));
     });
+    exportSdcAction_ = fileMenu->addAction(tr("Export Suggested &Constraints..."), this, [this] {
+        const QString file = QFileDialog::getSaveFileName(this, tr("Export suggested constraints"),
+                                                          QStringLiteral("suggested.sdc"),
+                                                          tr("Constraints (*.sdc *.xdc)"));
+        if (!file.isEmpty() && !exportSuggestedSdc(file))
+            QMessageBox::warning(this, tr("Export"), tr("Could not write %1").arg(file));
+    });
     fileMenu->addSeparator();
     fileMenu->addAction(tr("E&xit"), this, &QWidget::close)->setShortcut(QKeySequence::Quit);
 
@@ -329,6 +339,15 @@ bool MainWindow::exportHtmlReport(const QString& file) const {
         return false;
     const std::string html = engine::toHtmlReport(*lastResult_);
     return out.write(html.data(), static_cast<qint64>(html.size())) == static_cast<qint64>(html.size());
+}
+
+bool MainWindow::exportSuggestedSdc(const QString& file) const {
+    if (!lastResult_ || !lastResult_->clocks)
+        return false;
+    const auto sug = engine::suggestConstraints(*lastResult_);
+    std::ofstream out(fromUtf8(file.toStdString()), std::ios::binary);
+    out << sug.text;
+    return static_cast<bool>(out);
 }
 
 bool MainWindow::exportCsv(const QString& dir) const {
@@ -724,6 +743,7 @@ void MainWindow::updateActions() {
     cancelAction_->setEnabled(running);
     exportHtmlAction_->setEnabled(lastResult_ != nullptr && !running);
     exportCsvAction_->setEnabled(lastResult_ != nullptr && !running);
+    exportSdcAction_->setEnabled(lastResult_ != nullptr && lastResult_->clocks != nullptr && !running);
 }
 
 void MainWindow::onAbout() {

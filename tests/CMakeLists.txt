@@ -18,6 +18,7 @@ add_executable(opencdc_tests
     engine/test_analysis_session.cpp
     engine/test_waivers.cpp
     engine/test_report.cpp
+    engine/test_sdc_suggest.cpp
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_sv_interfaces.cpp
@@ -87,6 +88,10 @@ opencdc_cli_test(analyze_mixed 0
 opencdc_cli_test(analyze_primitives 3
     "Clocks  : 4.*top.u_mmcm.CLKOUT0  \\[divider\\].*period=5ns \\(200 MHz\\).*top.u_mmcm.CLKOUT1  \\[divider\\].*period=20ns.*FE-PRIMITIVES.*CDC     : 11 crossing path\\(s\\), 9 synchronized.*Rules   : 1 error violation"
     analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json)
+opencdc_cli_test(suggest_sdc 3
+    "Suggested SDC: .*suggested.sdc \\(0 clock\\(s\\), 0 clock group\\(s\\), 0 TODO period\\(s\\); resolves 0 unknown"
+    analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json -q
+    --suggest-sdc ${CMAKE_CURRENT_BINARY_DIR}/suggested.sdc)
 
 # ---- Installed tree (install rules, Qt deployment on Windows) ----
 add_test(NAME package.install_smoke

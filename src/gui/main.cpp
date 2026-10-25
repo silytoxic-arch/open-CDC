@@ -175,6 +175,9 @@ bool checkSchematicAndHierarchy(MainWindow& window, const opencdc::engine::Analy
         if (!sv->exportSvg(svg) || QFileInfo(svg).size() < 200)
             return (fail("schematic SVG export failed"), false);
         const QString html = dir.filePath(QStringLiteral("report.html"));
+        const QString sdc = dir.filePath(QStringLiteral("suggested.sdc"));
+        if (!window.exportSuggestedSdc(sdc) || QFileInfo(sdc).size() < 100)
+            return (fail("suggested constraints export failed"), false);
         if (!window.exportHtmlReport(html) || QFileInfo(html).size() < 2000 || !window.exportCsv(dir.path()) ||
             !QFileInfo::exists(dir.filePath(QStringLiteral("violations.csv"))))
             return (fail("report export failed"), false);
