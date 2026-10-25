@@ -278,6 +278,12 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
     return out;
 }
 
+std::vector<Object> DesignObjectResolver::cells(std::string_view pattern, bool hierarchical, bool nocase) {
+    buildRegisters();
+    auto out = match(regs_, ObjectKind::Cell, pattern, hierarchical, nocase);
+    return out;
+}
+
 std::vector<Object> DesignObjectResolver::nets(std::string_view pattern, bool hierarchical, bool nocase) {
     buildNames();
     return match(nets_, ObjectKind::Net, pattern, hierarchical, nocase);
@@ -835,9 +841,10 @@ private:
                     result.push_back({ObjectKind::Clock, pat, {}});
                     continue;
                 }
-                std::vector<Object> r = name == "get_ports" ? resolver_.ports(pat, nocase)
-                                        : name == "get_pins" ? resolver_.pins(pat, hier, nocase)
-                                                             : resolver_.nets(pat, hier, nocase);
+                std::vector<Object> r = name == "get_ports"   ? resolver_.ports(pat, nocase)
+                                        : name == "get_pins"  ? resolver_.pins(pat, hier, nocase)
+                                        : name == "get_cells" ? resolver_.cells(pat, hier, nocase)
+                                                              : resolver_.nets(pat, hier, nocase);
                 if (r.empty() && !quiet)
                     diag("CON-UNMATCHED", Severity::Warning, name + ": nothing matches '" + pat + "'", cmd.line);
                 result.insert(result.end(), r.begin(), r.end());
@@ -1001,16 +1008,36 @@ private:
         // look at the words before evaluating anything: only clock queries
         // in -from and -to make a clock exception (cell/pin queries of
         // path-level exceptions are not evaluated)
-        bool from = false, to = false;
+        bool from = false, to = false, fromCells = false, toCells = false;
         for (std::size_t i = 1; i + 1 < cmd.words.size(); ++i) {
             const std::string& w = cmd.words[i].raw;
             if (w != "-from" && w != "-to")
                 continue;
             std::string v = cmd.words[i + 1].raw;
             v.erase(0, v.find_first_not_of(" \t["));
-            if (!v.starts_with("get_clocks") && !v.starts_with("all_clocks"))
+            if (v.starts_with("get_clocks") || v.starts_with("all_clocks"))
+                (w == "-from" ? from : to) = true;
+            else if (v.starts_with("get_cells") || v.starts_with("get_pins") || v.starts_with("get_ports"))
+                (w == "-from" ? fromCells : toCells) = true;
+            else
                 return false;
-            (w == "-from" ? from : to) = true;
+        }
+        if (fromCells && toCells) {
+            // evaluate only forms we can honour: no -through/-hold, a
+            // datapath-only max delay, and object queries without netlist
+            // property filters or -of_objects (those would only warn)
+            bool datapathOnly = false;
+            for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+                const std::string& w = cmd.words[i].raw;
+                if (w == "-through" || w == "-hold" || w.find("-filter") != std::string::npos ||
+                    w.find("-of_objects") != std::string::npos)
+                    return false;
+                if (w == "-datapath_only")
+                    datapathOnly = true;
+            }
+            if (name == "set_max_delay" && !datapathOnly)
+                return false;
+            return pathException(cmd, name);
         }
         if (!from || !to)
             return false;
@@ -1046,6 +1073,33 @@ private:
         if (!collect(a.opts["-from"], e.from, e.fromBits) || !collect(a.opts["-to"], e.to, e.toBits))
             return false;
         out_.clockExceptions.push_back(std::move(e));
+        return true;
+    }
+
+    /// set_false_path / set_max_delay -datapath_only from registers/pins to
+    /// registers/pins (no -through).
+    bool pathException(const Command& cmd, const std::string& name) {
+        Args a = parseArgs(cmd, name,
+                           {{"-from", true}, {"-to", true}, {"-through", true}, {"-datapath_only", false},
+                            {"-setup", false}, {"-hold", false}, {"-rise", false}, {"-fall", false},
+                            {"-reset_path", false}, {"-quiet", false}, {"-comment", true}, {"-ignore_clock_latency", false}});
+        if ((name == "set_max_delay" && !a.flags.contains("-datapath_only")) || a.opts.contains("-through") ||
+            a.flags.contains("-hold"))
+            return false;
+        PathException e;
+        e.command = name == "set_false_path" ? name : name + " -datapath_only";
+        e.loc = {file_, cmd.line, 0};
+        for (const auto& v : a.opts["-from"])
+            for (const auto& o : v.objects)
+                e.from.insert(e.from.end(), o.bits.begin(), o.bits.end());
+        for (const auto& v : a.opts["-to"])
+            for (const auto& o : v.objects)
+                e.to.insert(e.to.end(), o.bits.begin(), o.bits.end());
+        if (e.from.empty() || e.to.empty()) {
+            diag("CON-UNMATCHED", Severity::Warning, name + ": -from or -to matches no register, pin or port", cmd.line);
+            return true;
+        }
+        out_.pathExceptions.push_back(std::move(e));
         return true;
     }
 
@@ -1139,7 +1193,9 @@ private:
             }
             return v;
         }
-        if (name == "get_cells" || name == "all_inputs" || name == "all_outputs" || name == "all_registers") {
+        if (name == "get_cells")
+            return getObjects(cmd, name);
+        if (name == "all_inputs" || name == "all_outputs" || name == "all_registers") {
             diag("CON-UNSUPPORTED-COMMAND", Severity::Warning, name + " is not supported; it returns nothing", cmd.line);
             return objectsValue({});
         }

@@ -301,6 +301,41 @@ private:
                              {}, {}});
     }
 
+    /// Register-level set_false_path / set_max_delay -datapath_only covering
+    /// a crossing from source node `src` to register `g`.
+    const std::string* pathExceptionFor(std::uint32_t src, std::size_t g) {
+        if (!exceptionsBuilt_) {
+            exceptionsBuilt_ = true;
+            const auto& nodes = st_.sg.nodes();
+            auto nodeOf = [&](const BitRef& b) -> std::optional<std::uint32_t> {
+                const auto d = st_.view.driver(b);
+                if (d.kind == graph::DriverKind::Register)
+                    return SeqGraph::registerNode(st_.view.globalRegister(d.bit.inst, d.index));
+                if (d.kind == graph::DriverKind::PrimaryInput)
+                    for (std::size_t n = st_.view.registerCount(); n < nodes.size(); ++n)
+                        if (nodes[n].kind == SourceKind::PrimaryInput && nodes[n].first.inst == d.bit.inst &&
+                            nodes[n].first.net == d.bit.net)
+                            return static_cast<std::uint32_t>(n);
+                return std::nullopt;
+            };
+            for (const auto& e : st_.cons.pathExceptions) {
+                Exception x;
+                x.why = e.command + " (" + toString(e.loc) + ")";
+                for (const auto& b : e.from)
+                    if (auto n = nodeOf(b))
+                        x.from.insert(*n);
+                for (const auto& b : e.to)
+                    if (auto n = nodeOf(b); n && *n < st_.view.registerCount())
+                        x.to.insert(*n);
+                exceptions_.push_back(std::move(x));
+            }
+        }
+        for (const auto& x : exceptions_)
+            if (x.from.contains(src) && x.to.contains(static_cast<std::uint32_t>(g)))
+                return &x.why;
+        return nullptr;
+    }
+
     CdcPath makePath(std::size_t g, Pin pin, const Agg& a, const CrossInfo& ci, bool unclockedSource) {
         const auto& nodes = st_.sg.nodes();
         CdcPath p;
@@ -311,6 +346,12 @@ private:
         p.srcClock = ci.src;
         p.dstClock = ci.dst;
         p.relation = ci.relation;
+        if (p.relation == ClockRelation::Unknown)
+            if (const auto* why = pathExceptionFor(a.node, g)) {
+                p.relation = ClockRelation::Asynchronous;
+                p.notes.push_back("the clock relation is unknown, but " + *why +
+                                  " constrains this crossing: it is analyzed as asynchronous");
+            }
         p.srcUnclocked = unclockedSource;
         p.srcClockName = unclockedSource ? std::string("(asynchronous input)") : st_.edgeName(ci.src);
         p.dstClockName = st_.edgeName(ci.dst);
@@ -822,6 +863,13 @@ private:
 
     State st_;
     std::map<std::tuple<std::uint32_t, std::uint32_t, int, std::size_t>, std::size_t> resetGroups_;
+    struct Exception {
+        std::set<std::uint32_t> from;
+        std::set<std::uint32_t> to;
+        std::string why;
+    };
+    std::vector<Exception> exceptions_;
+    bool exceptionsBuilt_ = false;
 };
 
 } // namespace

@@ -603,3 +603,39 @@ TEST_CASE("cdc_rules example: every hand-placed crossing is classified", "[cdc][
     CHECK(r.hits("CDC-005") == 6);
     CHECK(r.hits("CDC-010") == 1);
 }
+
+TEST_CASE("Register-level datapath-only max delays and false paths constrain single crossings", "[cdc][constraints]") {
+    constexpr const char* v = "module top(input clk_a, input clk_b, input d, input e, output reg q1, output reg q2);\n"
+                              "  reg a, b, s1, s2, t1, t2;\n"
+                              "  always @(posedge clk_a) begin a <= d; b <= e; end\n"
+                              "  always @(posedge clk_b) begin s1 <= a; s2 <= s1; q1 <= s2; t1 <= b; t2 <= t1; q2 <= t2; end\n"
+                              "endmodule\n";
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    auto r = analyze(v, clocks + "set_max_delay -datapath_only -from [get_cells a_reg] -to [get_cells s1_reg] 10.0\n");
+    const auto& p = r.path("top.a", "top.s1");
+    CHECK(p.relation == clock::ClockRelation::Asynchronous);
+    CHECK(std::ranges::any_of(p.notes, [](const std::string& n) { return n.find("set_max_delay -datapath_only") != std::string::npos; }));
+    CHECK(p.status == AnalysisStatus::Safe);
+    CHECK(r.path("top.b", "top.t1").relation == clock::ClockRelation::Unknown); // not covered
+    CHECK(r.countCode("CON-UNSUPPORTED-COMMAND") == 0);
+
+    auto fp = analyze(v, clocks + "set_false_path -from [get_cells {a_reg b_reg}] -to [get_cells -hier *1_reg]\n");
+    CHECK(fp.path("top.a", "top.s1").relation == clock::ClockRelation::Asynchronous);
+    CHECK(fp.path("top.b", "top.t1").relation == clock::ClockRelation::Asynchronous);
+    // negative: a max delay that is not datapath-only constrains nothing for CDC
+    auto plain = analyze(v, clocks + "set_max_delay -from [get_cells a_reg] -to [get_cells s1_reg] 10.0\n");
+    CHECK(plain.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
+    // negative: netlist property filters and -of_objects are not evaluated
+    // (no warning, no exception)
+    auto filt = analyze(v, clocks + "set_max_delay 2 -quiet -from [get_pins -filter {REF_PIN_NAME == C} -of_objects "
+                                    "[get_cells -hier -filter {ars_ff1 == TRUE}]] -to [get_cells s1_reg]\n"
+                                    "set_false_path -from [get_cells -hier -filter {X == 1}] -to [get_cells s1_reg]\n");
+    CHECK(filt.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
+    CHECK(filt.countCode("CON-UNSUPPORTED-OPTION") == 0);
+    CHECK(filt.countCode("CON-UNMATCHED") == 0);
+    // negative: an exception whose -to matches nothing warns
+    auto none = analyze(v, clocks + "set_false_path -from [get_cells a_reg] -to [get_cells nothing_reg]\n");
+    CHECK(none.countCode("CON-UNMATCHED") >= 1);
+    CHECK(none.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
+}

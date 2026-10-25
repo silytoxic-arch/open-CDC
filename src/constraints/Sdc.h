@@ -14,7 +14,7 @@
 
 namespace opencdc::constraints {
 
-enum class ObjectKind : std::uint8_t { Port, Pin, Net, Clock };
+enum class ObjectKind : std::uint8_t { Port, Pin, Net, Clock, Cell };
 
 /// A design object returned by get_ports / get_pins / get_nets / get_clocks.
 struct Object {
@@ -36,6 +36,10 @@ public:
     virtual std::vector<Object> ports(std::string_view pattern, bool nocase) = 0;
     virtual std::vector<Object> pins(std::string_view pattern, bool hierarchical, bool nocase) = 0;
     virtual std::vector<Object> nets(std::string_view pattern, bool hierarchical, bool nocase) = 0;
+    /// Flip-flop cells "<reg>_reg" (bits: Q); none by default.
+    virtual std::vector<Object> cells(std::string_view /*pattern*/, bool /*hierarchical*/, bool /*nocase*/) {
+        return {};
+    }
 };
 
 /// Resolver over a flattened design (Vivado-style names: instance levels
@@ -47,6 +51,7 @@ public:
 
     std::vector<Object> ports(std::string_view pattern, bool nocase) override;
     std::vector<Object> pins(std::string_view pattern, bool hierarchical, bool nocase) override;
+    std::vector<Object> cells(std::string_view pattern, bool hierarchical, bool nocase) override;
     std::vector<Object> nets(std::string_view pattern, bool hierarchical, bool nocase) override;
 
 private:
@@ -119,6 +124,16 @@ struct ClockException {
     SourceLocation loc;
 };
 
+/// set_false_path / set_max_delay -datapath_only between registers or pins
+/// (-from [get_cells a_reg] -to [get_cells b_reg]): the designer has
+/// constrained these crossings; their clock relation counts as asynchronous.
+struct PathException {
+    std::string command;
+    std::vector<graph::BitRef> from; ///< register Q bits, clock pins or ports
+    std::vector<graph::BitRef> to;
+    SourceLocation loc;
+};
+
 /// set_input_delay -clock <clk> <ports>: assigns input ports to a clock
 /// domain for CDC analysis (delay values are not used).
 struct InputDelay {
@@ -136,6 +151,7 @@ struct ConstraintSet {
     std::vector<ClockGroups> groups;
     std::vector<InputDelay> inputDelays;
     std::vector<ClockException> clockExceptions;
+    std::vector<PathException> pathExceptions;
     std::map<std::string, int> ignoredCommands; ///< command -> occurrences (reported, not applied)
     std::vector<std::filesystem::path> files;
 };
