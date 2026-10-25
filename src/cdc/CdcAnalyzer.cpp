@@ -519,8 +519,17 @@ private:
         st_.chains.assign(paths.size(), {});
         std::set<std::size_t> firstStages;
 
-        // Pass 1: flop chains (data pin only).
-        for (std::size_t i = 0; i < paths.size(); ++i) {
+        // Pass 1: flop chains (data pin only). Chains fed directly by the
+        // source come first, so that their outputs are known as qualifiers
+        // when the chains behind logic are looked at.
+        std::vector<std::size_t> order;
+        for (std::size_t i = 0; i < paths.size(); ++i)
+            if (st_.allDirect[i])
+                order.push_back(i);
+        for (std::size_t i = 0; i < paths.size(); ++i)
+            if (!st_.allDirect[i])
+                order.push_back(i);
+        for (const std::size_t i : order) {
             CdcPath& p = paths[i];
             if (p.pin != Pin::Data)
                 continue;
@@ -534,6 +543,10 @@ private:
                 continue;
             // A destination with an enable captures under a qualifier (pass 2).
             if (!st_.sg.pinBits(p.dstRegister, Pin::Enable).empty())
+                continue;
+            // Source data decoded under a synchronized qualifier before the
+            // first register is qualified data (pass 2), not a chain behind logic.
+            if (!st_.allDirect[i] && findQualifier(p))
                 continue;
             const bool firstStageFanout =
                 std::ranges::any_of(chains, [](const Chain& c) { return c.extraFanoutFirst > 0; });
@@ -657,6 +670,58 @@ private:
         return true;
     }
 
+    /// Every destination data bit is an AND whose one input is the output of
+    /// a synchronizer from the source clock (q <= req_sync & f(src); a mux
+    /// "req_sync ? f(src) : 0" folds to this form).
+    std::optional<SyncOut> andQualifier(const CdcPath& p) const {
+        if (p.pin != Pin::Data)
+            return std::nullopt;
+        // q <= req_sync ? f(src) : 0 is lowered as a synchronous clear by
+        // !req_sync: the register passes source data only while the
+        // synchronized qualifier is high
+        {
+            ConeEntry scratch;
+            const auto srst = st_.sg.pinBits(p.dstRegister, Pin::SyncReset);
+            if (srst.size() == 1) {
+                const auto es = st_.sg.entries(srst.front(), scratch);
+                if (es.size() == 1)
+                    if (auto it = st_.syncOutputs.find(es.front().node);
+                        it != st_.syncOutputs.end() && st_.related(it->second.srcClock, p.srcClock))
+                        return it->second;
+            }
+        }
+        const auto& view = st_.sg.view();
+        const auto [inst, r] = st_.sg.localRegister(p.dstRegister);
+        const auto& body = view.bodyOf(inst);
+        const auto& reg = body.registers.at(r);
+        std::optional<SyncOut> found;
+        for (const auto b : p.dstBits) {
+            const auto bit = view.bitOf(inst, reg.d, b);
+            if (!bit)
+                return std::nullopt;
+            const graph::Driver d = view.driver(*bit);
+            if (d.kind != graph::DriverKind::Cell)
+                return std::nullopt;
+            const auto& cell = view.bodyOf(d.bit.inst).cells.at(d.index);
+            if (cell.kind != ir::CellKind::And)
+                return std::nullopt;
+            std::optional<SyncOut> here;
+            for (const auto& in : st_.sg.cellInputs(d.bit.inst, d.index, d.bit.bit)) {
+                const graph::Driver id = view.driver(in.bit);
+                if (id.kind != graph::DriverKind::Register)
+                    continue;
+                const auto node = SeqGraph::registerNode(st_.sg.globalRegisterOf(id.bit.inst, id.index));
+                if (auto it = st_.syncOutputs.find(node);
+                    it != st_.syncOutputs.end() && st_.related(it->second.srcClock, p.srcClock))
+                    here = it->second;
+            }
+            if (!here)
+                return std::nullopt;
+            found = here;
+        }
+        return found;
+    }
+
     std::optional<SyncOut> findQualifier(const CdcPath& p) const {
         const auto g = p.dstRegister;
         // Control sources of the destination: the enable cone, and data-cone
@@ -690,6 +755,8 @@ private:
                     }
         }
         pushControls(g, 0, srcSeen && srcOnlySelect);
+        if (auto q = andQualifier(p))
+            return q;
         for (std::size_t w = 0; w < work.size(); ++w) {
             const auto [node, depth] = work[w];
             if (!st_.isRegister(node))

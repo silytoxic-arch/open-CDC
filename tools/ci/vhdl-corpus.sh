@@ -196,6 +196,16 @@ for a, b in [("\tddram_clk_p_vec <= (others => ddram_clk_p);\n", "\tddram_clk_p 
 open(os.path.join(work, "mw_top_arty_fixed.vhdl"), "w").write(top)
 arty_project("microwatt_arty_fixed",
              [os.path.join(work, "mw_top_arty_fixed.vhdl") if f.endswith("fpga/top-arty.vhdl") else f for f in arty])
+# with the JTAG clock constrained (as --suggest-sdc proposes): no path needs review; the two
+# errors are real (sys_reset releases the JTAG-domain registers; the DMI acknowledge is muxed before its synchronizer)
+open(os.path.join(work, "mw_jtag.sdc"), "w").write(
+    "create_clock -name tck -period 30 [get_pins {soc0/dtm/bscan/TCK}]\n"
+    "set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks sys_clk_pin] "
+    "-group [get_clocks tck]\n")
+j = json.load(open(os.path.join(work, "microwatt_arty_fixed.ocdc.json")))
+j["name"] = "microwatt_arty_jtag"
+j["constraints"].append("mw_jtag.sdc")
+json.dump(j, open(os.path.join(work, "microwatt_arty_jtag.ocdc.json"), "w"), indent=1)
 EOF
 
 check() { # project expected-regex
@@ -219,6 +229,7 @@ check surf_fifo_async.ocdc.json       "Summary : 0 error.*CDC     : 7 crossing p
 check surf_gty_qpll.ocdc.json         "GTYE4_COMMON.*Summary : 0 error\(s\), 0 warning\(s\)"
 check microwatt.ocdc.json             "RTL     : 50 module bodies, 1217 registers.*0 latches.*CLKOP  \\[divider\\].*\\(40 MHz\\).*1217/1217 registers resolved.*EHXPLLL.*Summary : 0 error\\(s\\), 1 warning"
 check microwatt_arty.ocdc.json        "IR-MULTIDRIVER.*ddram_clk_p_vec.*IR-MULTIDRIVER.*ddram_clk_n_vec.*IR-MULTIDRIVER.*uart1_txd.*Summary : 3 error\\(s\\), 2 warning"
-check microwatt_arty_fixed.ocdc.json  "Clocks  : 8 \\(2445/2445 registers resolved\\).*bscan.TCK.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 173 crossing path\\(s\\), 153 synchronized"
+check microwatt_arty_fixed.ocdc.json  "Clocks  : 8 \\(2445/2445 registers resolved\\).*bscan.TCK.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 173 crossing path\\(s\\), 170 synchronized"
+check microwatt_arty_jtag.ocdc.json   "hits: CDC-004 x1, CDC-005 x3, CDC-006 x2.*Rules   : 2 error violation\\(s\\), 0 warning violation\\(s\\), 4 path\\(s\\) at potential risk, 0 path\\(s\\) need review"
 check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodies, 7[0-9][0-9] registers.*0 latches.*Summary : 0 error"
 exit $fail
