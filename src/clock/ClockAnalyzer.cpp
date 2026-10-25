@@ -779,6 +779,11 @@ private:
             clocksOn(cons_.clockExceptions[k].fromBits, exceptionClocks_[k].first);
             clocksOn(cons_.clockExceptions[k].toBits, exceptionClocks_[k].second);
         }
+        model_->pathExceptionClocks.assign(cons_.pathExceptions.size(), {});
+        for (std::size_t k = 0; k < cons_.pathExceptions.size(); ++k) {
+            clocksOn(cons_.pathExceptions[k].fromClockBits, model_->pathExceptionClocks[k].first);
+            clocksOn(cons_.pathExceptions[k].toClockBits, model_->pathExceptionClocks[k].second);
+        }
         // set_input_delay -clock [get_clocks -of_objects ...]
         model_->inputDelayClocks.assign(cons_.inputDelays.size(), std::nullopt);
         for (std::size_t i = 0; i < cons_.inputDelays.size(); ++i) {

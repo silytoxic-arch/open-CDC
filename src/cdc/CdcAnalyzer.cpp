@@ -303,7 +303,11 @@ private:
 
     /// Register-level set_false_path / set_max_delay -datapath_only covering
     /// a crossing from source node `src` to register `g`.
-    const std::string* pathExceptionFor(std::uint32_t src, std::size_t g) {
+    /// A register-level exception (set_false_path / set_max_delay
+    /// -datapath_only) covering the crossing from node `src` to register `g`
+    /// through `pin`; nullptr if none.
+    const std::string* pathExceptionFor(std::uint32_t src, std::size_t g, Pin pin, const CrossInfo& ci,
+                                        bool unclockedSource) {
         if (!exceptionsBuilt_) {
             exceptionsBuilt_ = true;
             const auto& nodes = st_.sg.nodes();
@@ -318,21 +322,51 @@ private:
                             return static_cast<std::uint32_t>(n);
                 return std::nullopt;
             };
-            for (const auto& e : st_.cons.pathExceptions) {
+            auto clocksNamed = [&](const std::vector<std::string>& patterns, std::vector<clock::ClockId>& out) {
+                for (std::size_t c = 0; c < st_.clocks.clocks.size(); ++c)
+                    if (std::ranges::any_of(patterns, [&](const std::string& p) {
+                            return constraints::globMatch(p, st_.clocks.clocks[c].name);
+                        }))
+                        out.push_back(clock::ClockId{static_cast<std::uint32_t>(c)});
+            };
+            for (std::size_t k = 0; k < st_.cons.pathExceptions.size(); ++k) {
+                const auto& e = st_.cons.pathExceptions[k];
                 Exception x;
                 x.why = e.command + " (" + toString(e.loc) + ")";
                 for (const auto& b : e.from)
                     if (auto n = nodeOf(b))
                         x.from.insert(*n);
-                for (const auto& b : e.to)
-                    if (auto n = nodeOf(b); n && *n < st_.view.registerCount())
-                        x.to.insert(*n);
+                for (const auto& t : e.to)
+                    if (auto n = nodeOf(t.bit); n && *n < st_.view.registerCount())
+                        x.to[*n] |= static_cast<std::uint8_t>(1U << static_cast<unsigned>(t.role));
+                clocksNamed(e.fromClocks, x.fromClocks);
+                clocksNamed(e.toClocks, x.toClocks);
+                if (k < st_.clocks.pathExceptionClocks.size()) {
+                    const auto& [fc, tc] = st_.clocks.pathExceptionClocks[k];
+                    x.fromClocks.insert(x.fromClocks.end(), fc.begin(), fc.end());
+                    x.toClocks.insert(x.toClocks.end(), tc.begin(), tc.end());
+                }
+                // a side without -from / -to matches everything
+                x.anyFrom = e.from.empty() && e.fromClocks.empty() && e.fromClockBits.empty();
+                x.anyTo = e.to.empty() && e.toClocks.empty() && e.toClockBits.empty();
                 exceptions_.push_back(std::move(x));
             }
         }
-        for (const auto& x : exceptions_)
-            if (x.from.contains(src) && x.to.contains(static_cast<std::uint32_t>(g)))
+        const std::uint8_t roles = static_cast<std::uint8_t>(
+            (1U << static_cast<unsigned>(constraints::EndpointRole::Any)) |
+            (1U << static_cast<unsigned>(pin == Pin::AsyncReset ? constraints::EndpointRole::AsyncReset
+                                                                : constraints::EndpointRole::Data)));
+        for (const auto& x : exceptions_) {
+            const bool fromOk = x.anyFrom || x.from.contains(src) ||
+                                (!unclockedSource && std::ranges::find(x.fromClocks, ci.src.clock) != x.fromClocks.end());
+            if (!fromOk)
+                continue;
+            const auto it = x.to.find(static_cast<std::uint32_t>(g));
+            const bool toOk = x.anyTo || (it != x.to.end() && (it->second & roles) != 0) ||
+                              std::ranges::find(x.toClocks, ci.dst.clock) != x.toClocks.end();
+            if (toOk)
                 return &x.why;
+        }
         return nullptr;
     }
 
@@ -347,7 +381,7 @@ private:
         p.dstClock = ci.dst;
         p.relation = ci.relation;
         if (p.relation == ClockRelation::Unknown)
-            if (const auto* why = pathExceptionFor(a.node, g)) {
+            if (const auto* why = pathExceptionFor(a.node, g, pin, ci, unclockedSource)) {
                 p.relation = ClockRelation::Asynchronous;
                 p.notes.push_back("the clock relation is unknown, but " + *why +
                                   " constrains this crossing: it is analyzed as asynchronous");
@@ -865,7 +899,11 @@ private:
     std::map<std::tuple<std::uint32_t, std::uint32_t, int, std::size_t>, std::size_t> resetGroups_;
     struct Exception {
         std::set<std::uint32_t> from;
-        std::set<std::uint32_t> to;
+        std::map<std::uint32_t, std::uint8_t> to; ///< register node -> roles named (bit per EndpointRole)
+        std::vector<clock::ClockId> fromClocks;
+        std::vector<clock::ClockId> toClocks;
+        bool anyFrom = false;
+        bool anyTo = false;
         std::string why;
     };
     std::vector<Exception> exceptions_;

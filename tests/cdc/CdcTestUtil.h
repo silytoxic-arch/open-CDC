@@ -61,6 +61,17 @@ struct CdcRun {
     [[nodiscard]] std::size_t countCode(std::string_view c) const {
         return static_cast<std::size_t>(std::ranges::count_if(diags, [&](const Diagnostic& d) { return d.code == c; }));
     }
+    [[nodiscard]] std::size_t countSeverity(std::string_view c, Severity s) const {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(diags, [&](const Diagnostic& d) { return d.code == c && d.severity == s; }));
+    }
+    /// The first path from `src` to `dst`, or nullptr.
+    [[nodiscard]] const CdcPath* find(std::string_view src, std::string_view dst) const {
+        for (const auto& p : cdc->paths)
+            if (p.srcName == src && p.dstName == dst)
+                return &p;
+        return nullptr;
+    }
 };
 
 inline bool hasHit(const CdcPath& p, std::string_view rule) {

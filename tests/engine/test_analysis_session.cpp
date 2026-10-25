@@ -113,7 +113,9 @@ TEST_CASE("Session runs clock analysis with the project constraints", "[engine][
     CHECK(cm.clock(*b).registers() == 11);
     CHECK(findStage(*result, "Clock domain analysis")->status == StageStatus::Completed);
     CHECK(findStage(*result, "Constraint reading")->status == StageStatus::Completed);
-    CHECK(result->constraints->ignoredCommands.at("set_false_path") == 1);
+    // set_false_path -from [get_ports rst_b_n]: a path exception from an input
+    CHECK(result->constraints->pathExceptions.size() == 1);
+    CHECK_FALSE(result->constraints->ignoredCommands.contains("set_false_path"));
 }
 
 TEST_CASE("Session honours a cancelled token", "[engine][session]") {
@@ -200,7 +202,9 @@ TEST_CASE("Result JSON contains the elaborated hierarchy", "[engine][json]") {
     CHECK(j["clockAnalysis"]["clocks"].size() == 2);
     CHECK(j["clockAnalysis"]["relations"][0]["relation"] == "asynchronous");
     CHECK(j["clockAnalysis"]["unknownRelationPolicy"] == "report");
-    CHECK(j["clockAnalysis"]["constraints"]["ignoredCommands"]["set_false_path"] == 1);
+    CHECK(j["clockAnalysis"]["constraints"]["pathExceptions"] == 1);
+    CHECK(j["clockAnalysis"]["constraints"]["clockExceptions"] == 0);
+    CHECK_FALSE(j["clockAnalysis"]["constraints"]["ignoredCommands"].contains("set_false_path"));
 }
 
 TEST_CASE("Session reports the RTL extraction stage", "[engine][session]") {

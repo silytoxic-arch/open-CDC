@@ -2,9 +2,12 @@
 //
 // Supported Tcl: commands separated by newlines or ';', '#' comments,
 // backslash-newline continuation, "quoted" and {braced} words, [command]
-// substitution, $var / ${var} and `set`. Control flow (if/for/proc/...) is
-// not supported and is reported. Only commands that matter for clock
-// analysis are executed; every other command is counted and reported.
+// substitution, $var / ${var}, set, expr, if/elseif/else, foreach, for,
+// while, break, continue, incr, llength, lindex, lappend, puts and
+// get_property (PERIOD of clocks, cell properties). proc, source, switch
+// and eval are not supported and are reported. Only commands that matter for
+// clock and CDC analysis are executed; every other command is counted and
+// reported.
 
 #include "constraints/Sdc.h"
 
@@ -14,7 +17,9 @@
 #include <cctype>
 #include <charconv>
 #include <fstream>
+#include <cmath>
 #include <functional>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -107,6 +112,13 @@ DesignObjectResolver::DesignObjectResolver(const graph::DesignView& view) : view
 
 namespace {
 
+std::string upper(std::string_view s) {
+    std::string out(s);
+    for (auto& c : out)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return out;
+}
+
 std::vector<std::string> instancePrefixes(const ir::Design& d) {
     // Relative instance path prefixes ("" for tops, "u_rx/" ...).
     std::vector<std::string> prefix(d.instances.size());
@@ -166,19 +178,62 @@ void DesignObjectResolver::buildRegisters() {
         for (const auto& r : body.registers) {
             const auto& ch = r.q.chunks().front();
             const auto& net = body.net(ch.net);
-            if (net.arrayDepth > 0)
-                continue; // memories are not flip-flops after synthesis
+            auto clk = view_.bitOf(inst, r.clock.signal, 0);
+            auto add = [&](Named x) {
+                regs_.push_back(std::move(x));
+                regClock_.push_back(clk ? *clk : BitRef{});
+                CellInfo info;
+                info.parent = prefix[i].empty() ? std::string() : prefix[i].substr(0, prefix[i].size() - 1);
+                info.attrs = &net.attrs;
+                info.reg = &r;
+                info.inst = inst;
+                info.qOffset = ch.offset;
+                regInfo_.push_back(std::move(info));
+                regsByNet_[(static_cast<std::uint64_t>(inst.value) << 32) | ch.net.value].push_back(regs_.size() - 1);
+            };
+            for (const auto& a : net.attrs)
+                attrNames_.insert(upper(a.name));
+            if (net.arrayDepth > 0) {
+                // An array written at a computed index is a memory (RAM after
+                // synthesis, no flip-flops). One written only at constant
+                // indices (a pipeline such as m_axis_pipe_reg[j]) is made of
+                // flip-flops named per element: "<net>_reg[<element>]"
+                // (elements counted from 0 in storage order).
+                bool memory = false;
+                if (auto b = view_.bitOf(inst, r.d, 0)) {
+                    const auto drv = view_.driver(*b);
+                    if (drv.kind == graph::DriverKind::Cell) {
+                        const auto& db = d.body(d.instances[drv.bit.inst.index()].body);
+                        memory = drv.index < db.cells.size() && db.cells[drv.index].kind == ir::CellKind::DynInsert;
+                    }
+                }
+                const std::uint32_t ew = net.elemWidth;
+                if (memory || ew == 0)
+                    continue;
+                for (std::uint32_t e = ch.offset / ew; e * ew < ch.offset + ch.width; ++e) {
+                    Named x;
+                    x.name = prefix[i] + net.name + "_reg[" + std::to_string(e) + "]";
+                    const std::uint32_t lo = std::max(e * ew, ch.offset);
+                    const std::uint32_t hi = std::min((e + 1) * ew, ch.offset + ch.width);
+                    x.first = BitRef{inst, ch.net, lo};
+                    x.width = hi - lo;
+                    x.lsb = static_cast<std::int32_t>(lo - e * ew);
+                    x.msb = static_cast<std::int32_t>(hi - e * ew - 1);
+                    x.indexable = true;
+                    add(std::move(x));
+                }
+                continue;
+            }
             Named x;
             x.name = prefix[i] + net.name + "_reg";
             x.first = BitRef{inst, ch.net, ch.offset};
             x.width = ch.width;
             x.msb = net.indexOf(ch.offset + ch.width - 1);
             x.lsb = net.indexOf(ch.offset);
-            x.indexable = net.width > 1;
-            regs_.push_back(std::move(x));
-            auto clk = view_.bitOf(inst, r.clock.signal, 0);
-            regClock_.push_back(clk ? *clk : BitRef{});
-            regsByNet_[(static_cast<std::uint64_t>(inst.value) << 32) | ch.net.value].push_back(regs_.size() - 1);
+            // a 1-bit register also answers to "<name>_reg[0]" (Vivado names
+            // a [0:0] vector so; the IR does not record the declared range)
+            x.indexable = true;
+            add(std::move(x));
         }
     }
 }
@@ -198,6 +253,7 @@ std::vector<Object> DesignObjectResolver::match(const std::vector<Named>& items,
     for (const auto& it : items) {
         Object o;
         o.kind = kind;
+        o.item = static_cast<std::int32_t>(&it - items.data());
         for (auto cand : candidates(it.name)) {
             if (globMatch(pattern, cand, nocase)) {
                 o.name = it.name;
@@ -250,6 +306,7 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
         if (q) {
             Object qo = o;
             qo.name += "/Q";
+            qo.pin = "Q";
             out.push_back(std::move(qo));
         }
         if (c) {
@@ -257,6 +314,8 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
             Object co;
             co.kind = ObjectKind::Pin;
             co.name = o.name + "/C";
+            co.item = o.item;
+            co.pin = "C";
             for (const auto& b : o.bits) {
                 auto it = regsByNet_.find((static_cast<std::uint64_t>(b.inst.value) << 32) | b.net.value);
                 if (it == regsByNet_.end())
@@ -278,10 +337,359 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
     return out;
 }
 
+void DesignObjectResolver::buildInstances() {
+    if (instancesBuilt_)
+        return;
+    instancesBuilt_ = true;
+    const auto& d = view_.design();
+    const auto prefix = instancePrefixes(d);
+    for (std::size_t i = 0; i < d.instances.size(); ++i) {
+        const auto& node = d.instances[i];
+        if (!node.parent.valid())
+            continue;
+        insts_.push_back(prefix[i].substr(0, prefix[i].size() - 1));
+        CellInfo info;
+        const auto& pp = prefix[node.parent.index()];
+        info.parent = pp.empty() ? std::string() : pp.substr(0, pp.size() - 1);
+        info.ref = d.body(node.body).name;
+        const auto& parentBody = d.body(d.instances[node.parent.index()].body);
+        if (node.childIndex < parentBody.children.size()) {
+            info.attrs = &parentBody.children[node.childIndex].attrs;
+            for (const auto& a : *info.attrs)
+                attrNames_.insert(upper(a.name));
+        }
+        instInfo_.push_back(std::move(info));
+    }
+}
+
 std::vector<Object> DesignObjectResolver::cells(std::string_view pattern, bool hierarchical, bool nocase) {
     buildRegisters();
+    buildInstances();
+    // Without -hierarchical a pattern names cells at the level it spells out:
+    // "u_*" is a top-level cell, "u_s0/*" a cell directly inside u_s0 ('*'
+    // does not cross hierarchy levels)
+    const auto levels = [](std::string_view n) { return std::ranges::count(n, '/'); };
     auto out = match(regs_, ObjectKind::Cell, pattern, hierarchical, nocase);
+    if (!hierarchical)
+        std::erase_if(out, [&](const Object& o) { return levels(regs_[static_cast<std::size_t>(o.item)].name) != levels(pattern); });
+    for (std::size_t i = 0; i < insts_.size(); ++i) {
+        const std::string& name = insts_[i];
+        bool hit = globMatch(pattern, name, nocase) && (hierarchical || levels(name) == levels(pattern));
+        for (std::size_t k = 0; !hit && hierarchical && k < name.size(); ++k)
+            hit = name[k] == '/' && globMatch(pattern, std::string_view(name).substr(k + 1), nocase);
+        if (hit)
+            out.push_back({ObjectKind::Cell, name, {}, static_cast<std::int32_t>(i), true});
+    }
     return out;
+}
+
+std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bool hierarchical, bool nocase) {
+    buildRegisters();
+    buildInstances();
+    auto flags = std::regex::ECMAScript;
+    if (nocase)
+        flags |= std::regex::icase;
+    const std::regex re{std::string(regex), flags};
+    auto hits = [&](const std::string& name) {
+        if (std::regex_match(name, re))
+            return true;
+        if (hierarchical)
+            for (std::size_t k = 0; k < name.size(); ++k)
+                if (name[k] == '/' && std::regex_match(name.begin() + static_cast<std::ptrdiff_t>(k) + 1, name.end(), re))
+                    return true;
+        return false;
+    };
+    std::vector<Object> out;
+    for (std::size_t r = 0; r < regs_.size(); ++r) {
+        const auto& it = regs_[r];
+        Object o{ObjectKind::Cell, it.name, {}, static_cast<std::int32_t>(r), false};
+        if (hits(it.name)) {
+            for (std::uint32_t b = 0; b < it.width; ++b)
+                o.bits.push_back(BitRef{it.first.inst, it.first.net, it.first.bit + b});
+        }
+        else if (it.indexable) {
+            std::string last;
+            for (std::uint32_t b = 0; b < it.width; ++b) {
+                const std::int32_t index = it.msb >= it.lsb ? it.lsb + static_cast<std::int32_t>(b)
+                                                            : it.lsb - static_cast<std::int32_t>(b);
+                std::string bitName = it.name + "[" + std::to_string(index) + "]";
+                if (hits(bitName)) {
+                    o.bits.push_back(BitRef{it.first.inst, it.first.net, it.first.bit + b});
+                    last = std::move(bitName);
+                }
+            }
+            if (o.bits.size() == 1)
+                o.name = last;
+        }
+        if (!o.bits.empty())
+            out.push_back(std::move(o));
+    }
+    for (std::size_t i = 0; i < insts_.size(); ++i)
+        if (hits(insts_[i]))
+            out.push_back({ObjectKind::Cell, insts_[i], {}, static_cast<std::int32_t>(i), true});
+    return out;
+}
+
+bool DesignObjectResolver::cellPropertyKnown(std::string_view prop) {
+    buildRegisters();
+    buildInstances();
+    const std::string p = upper(prop);
+    return p == "NAME" || p == "PARENT" || p == "REF_NAME" || p == "ORIG_REF_NAME" || p == "IS_SEQUENTIAL" ||
+           attrNames_.contains(p);
+}
+
+std::optional<std::string> DesignObjectResolver::cellProperty(const Object& cell, std::string_view prop) {
+    if (cell.kind != ObjectKind::Cell || cell.item < 0)
+        return std::nullopt;
+    buildRegisters();
+    buildInstances();
+    const auto idx = static_cast<std::size_t>(cell.item);
+    if (cell.instance ? idx >= instInfo_.size() : idx >= regInfo_.size())
+        return std::nullopt;
+    const CellInfo& info = cell.instance ? instInfo_[idx] : regInfo_[idx];
+    const std::string p = upper(prop);
+    if (p == "NAME")
+        return cell.name;
+    if (p == "PARENT")
+        return info.parent;
+    if (p == "REF_NAME" || p == "ORIG_REF_NAME") {
+        if (!cell.instance)
+            return std::nullopt; // the flip-flop primitive is chosen by synthesis
+        return info.ref;
+    }
+    if (p == "IS_SEQUENTIAL")
+        return cell.instance ? "0" : "1";
+    if (info.attrs)
+        for (const auto& a : *info.attrs)
+            if (upper(a.name) == p) {
+                std::string v = a.value;
+                if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                    v = v.substr(1, v.size() - 2);
+                return v.empty() ? std::string("1") : v;
+            }
+    return std::nullopt;
+}
+
+std::vector<BitRef> DesignObjectResolver::cellClocks(const Object& cell) {
+    if (cell.kind != ObjectKind::Cell || cell.instance || cell.item < 0)
+        return {};
+    buildRegisters();
+    const auto idx = static_cast<std::size_t>(cell.item);
+    if (idx >= regClock_.size() || !regClock_[idx].valid())
+        return {};
+    return {regClock_[idx]};
+}
+
+
+std::string DesignObjectResolver::bitCellName(std::size_t r, const BitRef& q) const {
+    const auto& reg = regs_[r];
+    if (reg.width == 1 && reg.msb == reg.lsb && reg.lsb == 0 && reg.name.back() != ']')
+        return reg.name;
+    const auto k = static_cast<std::int32_t>(q.bit - reg.first.bit);
+    const std::int32_t index = reg.msb >= reg.lsb ? reg.lsb + k : reg.lsb - k;
+    return reg.name + "[" + std::to_string(index) + "]";
+}
+
+std::vector<Object> DesignObjectResolver::registerPins(std::size_t r, const std::string& cellName,
+                                                       const std::vector<BitRef>& qbits) {
+    std::vector<Object> out;
+    const auto& info = regInfo_[r];
+    if (!info.reg)
+        return out;
+    const ir::Register& ff = *info.reg;
+    auto add = [&](const std::string& pin, std::vector<BitRef> bits) {
+        if (!bits.empty())
+            out.push_back({ObjectKind::Pin, cellName + "/" + pin, std::move(bits), static_cast<std::int32_t>(r), false, pin});
+    };
+    auto first = [&](const ir::SigSpec& s) {
+        std::vector<BitRef> v;
+        if (auto b = view_.bitOf(info.inst, s, 0))
+            v.push_back(*b);
+        return v;
+    };
+    // the reset value of the first bit of the cell decides PRE/CLR (S/R)
+    const std::uint32_t k0 = qbits.empty() ? 0 : qbits.front().bit - info.qOffset;
+    auto setsOne = [&](const ir::ResetSpec& rs) {
+        if (k0 >= rs.value.width())
+            return false;
+        const auto c = rs.value.bit(k0).asConst();
+        return c && c->width() == 1 && (*c)[0] == ir::Logic::L1;
+    };
+    add("C", regClock_[r].valid() ? std::vector<BitRef>{regClock_[r]} : std::vector<BitRef>{});
+    std::vector<BitRef> d;
+    for (const auto& q : qbits)
+        if (auto b = view_.bitOf(info.inst, ff.d, q.bit - info.qOffset))
+            d.push_back(*b);
+    add("D", std::move(d));
+    add("Q", qbits);
+    if (ff.enable)
+        add("CE", first(*ff.enable));
+    for (const auto& rs : ff.asyncResets)
+        add(setsOne(rs) ? "PRE" : "CLR", first(rs.signal));
+    if (ff.syncReset)
+        add(setsOne(*ff.syncReset) ? "S" : "R", first(ff.syncReset->signal));
+    return out;
+}
+
+std::vector<Object> DesignObjectResolver::cellPins(const Object& cell) {
+    std::vector<Object> out;
+    if (cell.kind != ObjectKind::Cell || cell.item < 0)
+        return out;
+    buildNames();
+    buildRegisters();
+    buildInstances();
+    const auto idx = static_cast<std::size_t>(cell.item);
+    if (cell.instance) {
+        if (idx >= insts_.size())
+            return out;
+        const std::string prefix = insts_[idx] + "/";
+        for (std::size_t p = 0; p < pins_.size(); ++p) {
+            const auto& n = pins_[p];
+            if (!n.name.starts_with(prefix) || n.name.find('/', prefix.size()) != std::string::npos)
+                continue;
+            Object o{ObjectKind::Pin, n.name, {}, static_cast<std::int32_t>(p), false, {}};
+            for (std::uint32_t b = 0; b < n.width; ++b)
+                o.bits.push_back(BitRef{n.first.inst, n.first.net, n.first.bit + b});
+            out.push_back(std::move(o));
+        }
+        return out;
+    }
+    if (idx >= regs_.size())
+        return out;
+    return registerPins(idx, cell.name, cell.bits);
+}
+
+std::vector<Object> DesignObjectResolver::pinNets(const Object& pin) {
+    if (pin.kind != ObjectKind::Pin || pin.bits.empty())
+        return {};
+    return {{ObjectKind::Net, view_.name(pin.bits.front()), pin.bits, -1, false, {}}};
+}
+
+namespace {
+std::tuple<int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t> driverKey(const graph::Driver& d) {
+    return {static_cast<int>(d.kind), d.bit.inst.value, d.bit.net.value, d.bit.bit, d.index};
+}
+} // namespace
+
+void DesignObjectResolver::buildLoads() {
+    if (loadsBuilt_)
+        return;
+    loadsBuilt_ = true;
+    buildRegisters();
+    for (std::size_t r = 0; r < regs_.size(); ++r) {
+        const auto& reg = regs_[r];
+        std::vector<BitRef> q;
+        for (std::uint32_t b = 0; b < reg.width; ++b)
+            q.push_back(BitRef{reg.first.inst, reg.first.net, reg.first.bit + b});
+        // per flip-flop bit: its input pins
+        for (const auto& qb : q)
+            for (const auto& p : registerPins(r, reg.name, {qb})) {
+                if (p.pin == "Q")
+                    continue;
+                for (const auto& b : p.bits) {
+                    const auto d = view_.driver(b);
+                    if (d.kind == graph::DriverKind::Undriven || d.kind == graph::DriverKind::Constant)
+                        continue;
+                    loads_[driverKey(d)].emplace_back(r, p.pin, qb);
+                }
+            }
+    }
+}
+
+std::vector<Object> DesignObjectResolver::netPins(const Object& net) {
+    std::vector<Object> out;
+    if (net.kind != ObjectKind::Net)
+        return out;
+    buildRegisters();
+    buildLoads();
+    // one object per (register bit, pin)
+    auto add = [&](std::size_t r, const std::string& pin, const BitRef& q, const BitRef& bit) {
+        const std::string name = bitCellName(r, q) + "/" + pin;
+        auto it = std::ranges::find(out, name, &Object::name);
+        if (it == out.end())
+            out.push_back({ObjectKind::Pin, name, {bit}, static_cast<std::int32_t>(r), false, pin});
+        else if (std::ranges::find(it->bits, bit) == it->bits.end())
+            it->bits.push_back(bit);
+    };
+    for (const auto& b : net.bits) {
+        const auto d = view_.driver(b);
+        if (d.kind == graph::DriverKind::Register) {
+            const auto key = (static_cast<std::uint64_t>(d.bit.inst.value) << 32) | d.bit.net.value;
+            if (auto it = regsByNet_.find(key); it != regsByNet_.end())
+                for (const std::size_t r : it->second) {
+                    const auto& reg = regs_[r];
+                    if (d.bit.bit >= reg.first.bit && d.bit.bit < reg.first.bit + reg.width)
+                        add(r, "Q", d.bit, d.bit);
+                }
+        }
+        if (d.kind == graph::DriverKind::Undriven || d.kind == graph::DriverKind::Constant)
+            continue;
+        if (auto it = loads_.find(driverKey(d)); it != loads_.end())
+            for (const auto& [r, pin, q] : it->second)
+                add(r, pin, q, b);
+    }
+    return out;
+}
+
+std::vector<Object> DesignObjectResolver::pinCells(const Object& pin) {
+    if (pin.kind != ObjectKind::Pin)
+        return {};
+    const auto slash = pin.name.rfind('/');
+    if (slash == std::string::npos)
+        return {};
+    const std::string cellName = pin.name.substr(0, slash);
+    buildRegisters();
+    buildInstances();
+    if (pin.pin.empty()) {
+        // a port of an instance
+        for (std::size_t i = 0; i < insts_.size(); ++i)
+            if (insts_[i] == cellName)
+                return {{ObjectKind::Cell, cellName, {}, static_cast<std::int32_t>(i), true, {}}};
+        return {};
+    }
+    // a flip-flop pin: the cell with the same name ("x_reg[3]" or "x_reg")
+    for (auto& c : cells(cellName, false, false))
+        if (!c.instance && c.item == pin.item)
+            return {std::move(c)};
+    return {};
+}
+
+bool DesignObjectResolver::pinPropertyKnown(std::string_view prop) {
+    static const std::set<std::string, std::less<>> known = {
+        "NAME", "REF_PIN_NAME", "DIRECTION", "IS_LEAF", "IS_CLOCK", "IS_ENABLE", "IS_PRESET", "IS_CLEAR", "IS_SET",
+        "IS_RESET"};
+    return known.contains(upper(prop));
+}
+
+std::optional<std::string> DesignObjectResolver::pinProperty(const Object& pin, std::string_view prop) {
+    if (pin.kind != ObjectKind::Pin)
+        return std::nullopt;
+    const std::string p = upper(prop);
+    const bool leaf = !pin.pin.empty();
+    if (p == "NAME")
+        return pin.name;
+    if (p == "REF_PIN_NAME")
+        return leaf ? pin.pin : pin.name.substr(pin.name.rfind('/') + 1);
+    if (p == "IS_LEAF")
+        return leaf ? "1" : "0";
+    if (!leaf)
+        return std::nullopt; // instance ports: direction and pin kinds are not recorded
+    auto flag = [](bool b) { return std::string(b ? "1" : "0"); };
+    if (p == "DIRECTION")
+        return pin.pin == "Q" ? "OUT" : "IN";
+    if (p == "IS_CLOCK")
+        return flag(pin.pin == "C");
+    if (p == "IS_ENABLE")
+        return flag(pin.pin == "CE");
+    if (p == "IS_PRESET")
+        return flag(pin.pin == "PRE");
+    if (p == "IS_CLEAR")
+        return flag(pin.pin == "CLR");
+    if (p == "IS_SET")
+        return flag(pin.pin == "S");
+    if (p == "IS_RESET")
+        return flag(pin.pin == "R");
+    return std::nullopt;
 }
 
 std::vector<Object> DesignObjectResolver::nets(std::string_view pattern, bool hierarchical, bool nocase) {
@@ -298,6 +706,7 @@ namespace {
 struct Word {
     enum class Kind { Bare, Quoted, Braced } kind = Kind::Bare;
     std::string raw;
+    std::uint32_t line = 0; ///< line where the word starts
 };
 
 struct Command {
@@ -359,6 +768,7 @@ public:
             if (i_ >= s_.size() || s_[i_] == '\n' || s_[i_] == ';')
                 break;
             Word w;
+            w.line = line_;
             if (s_[i_] == '{') {
                 w.kind = Word::Kind::Braced;
                 if (!readBraced(w.raw)) {
@@ -545,7 +955,9 @@ std::optional<double> toNumber(std::string_view s) {
 const std::set<std::string, std::less<>>& knownCommands() {
     static const std::set<std::string, std::less<>> cmds = {
         "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "get_ports", "get_pins", "get_nets",
-        "get_clocks", "all_clocks", "get_cells", "all_inputs", "all_outputs", "all_registers"};
+        "get_clocks", "all_clocks", "get_cells", "all_inputs", "all_outputs", "all_registers", "expr", "if",
+        "foreach", "for", "while", "break", "continue", "incr", "llength", "lindex", "lappend", "puts",
+        "get_property", "list", "concat"};
     return cmds;
 }
 
@@ -583,6 +995,8 @@ public:
             }
             if (!cmd.words.empty())
                 last = exec(cmd);
+            if (ctl_ != Ctl::None)
+                break; // break / continue: unwind to the enclosing loop
         }
         return last;
     }
@@ -603,7 +1017,11 @@ public:
 
 private:
     void diag(const std::string& code, Severity sev, const std::string& msg, std::uint32_t line) {
-        sink_.report({code, sev, msg, {file_, line, 0}, {}});
+        // commands given -quiet ignore their errors (Vivado): warnings become notes
+        if (quiet_ && sev == Severity::Warning)
+            sink_.report({code, Severity::Info, msg + " (command given -quiet)", {file_, line, 0}, {}});
+        else
+            sink_.report({code, sev, msg, {file_, line, 0}, {}});
     }
 
     Value subst(const Word& w, std::uint32_t line) {
@@ -617,11 +1035,13 @@ private:
                 return runScript(inner, line);
         }
         Value v;
+        bool literal = false; // text besides substitutions: the word is a plain string
         for (std::size_t i = 0; i < raw.size(); ++i) {
             const char c = raw[i];
             if (c == '\\' && i + 1 < raw.size()) {
                 const char n = raw[++i];
                 v.text += n == 'n' ? '\n' : n == 't' ? '\t' : n;
+                literal = true;
                 continue;
             }
             if (c == '$') {
@@ -677,6 +1097,12 @@ private:
                 // Not a command (e.g. data[3], bus[*]): keep literally.
             }
             v.text += c;
+            literal = true;
+        }
+        if (literal && v.hasObjects) {
+            // "$inst/q_reg" is a name built from an object, not the object
+            v.objects.clear();
+            v.hasObjects = false;
         }
         return v;
     }
@@ -704,8 +1130,7 @@ private:
         while (j < inner.size() && !std::isspace(static_cast<unsigned char>(inner[j])))
             ++j;
         const auto name = inner.substr(i, j - i);
-        return knownCommands().contains(name) || isTimingOrMiscCommand(name) || name == "expr" ||
-               name == "list" || name == "concat";
+        return knownCommands().contains(name) || isTimingOrMiscCommand(name);
     }
 
     struct Args {
@@ -804,6 +1229,9 @@ private:
         std::map<std::string, bool> spec = {{"-quiet", false}, {"-nocase", false}, {"-regexp", false},
                                             {"-filter", true},  {"-of_objects", true}, {"-hierarchical", false},
                                             {"-include_generated_clocks", false}};
+        if (name == "get_nets")
+            spec.emplace("-segments", false); // all segments of a net: our nets are whole
+
         Args a = parseArgs(cmd, name, spec);
         const bool quiet = a.flags.contains("-quiet");
         const bool nocase = a.flags.contains("-nocase");
@@ -811,21 +1239,55 @@ private:
         if (a.flags.contains("-regexp"))
             diag("CON-UNSUPPORTED-OPTION", Severity::Warning, name + ": -regexp is not supported; patterns are treated as globs",
                  cmd.line);
-        if (a.opts.contains("-filter"))
+        const bool pins = name == "get_pins";
+        if (a.opts.contains("-filter") && !pins)
             diag("CON-UNSUPPORTED-OPTION", Severity::Warning, name + ": -filter is not supported and was ignored", cmd.line);
-        if (a.opts.contains("-of_objects")) {
-            if (!clocks) {
+        const std::string filter = pins && a.opts.contains("-filter") ? a.opts["-filter"].back().text : std::string();
+        if (a.opts.contains("-of_objects") && !clocks) {
+            if (name == "get_ports") {
                 diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
                      name + ": -of_objects is not supported; the command returns nothing", cmd.line);
                 return objectsValue({});
             }
+            // netlist traversal: pins of cells or nets, nets of pins
+            std::vector<Object> result;
+            bool unsupportedKind = false;
+            for (const auto& ov : a.opts["-of_objects"])
+                for (const auto& o : objectsOf(ov, cmd, name + " -of_objects")) {
+                    std::vector<Object> r;
+                    if (pins && o.kind == ObjectKind::Cell)
+                        r = resolver_.cellPins(o);
+                    else if (pins && o.kind == ObjectKind::Net)
+                        r = resolver_.netPins(o);
+                    else if (!pins && o.kind == ObjectKind::Pin)
+                        r = resolver_.pinNets(o);
+                    else
+                        unsupportedKind = true;
+                    for (auto& x : r)
+                        if (std::ranges::find(result, x.name, &Object::name) == result.end())
+                            result.push_back(std::move(x));
+                }
+            if (unsupportedKind)
+                diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
+                     name + ": -of_objects supports " + (pins ? "cells and nets" : "pins") +
+                         "; other objects contribute nothing",
+                     cmd.line);
+            if (!filter.empty())
+                applyFilter(result, filter, true, false, name, cmd);
+            return objectsValue(std::move(result));
+        }
+        if (a.opts.contains("-of_objects")) {
             // get_clocks -of_objects <nets/pins/ports>: the clocks on these
             // objects, known only after clock analysis (kept as their bits)
+            // (cells: the clocks of their flip-flops)
             std::vector<Object> result;
             for (const auto& ov : a.opts["-of_objects"])
-                for (auto& o : objectsOf(ov, cmd, "get_clocks -of_objects"))
-                    if (!o.bits.empty())
-                        result.push_back({ObjectKind::Clock, "-of_objects " + o.name, std::move(o.bits)});
+                for (auto& o : objectsOf(ov, cmd, "get_clocks -of_objects")) {
+                    auto bits = o.kind == ObjectKind::Cell ? resolver_.cellClocks(o) : std::move(o.bits);
+                    if (bits.empty() || std::ranges::any_of(result, [&](const Object& r) { return r.bits == bits; }))
+                        continue;
+                    result.push_back({ObjectKind::Clock, "-of_objects " + o.name, std::move(bits)});
+                }
             return objectsValue(std::move(result));
         }
         std::vector<Object> result;
@@ -845,8 +1307,12 @@ private:
                                         : name == "get_pins"  ? resolver_.pins(pat, hier, nocase)
                                         : name == "get_cells" ? resolver_.cells(pat, hier, nocase)
                                                               : resolver_.nets(pat, hier, nocase);
+                if (!filter.empty() && !applyFilter(r, filter, true, false, name, cmd))
+                    return objectsValue({});
                 if (r.empty() && !quiet)
-                    diag("CON-UNMATCHED", Severity::Warning, name + ": nothing matches '" + pat + "'", cmd.line);
+                    diag("CON-UNMATCHED", Severity::Warning,
+                         name + ": nothing matches '" + pat + "'" + (filter.empty() ? "" : " with filter {" + filter + "}"),
+                         cmd.line);
                 result.insert(result.end(), r.begin(), r.end());
             }
         }
@@ -1002,54 +1468,78 @@ private:
         return {};
     }
 
-    /// set_false_path / set_max_delay -datapath_only with only clocks in
-    /// -from and -to; anything else is a path-level exception (not used).
+    /// set_false_path / set_max_delay -datapath_only. Evaluated forms:
+    ///  - clocks on both sides: a clock exception (ClockException);
+    ///  - registers, pins or ports on at least one side (the other side may be
+    ///    clocks or missing): a path exception (PathException).
+    /// Anything else (-through, -hold, plain max delays, queries we cannot
+    /// answer) is recorded and not used.
     bool clockException(const Command& cmd, const std::string& name) {
-        // look at the words before evaluating anything: only clock queries
-        // in -from and -to make a clock exception (cell/pin queries of
-        // path-level exceptions are not evaluated)
-        bool from = false, to = false, fromCells = false, toCells = false;
-        for (std::size_t i = 1; i + 1 < cmd.words.size(); ++i) {
+        // look at the words before evaluating anything, so that exceptions
+        // we do not use cause no queries (and no warnings)
+        enum class Side : std::uint8_t { None, Clocks, Cells };
+        Side from = Side::None, to = Side::None;
+        bool datapathOnly = false, quiet = false;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
             const std::string& w = cmd.words[i].raw;
-            if (w != "-from" && w != "-to")
+            if (w == "-through" || w == "-hold" || w == "-rise_from" || w == "-fall_from" || w == "-rise_to" ||
+                w == "-fall_to" || w == "-rise_through" || w == "-fall_through")
+                return false;
+            if (w == "-datapath_only")
+                datapathOnly = true;
+            if (w == "-quiet")
+                quiet = true;
+            if ((w != "-from" && w != "-to") || i + 1 >= cmd.words.size())
                 continue;
             std::string v = cmd.words[i + 1].raw;
+            // property filters on nets and ports are not supported
+            if (v.find("-filter") != std::string::npos &&
+                (v.find("get_nets") != std::string::npos || v.find("get_ports") != std::string::npos))
+                return false;
             v.erase(0, v.find_first_not_of(" \t["));
-            if (v.starts_with("get_clocks") || v.starts_with("all_clocks"))
-                (w == "-from" ? from : to) = true;
+            Side side = Side::None;
+            if (v.starts_with('$')) {
+                // a variable holding the result of an earlier query
+                std::string var = v.substr(1);
+                if (var.size() >= 2 && var.front() == '{' && var.back() == '}')
+                    var = var.substr(1, var.size() - 2);
+                auto it = vars_.find(var);
+                if (it == vars_.end() || !it->second.hasObjects || it->second.objects.empty())
+                    return false;
+                const auto& objs = it->second.objects;
+                if (std::ranges::all_of(objs, [](const Object& o) { return o.kind == ObjectKind::Clock; }))
+                    side = Side::Clocks;
+                else if (std::ranges::none_of(objs, [](const Object& o) {
+                             return o.kind == ObjectKind::Clock || o.kind == ObjectKind::Net;
+                         }))
+                    side = Side::Cells;
+                else
+                    return false;
+            }
+            else if (v.starts_with("get_clocks") || v.starts_with("all_clocks"))
+                side = Side::Clocks;
             else if (v.starts_with("get_cells") || v.starts_with("get_pins") || v.starts_with("get_ports"))
-                (w == "-from" ? fromCells : toCells) = true;
+                side = Side::Cells;
             else
                 return false;
+            (w == "-from" ? from : to) = side;
         }
-        if (fromCells && toCells) {
-            // evaluate only forms we can honour: no -through/-hold, a
-            // datapath-only max delay, and object queries without netlist
-            // property filters or -of_objects (those would only warn)
-            bool datapathOnly = false;
-            for (std::size_t i = 1; i < cmd.words.size(); ++i) {
-                const std::string& w = cmd.words[i].raw;
-                if (w == "-through" || w == "-hold" || w.find("-filter") != std::string::npos ||
-                    w.find("-of_objects") != std::string::npos)
-                    return false;
-                if (w == "-datapath_only")
-                    datapathOnly = true;
-            }
-            if (name == "set_max_delay" && !datapathOnly)
-                return false;
-            return pathException(cmd, name);
+        if (name == "set_max_delay" && !datapathOnly)
+            return false;
+        if (from == Side::Cells || to == Side::Cells) {
+            quiet_ = quiet;
+            pathException(cmd, name);
+            quiet_ = false;
+            return true;
         }
-        if (!from || !to)
+        if (from != Side::Clocks || to != Side::Clocks)
             return false;
         Args a = parseArgs(cmd, name,
                            {{"-from", true}, {"-to", true}, {"-through", true}, {"-datapath_only", false},
                             {"-setup", false}, {"-hold", false}, {"-rise", false}, {"-fall", false},
                             {"-reset_path", false}, {"-quiet", false}, {"-comment", true}, {"-ignore_clock_latency", false},
                             {"-rise_from", true}, {"-fall_from", true}, {"-rise_to", true}, {"-fall_to", true}});
-        if (name == "set_max_delay" && !a.flags.contains("-datapath_only"))
-            return false;
-        if (!a.opts.contains("-from") || !a.opts.contains("-to") || a.opts.contains("-through") ||
-            a.flags.contains("-hold"))
+        if (!a.opts.contains("-from") || !a.opts.contains("-to"))
             return false;
         ClockException e;
         e.command = name == "set_false_path" ? name : name + " -datapath_only";
@@ -1076,31 +1566,92 @@ private:
         return true;
     }
 
-    /// set_false_path / set_max_delay -datapath_only from registers/pins to
-    /// registers/pins (no -through).
-    bool pathException(const Command& cmd, const std::string& name) {
+    /// Q bits of the flip-flop of a pin (or of a flip-flop cell).
+    std::vector<BitRef> flipFlopBits(const Object& o) {
+        if (o.kind == ObjectKind::Cell)
+            return o.instance ? std::vector<BitRef>{} : o.bits;
+        std::vector<BitRef> out;
+        for (const auto& c : resolver_.pinCells(o))
+            if (!c.instance)
+                out.insert(out.end(), c.bits.begin(), c.bits.end());
+        return out;
+    }
+
+    static EndpointRole roleOf(const std::string& pin) {
+        if (pin == "CLR" || pin == "PRE")
+            return EndpointRole::AsyncReset;
+        if (pin == "D" || pin == "CE" || pin == "R" || pin == "S")
+            return EndpointRole::Data;
+        return EndpointRole::Any;
+    }
+
+    /// set_false_path / set_max_delay -datapath_only between registers, pins,
+    /// ports and clocks (see clockException).
+    void pathException(const Command& cmd, const std::string& name) {
         Args a = parseArgs(cmd, name,
                            {{"-from", true}, {"-to", true}, {"-through", true}, {"-datapath_only", false},
                             {"-setup", false}, {"-hold", false}, {"-rise", false}, {"-fall", false},
                             {"-reset_path", false}, {"-quiet", false}, {"-comment", true}, {"-ignore_clock_latency", false}});
-        if ((name == "set_max_delay" && !a.flags.contains("-datapath_only")) || a.opts.contains("-through") ||
-            a.flags.contains("-hold"))
-            return false;
         PathException e;
         e.command = name == "set_false_path" ? name : name + " -datapath_only";
         e.loc = {file_, cmd.line, 0};
+        bool fromNamed = false, toNamed = false; // registers, pins or ports named on the side
+        const bool hasFrom = a.opts.contains("-from"), hasTo = a.opts.contains("-to");
         for (const auto& v : a.opts["-from"])
-            for (const auto& o : v.objects)
-                e.from.insert(e.from.end(), o.bits.begin(), o.bits.end());
+            for (const auto& o : v.objects) {
+                if (o.kind == ObjectKind::Clock) {
+                    if (o.bits.empty())
+                        e.fromClocks.push_back(o.name);
+                    else
+                        e.fromClockBits.insert(e.fromClockBits.end(), o.bits.begin(), o.bits.end());
+                    continue;
+                }
+                fromNamed = true;
+                // startpoints: flip-flops (by any of their pins) and ports;
+                // a port of an instance: whatever drives it
+                const auto bits = o.kind == ObjectKind::Cell || !o.pin.empty() ? flipFlopBits(o) : o.bits;
+                e.from.insert(e.from.end(), bits.begin(), bits.end());
+            }
         for (const auto& v : a.opts["-to"])
-            for (const auto& o : v.objects)
-                e.to.insert(e.to.end(), o.bits.begin(), o.bits.end());
-        if (e.from.empty() || e.to.empty()) {
-            diag("CON-UNMATCHED", Severity::Warning, name + ": -from or -to matches no register, pin or port", cmd.line);
-            return true;
+            for (const auto& o : v.objects) {
+                if (o.kind == ObjectKind::Clock) {
+                    if (o.bits.empty())
+                        e.toClocks.push_back(o.name);
+                    else
+                        e.toClockBits.insert(e.toClockBits.end(), o.bits.begin(), o.bits.end());
+                    continue;
+                }
+                toNamed = true;
+                if (o.kind == ObjectKind::Cell || !o.pin.empty()) {
+                    const EndpointRole role = o.kind == ObjectKind::Cell ? EndpointRole::Any : roleOf(o.pin);
+                    for (const auto& b : flipFlopBits(o))
+                        e.to.push_back({b, role});
+                }
+                else if (o.kind == ObjectKind::Pin) {
+                    // a port of an instance (a modelled primitive such as
+                    // FDPE): the flip-flops inside it that the port feeds
+                    const std::string inside = o.name.substr(0, o.name.rfind('/') + 1);
+                    for (const auto& net : resolver_.pinNets(o))
+                        for (const auto& p : resolver_.netPins(net))
+                            if (!p.pin.empty() && p.pin != "Q" && p.name.starts_with(inside))
+                                for (const auto& b : flipFlopBits(p))
+                                    e.to.push_back({b, roleOf(p.pin)});
+                }
+                else {
+                    for (const auto& b : o.bits)
+                        e.to.push_back({b, EndpointRole::Any});
+                }
+            }
+        const bool fromEmpty = hasFrom && e.from.empty() && e.fromClocks.empty() && e.fromClockBits.empty();
+        const bool toEmpty = hasTo && e.to.empty() && e.toClocks.empty() && e.toClockBits.empty();
+        if ((fromNamed && e.from.empty()) || (toNamed && e.to.empty()) || fromEmpty || toEmpty || (!hasFrom && !hasTo)) {
+            diag("CON-UNMATCHED", Severity::Warning,
+                 name + ": " + (fromEmpty || (fromNamed && e.from.empty()) ? "-from" : "-to") +
+                     " matches no register, pin or port; the exception is not used",
+                 cmd.line);
+            return;
         }
         out_.pathExceptions.push_back(std::move(e));
-        return true;
     }
 
     Value setClockGroups(const Command& cmd) {
@@ -1151,6 +1702,954 @@ private:
         return {};
     }
 
+    // ------------------------------------------------------------------
+    // expr
+    // ------------------------------------------------------------------
+
+    struct ExprError : std::runtime_error {
+        using std::runtime_error::runtime_error;
+    };
+
+    struct ExprValue {
+        bool num = false;
+        bool integer = false;
+        double d = 0;
+        std::string s;
+    };
+
+    static ExprValue exprValue(std::string text) {
+        ExprValue v;
+        std::string t = text;
+        t.erase(0, t.find_first_not_of(" \t\n"));
+        t.erase(t.find_last_not_of(" \t\n") + 1);
+        if (auto n = toNumber(t)) {
+            v.num = true;
+            v.d = *n;
+            v.integer = t.find_first_of(".eEnNiI") == std::string::npos ||
+                        (t.starts_with("0x") || t.starts_with("0X"));
+        }
+        v.s = std::move(text);
+        return v;
+    }
+
+    static ExprValue numberValue(double d, bool integer) {
+        ExprValue v;
+        v.num = true;
+        v.integer = integer;
+        v.d = d;
+        return v;
+    }
+
+    static std::string formatNumber(const ExprValue& v) {
+        if (v.integer && std::isfinite(v.d))
+            return std::to_string(static_cast<long long>(v.d));
+        if (std::isnan(v.d))
+            return "nan";
+        char buf[64];
+        auto [end, ec] = std::to_chars(buf, buf + sizeof buf, v.d);
+        std::string out(buf, ec == std::errc{} ? end : buf);
+        if (out.find_first_of(".eni") == std::string::npos)
+            out += ".0";
+        return out;
+    }
+
+    static bool truth(const ExprValue& v) {
+        if (v.num)
+            return v.d != 0;
+        std::string t;
+        for (char c : v.s)
+            if (!std::isspace(static_cast<unsigned char>(c)))
+                t += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (t == "true" || t == "yes" || t == "on")
+            return true;
+        if (t == "false" || t == "no" || t == "off")
+            return false;
+        throw ExprError("expected a boolean value but got \"" + v.s + "\"");
+    }
+
+    /// Recursive-descent evaluator of Tcl expressions. Substitutes $var and
+    /// [command] itself (braced expressions arrive unsubstituted).
+    class ExprParser {
+    public:
+        ExprParser(Interp& in, std::string_view s, std::uint32_t line) : in_(in), s_(s), line_(line) {}
+
+        ExprValue parse() {
+            ExprValue v = ternary();
+            skip();
+            if (i_ < s_.size())
+                throw ExprError("unexpected '" + std::string(s_.substr(i_)) + "'");
+            return v;
+        }
+
+    private:
+        void skip() {
+            while (i_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[i_])))
+                ++i_;
+        }
+        bool eat(std::string_view op) {
+            skip();
+            if (s_.substr(i_).starts_with(op)) {
+                // do not split '<=' into '<' '=' or '&&' into '&'
+                i_ += op.size();
+                return true;
+            }
+            return false;
+        }
+        static double need(const ExprValue& v, const char* op) {
+            if (!v.num)
+                throw ExprError(std::string("can't use non-numeric string \"") + v.s + "\" as operand of \"" + op + "\"");
+            return v.d;
+        }
+
+        ExprValue ternary() {
+            ExprValue c = lor();
+            if (!eat("?"))
+                return c;
+            ExprValue a = ternary();
+            if (!eat(":"))
+                throw ExprError("missing ':' in ?: expression");
+            ExprValue b = ternary();
+            return truth(c) ? a : b;
+        }
+        ExprValue lor() {
+            ExprValue a = land();
+            while (eat("||")) {
+                ExprValue b = land();
+                a = numberValue(truth(a) || truth(b) ? 1 : 0, true);
+            }
+            return a;
+        }
+        ExprValue land() {
+            ExprValue a = equality();
+            while (eat("&&")) {
+                ExprValue b = equality();
+                a = numberValue(truth(a) && truth(b) ? 1 : 0, true);
+            }
+            return a;
+        }
+        ExprValue equality() {
+            ExprValue a = relational();
+            for (;;) {
+                skip();
+                std::string op;
+                for (const char* o : {"==", "!=", "eq ", "ne "})
+                    if (s_.substr(i_).starts_with(o)) {
+                        op = o;
+                        break;
+                    }
+                if (op.empty())
+                    return a;
+                i_ += op.size();
+                ExprValue b = relational();
+                bool eq = false;
+                if ((op == "==" || op == "!=") && a.num && b.num)
+                    eq = a.d == b.d;
+                else
+                    eq = (a.num ? formatNumber(a) : a.s) == (b.num ? formatNumber(b) : b.s);
+                const bool negate = op == "!=" || op == "ne ";
+                a = numberValue(eq != negate ? 1 : 0, true);
+            }
+        }
+        ExprValue relational() {
+            ExprValue a = additive();
+            for (;;) {
+                skip();
+                std::string op;
+                for (const char* o : {"<=", ">=", "<", ">"})
+                    if (s_.substr(i_).starts_with(o) && !s_.substr(i_).starts_with("<<") &&
+                        !s_.substr(i_).starts_with(">>")) {
+                        op = o;
+                        break;
+                    }
+                if (op.empty())
+                    return a;
+                i_ += op.size();
+                ExprValue b = additive();
+                int cmp = 0;
+                if (a.num && b.num)
+                    cmp = a.d < b.d ? -1 : a.d > b.d ? 1 : 0;
+                else
+                    cmp = a.s.compare(b.s);
+                const bool r = op == "<" ? cmp < 0 : op == ">" ? cmp > 0 : op == "<=" ? cmp <= 0 : cmp >= 0;
+                a = numberValue(r ? 1 : 0, true);
+            }
+        }
+        ExprValue additive() {
+            ExprValue a = multiplicative();
+            for (;;) {
+                skip();
+                if (i_ >= s_.size() || (s_[i_] != '+' && s_[i_] != '-'))
+                    return a;
+                const char op = s_[i_++];
+                ExprValue b = multiplicative();
+                const double x = need(a, op == '+' ? "+" : "-"), y = need(b, op == '+' ? "+" : "-");
+                a = numberValue(op == '+' ? x + y : x - y, a.integer && b.integer);
+            }
+        }
+        ExprValue multiplicative() {
+            ExprValue a = unary();
+            for (;;) {
+                skip();
+                if (i_ >= s_.size() || (s_[i_] != '*' && s_[i_] != '/' && s_[i_] != '%') ||
+                    s_.substr(i_).starts_with("**"))
+                    return a;
+                const char op = s_[i_++];
+                ExprValue b = unary();
+                const char name[2] = {op, 0};
+                const double x = need(a, name), y = need(b, name);
+                const bool ints = a.integer && b.integer;
+                if ((op == '/' || op == '%') && ints && y == 0)
+                    throw ExprError("divide by zero");
+                if (op == '*')
+                    a = numberValue(x * y, ints);
+                else if (op == '/')
+                    a = numberValue(ints ? std::floor(x / y) : x / y, ints);
+                else
+                    a = numberValue(x - y * std::floor(x / y), ints);
+            }
+        }
+        ExprValue unary() {
+            skip();
+            if (i_ < s_.size() && (s_[i_] == '-' || s_[i_] == '+' || s_[i_] == '!')) {
+                const char op = s_[i_++];
+                ExprValue v = unary();
+                if (op == '!')
+                    return numberValue(truth(v) ? 0 : 1, true);
+                const double x = need(v, op == '-' ? "-" : "+");
+                return numberValue(op == '-' ? -x : x, v.integer);
+            }
+            return primary();
+        }
+        ExprValue primary() {
+            skip();
+            if (i_ >= s_.size())
+                throw ExprError("missing operand");
+            const char c = s_[i_];
+            if (c == '(') {
+                ++i_;
+                ExprValue v = ternary();
+                if (!eat(")"))
+                    throw ExprError("missing ')'");
+                return v;
+            }
+            if (c == '$') {
+                std::size_t j = i_ + 1;
+                std::string name;
+                if (j < s_.size() && s_[j] == '{') {
+                    const auto close = s_.find('}', j);
+                    if (close == std::string_view::npos)
+                        throw ExprError("missing '}' after '${'");
+                    name = std::string(s_.substr(j + 1, close - j - 1));
+                    i_ = close + 1;
+                }
+                else {
+                    while (j < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[j])) || s_[j] == '_' ||
+                                             s_[j] == ':'))
+                        ++j;
+                    name = std::string(s_.substr(i_ + 1, j - i_ - 1));
+                    i_ = j;
+                }
+                auto it = in_.vars_.find(name);
+                if (it == in_.vars_.end())
+                    throw ExprError("can't read \"" + name + "\": no such variable");
+                return exprValue(it->second.text);
+            }
+            if (c == '[') {
+                const std::string str(s_);
+                const auto close = matchingBracket(str, i_);
+                if (close == std::string::npos)
+                    throw ExprError("missing ']'");
+                Value r = in_.runScript(s_.substr(i_ + 1, close - i_ - 1), line_);
+                i_ = close + 1;
+                return exprValue(r.text);
+            }
+            if (c == '"') {
+                std::size_t j = i_ + 1;
+                while (j < s_.size() && s_[j] != '"')
+                    j += s_[j] == '\\' ? 2U : 1U;
+                if (j >= s_.size())
+                    throw ExprError("missing '\"'");
+                Word w{Word::Kind::Quoted, std::string(s_.substr(i_ + 1, j - i_ - 1)), line_};
+                i_ = j + 1;
+                return exprValue(in_.subst(w, line_).text);
+            }
+            if (c == '{') {
+                int depth = 0;
+                std::size_t j = i_;
+                for (; j < s_.size(); ++j) {
+                    if (s_[j] == '{')
+                        ++depth;
+                    else if (s_[j] == '}' && --depth == 0)
+                        break;
+                }
+                if (j >= s_.size())
+                    throw ExprError("missing '}'");
+                ExprValue v = exprValue(std::string(s_.substr(i_ + 1, j - i_ - 1)));
+                i_ = j + 1;
+                return v;
+            }
+            if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
+                std::size_t j = i_;
+                while (j < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[j])) || s_[j] == '.' ||
+                                         ((s_[j] == '-' || s_[j] == '+') && (s_[j - 1] == 'e' || s_[j - 1] == 'E'))))
+                    ++j;
+                ExprValue v = exprValue(std::string(s_.substr(i_, j - i_)));
+                if (!v.num)
+                    throw ExprError("invalid number \"" + v.s + "\"");
+                i_ = j;
+                return v;
+            }
+            if (std::isalpha(static_cast<unsigned char>(c))) {
+                std::size_t j = i_;
+                while (j < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[j])) || s_[j] == '_'))
+                    ++j;
+                std::string word(s_.substr(i_, j - i_));
+                i_ = j;
+                skip();
+                if (i_ < s_.size() && s_[i_] == '(') {
+                    ++i_;
+                    std::vector<ExprValue> args;
+                    skip();
+                    if (i_ < s_.size() && s_[i_] == ')')
+                        ++i_;
+                    else {
+                        for (;;) {
+                            args.push_back(ternary());
+                            if (eat(")"))
+                                break;
+                            if (!eat(","))
+                                throw ExprError("missing ')' after the arguments of " + word + "()");
+                        }
+                    }
+                    return call(word, args);
+                }
+                std::string lower;
+                for (char ch : word)
+                    lower += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (lower == "nan")
+                    return numberValue(std::nan(""), false);
+                if (lower == "inf")
+                    return numberValue(HUGE_VAL, false);
+                ExprValue v;
+                v.s = word;
+                truth(v); // only boolean words are valid barewords
+                return v;
+            }
+            throw ExprError("unexpected '" + std::string(1, c) + "'");
+        }
+        static ExprValue call(const std::string& f, const std::vector<ExprValue>& a) {
+            auto arg = [&](std::size_t k) { return need(a.at(k), f.c_str()); };
+            auto count = [&](std::size_t n) {
+                if (a.size() != n)
+                    throw ExprError("wrong number of arguments to " + f + "()");
+            };
+            if (f == "min" || f == "max") {
+                if (a.empty())
+                    throw ExprError(f + "() needs arguments");
+                ExprValue r = numberValue(arg(0), a[0].integer);
+                for (std::size_t k = 1; k < a.size(); ++k) {
+                    const double x = arg(k);
+                    if (std::isnan(x) || std::isnan(r.d))
+                        r = numberValue(std::nan(""), false); // an unknown value stays unknown
+                    else if (f == "min" ? x < r.d : x > r.d)
+                        r = numberValue(x, a[k].integer);
+                }
+                return r;
+            }
+            if (f == "abs") {
+                count(1);
+                return numberValue(std::fabs(arg(0)), a[0].integer);
+            }
+            if (f == "int" || f == "round" || f == "floor" || f == "ceil") {
+                count(1);
+                const double x = arg(0);
+                const double r = f == "int" ? std::trunc(x) : f == "round" ? std::round(x) : f == "floor" ? std::floor(x) : std::ceil(x);
+                return numberValue(r, f == "int" || f == "round");
+            }
+            if (f == "double") {
+                count(1);
+                return numberValue(arg(0), false);
+            }
+            if (f == "sqrt") {
+                count(1);
+                return numberValue(std::sqrt(arg(0)), false);
+            }
+            if (f == "pow") {
+                count(2);
+                return numberValue(std::pow(arg(0), arg(1)), false);
+            }
+            throw ExprError("unknown math function \"" + f + "\"");
+        }
+
+        Interp& in_;
+        std::string_view s_;
+        std::uint32_t line_;
+        std::size_t i_ = 0;
+    };
+
+    /// Evaluates an expression; reports CON-PARSE and returns nullopt on error.
+    std::optional<ExprValue> evalExpr(std::string_view text, std::uint32_t line, const std::string& ctx) {
+        try {
+            return ExprParser(*this, text, line).parse();
+        }
+        catch (const ExprError& e) {
+            diag("CON-PARSE", Severity::Warning, ctx + ": " + e.what(), line);
+            return std::nullopt;
+        }
+    }
+
+    /// Text of a word as an expression or script: braced words verbatim.
+    std::string wordText(const Word& w, std::uint32_t line) {
+        return w.kind == Word::Kind::Braced ? w.raw : subst(w, line).text;
+    }
+
+    Value runBody(const Word& w, std::uint32_t line) { return runScript(wordText(w, line), w.line ? w.line : line); }
+
+    Value exprCmd(const Command& cmd) {
+        std::string text;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+            if (i > 1)
+                text += ' ';
+            text += wordText(cmd.words[i], cmd.line);
+        }
+        auto v = evalExpr(text, cmd.line, "expr");
+        if (!v)
+            return {};
+        return Value{v->num ? formatNumber(*v) : v->s, {}, false};
+    }
+
+    std::optional<bool> condition(const Word& w, std::uint32_t line, const char* ctx) {
+        auto v = evalExpr(wordText(w, line), w.line ? w.line : line, ctx);
+        if (!v)
+            return std::nullopt;
+        try {
+            return truth(*v);
+        }
+        catch (const ExprError& e) {
+            diag("CON-PARSE", Severity::Warning, std::string(ctx) + ": " + e.what(), line);
+            return std::nullopt;
+        }
+    }
+
+    /// if expr ?then? body ?elseif expr ?then? body ...? ?else? ?body?
+    Value ifCmd(const Command& cmd) {
+        const auto& w = cmd.words;
+        std::size_t i = 1;
+        for (;;) {
+            if (i >= w.size()) {
+                diag("CON-PARSE", Severity::Error, "if: missing condition", cmd.line);
+                return {};
+            }
+            auto c = condition(w[i], cmd.line, "if");
+            ++i;
+            if (i < w.size() && w[i].kind == Word::Kind::Bare && w[i].raw == "then")
+                ++i;
+            if (i >= w.size()) {
+                diag("CON-PARSE", Severity::Error, "if: missing body", cmd.line);
+                return {};
+            }
+            if (!c)
+                return {}; // condition could not be evaluated: nothing runs
+            if (*c)
+                return runBody(w[i], cmd.line);
+            ++i;
+            if (i >= w.size())
+                return {};
+            if (w[i].kind == Word::Kind::Bare && w[i].raw == "elseif") {
+                ++i;
+                continue;
+            }
+            if (w[i].kind == Word::Kind::Bare && w[i].raw == "else")
+                ++i;
+            if (i >= w.size()) {
+                diag("CON-PARSE", Severity::Error, "if: missing else body", cmd.line);
+                return {};
+            }
+            return runBody(w[i], cmd.line);
+        }
+    }
+
+    static constexpr std::size_t kMaxIterations = 100000;
+
+    /// foreach varList list body (one list; several variables per step)
+    Value foreachCmd(const Command& cmd) {
+        if (cmd.words.size() != 4) {
+            diag("CON-UNSUPPORTED-COMMAND", Severity::Warning,
+                 "foreach: only the form 'foreach varList list body' is supported; the command was skipped", cmd.line);
+            return {};
+        }
+        const auto names = splitList(subst(cmd.words[1], cmd.line).text);
+        if (names.empty()) {
+            diag("CON-PARSE", Severity::Error, "foreach: no loop variable", cmd.line);
+            return {};
+        }
+        const Value list = subst(cmd.words[2], cmd.line);
+        std::vector<Value> items;
+        if (list.hasObjects)
+            for (const auto& o : list.objects)
+                items.push_back(Value{o.name, {o}, true});
+        else
+            for (auto& t : splitList(list.text))
+                items.push_back(Value{std::move(t), {}, false});
+        for (std::size_t k = 0; k < items.size(); k += names.size()) {
+            for (std::size_t n = 0; n < names.size(); ++n)
+                vars_[names[n]] = k + n < items.size() ? items[k + n] : Value{};
+            runBody(cmd.words[3], cmd.line);
+            if (ctl_ == Ctl::Break) {
+                ctl_ = Ctl::None;
+                break;
+            }
+            ctl_ = Ctl::None;
+        }
+        return {};
+    }
+
+    /// for start test next body / while test body
+    Value loopCmd(const Command& cmd, const std::string& name) {
+        const bool isFor = name == "for";
+        if (cmd.words.size() != (isFor ? 5U : 3U)) {
+            diag("CON-PARSE", Severity::Error, name + ": wrong number of arguments", cmd.line);
+            return {};
+        }
+        if (isFor)
+            runBody(cmd.words[1], cmd.line);
+        const Word& test = cmd.words[isFor ? 2 : 1];
+        const Word& body = cmd.words[isFor ? 4 : 2];
+        for (std::size_t n = 0;; ++n) {
+            if (n == kMaxIterations) {
+                diag("CON-PARSE", Severity::Warning,
+                     name + ": stopped after " + std::to_string(kMaxIterations) + " iterations", cmd.line);
+                break;
+            }
+            auto c = condition(test, cmd.line, name.c_str());
+            if (!c || !*c)
+                break;
+            runBody(body, cmd.line);
+            if (ctl_ == Ctl::Break) {
+                ctl_ = Ctl::None;
+                break;
+            }
+            ctl_ = Ctl::None;
+            if (isFor)
+                runBody(cmd.words[3], cmd.line);
+        }
+        return {};
+    }
+
+    Value listCmd(const Command& cmd, const std::string& name) {
+        const auto& w = cmd.words;
+        if (w.size() < 2) {
+            diag("CON-PARSE", Severity::Error, name + ": wrong number of arguments", cmd.line);
+            return {};
+        }
+        if (name == "llength") {
+            const Value v = subst(w[1], cmd.line);
+            const std::size_t n = v.hasObjects ? v.objects.size() : splitList(v.text).size();
+            return Value{std::to_string(n), {}, false};
+        }
+        if (name == "lindex") {
+            const Value v = subst(w[1], cmd.line);
+            if (w.size() < 3)
+                return v;
+            const std::string idx = subst(w[2], cmd.line).text;
+            const std::size_t size = v.hasObjects ? v.objects.size() : splitList(v.text).size();
+            long long k = -1;
+            if (idx == "end")
+                k = static_cast<long long>(size) - 1;
+            else if (idx.starts_with("end-"))
+                k = static_cast<long long>(size) - 1 - std::atoll(idx.c_str() + 4);
+            else if (auto n = toNumber(idx))
+                k = static_cast<long long>(*n);
+            if (k < 0 || static_cast<std::size_t>(k) >= size)
+                return {};
+            if (v.hasObjects)
+                return Value{v.objects[static_cast<std::size_t>(k)].name, {v.objects[static_cast<std::size_t>(k)]}, true};
+            return Value{splitList(v.text)[static_cast<std::size_t>(k)], {}, false};
+        }
+        const std::string var = subst(w[1], cmd.line).text;
+        Value& cur = vars_[var];
+        if (name == "incr") {
+            long long by = 1;
+            if (w.size() > 2)
+                if (auto n = toNumber(subst(w[2], cmd.line).text))
+                    by = static_cast<long long>(*n);
+            const auto n = toNumber(cur.text.empty() ? "0" : cur.text);
+            if (!n) {
+                diag("CON-PARSE", Severity::Warning, "incr: '" + var + "' is not an integer", cmd.line);
+                return cur;
+            }
+            cur = Value{std::to_string(static_cast<long long>(*n) + by), {}, false};
+            return cur;
+        }
+        // lappend
+        for (std::size_t i = 2; i < w.size(); ++i) {
+            Value v = subst(w[i], cmd.line);
+            if (!cur.text.empty())
+                cur.text += ' ';
+            cur.text += v.text.find_first_of(" \t") != std::string::npos && !v.hasObjects ? "{" + v.text + "}" : v.text;
+            if (v.hasObjects) {
+                cur.objects.insert(cur.objects.end(), v.objects.begin(), v.objects.end());
+                cur.hasObjects = true;
+            }
+        }
+        return cur;
+    }
+
+    /// Period of the clocks matching a name pattern (generated clocks through
+    /// their master); nullopt when unknown.
+    std::optional<double> clockPeriod(const ClockDef& c, int depth = 0) const {
+        if (!c.generated)
+            return c.periodNs;
+        if (depth > 16)
+            return std::nullopt;
+        const ClockDef* master = nullptr;
+        for (const auto& m : out_.clocks) {
+            if (&m == &c)
+                continue;
+            if (!c.masterClock.empty() ? m.name == c.masterClock
+                                       : !c.masterSource.empty() &&
+                                             std::ranges::find(m.sources, c.masterSource.front()) != m.sources.end()) {
+                master = &m;
+                break;
+            }
+        }
+        if (!master)
+            return std::nullopt;
+        auto p = clockPeriod(*master, depth + 1);
+        if (!p)
+            return std::nullopt;
+        return *p * c.divideBy / c.multiplyBy;
+    }
+
+    /// get_property ?-min|-max? ?-quiet? name objects
+    Value getProperty(const Command& cmd) {
+        Args a = parseArgs(cmd, "get_property", {{"-min", false}, {"-max", false}, {"-quiet", false}});
+        if (a.positional.size() != 2) {
+            diag("CON-PARSE", Severity::Error, "get_property: expected a property name and objects", cmd.line);
+            return {};
+        }
+        const std::string prop = upper(a.positional[0].text);
+        const Value& objs = a.positional[1];
+        if (!objs.hasObjects) {
+            diag("CON-UNSUPPORTED-COMMAND", Severity::Warning,
+                 "get_property: '" + objs.text + "' is not the result of an object query", cmd.line);
+            return {};
+        }
+        std::vector<std::string> values;
+        bool unknown = false;
+        for (const auto& o : objs.objects) {
+            if (o.kind == ObjectKind::Clock && prop == "PERIOD") {
+                if (!o.bits.empty()) {
+                    // get_clocks -of_objects: the clock is known only after
+                    // clock analysis; the period is unknown here
+                    unknown = true;
+                    continue;
+                }
+                bool found = false;
+                for (const auto& c : out_.clocks)
+                    if (globMatch(o.name, c.name)) {
+                        found = true;
+                        if (auto p = clockPeriod(c))
+                            values.push_back(formatNumber(numberValue(*p, false)));
+                        else
+                            unknown = true;
+                    }
+                if (!found)
+                    unknown = true;
+                continue;
+            }
+            if (o.kind == ObjectKind::Cell && resolver_.cellPropertyKnown(prop)) {
+                if (auto v = resolver_.cellProperty(o, prop))
+                    values.push_back(*v);
+                continue;
+            }
+            diag("CON-UNSUPPORTED-COMMAND", Severity::Warning,
+                 "get_property: property " + prop + " of '" + o.name + "' is not available", cmd.line);
+            return {};
+        }
+        if (prop == "PERIOD" && unknown)
+            return Value{"nan", {}, false}; // unknown period (only feeds delay values, which are not used)
+        if ((a.flags.contains("-min") || a.flags.contains("-max")) && !values.empty()) {
+            const bool mn = a.flags.contains("-min");
+            std::optional<double> best;
+            for (const auto& v : values)
+                if (auto n = toNumber(v))
+                    best = !best ? *n : mn ? std::min(*best, *n) : std::max(*best, *n);
+            if (best)
+                return Value{formatNumber(numberValue(*best, false)), {}, false};
+        }
+        std::string text;
+        for (const auto& v : values) {
+            if (!text.empty())
+                text += ' ';
+            text += v;
+        }
+        return Value{text, {}, false};
+    }
+
+    // ------------------------------------------------------------------
+    // get_cells
+    // ------------------------------------------------------------------
+
+    /// Vivado -filter expressions: PROP op value (==, !=, =~, !~), bare PROP
+    /// (boolean), !, &&, || and parentheses. A missing property never matches.
+    class FilterParser {
+    public:
+        using Lookup = std::function<std::optional<std::string>(const std::string&)>;
+        using RegexCache = std::unordered_map<std::string, std::regex>;
+        /// regexp: =~ and !~ take regular expressions (get_cells -regexp)
+        FilterParser(std::string_view s, Lookup lookup, bool regexp = false, RegexCache* cache = nullptr)
+            : s_(s), lookup_(std::move(lookup)), regexp_(regexp), cache_(cache) {}
+
+        bool parse() {
+            const bool r = orExpr();
+            skip();
+            if (i_ < s_.size())
+                throw ExprError("unexpected '" + std::string(s_.substr(i_)) + "' in filter");
+            return r;
+        }
+
+    private:
+        void skip() {
+            while (i_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[i_])))
+                ++i_;
+        }
+        bool eat(std::string_view t) {
+            skip();
+            if (s_.substr(i_).starts_with(t)) {
+                i_ += t.size();
+                return true;
+            }
+            return false;
+        }
+        bool orExpr() {
+            bool r = andExpr();
+            while (eat("||")) {
+                const bool b = andExpr(); // evaluate every term (property collection)
+                r = r || b;
+            }
+            return r;
+        }
+        bool andExpr() {
+            bool r = notExpr();
+            while (eat("&&")) {
+                const bool b = notExpr();
+                r = r && b;
+            }
+            return r;
+        }
+        bool notExpr() {
+            skip();
+            if (i_ < s_.size() && s_[i_] == '!' && !s_.substr(i_).starts_with("!=") && !s_.substr(i_).starts_with("!~")) {
+                ++i_;
+                return !notExpr();
+            }
+            return term();
+        }
+        static bool boolLike(const std::string& v, bool& out) {
+            std::string t = upper(v);
+            if (t == "1" || t == "TRUE" || t == "YES") {
+                out = true;
+                return true;
+            }
+            if (t == "0" || t == "FALSE" || t == "NO") {
+                out = false;
+                return true;
+            }
+            return false;
+        }
+        bool term() {
+            if (eat("(")) {
+                const bool r = orExpr();
+                if (!eat(")"))
+                    throw ExprError("missing ')' in filter");
+                return r;
+            }
+            skip();
+            std::size_t j = i_;
+            while (j < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[j])) || s_[j] == '_' || s_[j] == '.'))
+                ++j;
+            if (j == i_)
+                throw ExprError("expected a property name in filter at '" + std::string(s_.substr(i_)) + "'");
+            const std::string prop(s_.substr(i_, j - i_));
+            i_ = j;
+            const auto value = lookup_(prop);
+            std::string op;
+            for (const char* o : {"==", "!=", "=~", "!~"})
+                if (eat(o)) {
+                    op = o;
+                    break;
+                }
+            if (op.empty()) {
+                bool b = false;
+                return value && boolLike(*value, b) && b;
+            }
+            skip();
+            std::string rhs;
+            if (i_ < s_.size() && (s_[i_] == '"' || s_[i_] == '{')) {
+                const char close = s_[i_] == '"' ? '"' : '}';
+                const auto end = s_.find(close, i_ + 1);
+                if (end == std::string_view::npos)
+                    throw ExprError("unterminated value in filter");
+                rhs = std::string(s_.substr(i_ + 1, end - i_ - 1));
+                i_ = end + 1;
+            }
+            else {
+                std::size_t k = i_;
+                while (k < s_.size() && !std::isspace(static_cast<unsigned char>(s_[k])) && s_[k] != ')' &&
+                       !s_.substr(k).starts_with("&&") && !s_.substr(k).starts_with("||"))
+                    ++k;
+                rhs = std::string(s_.substr(i_, k - i_));
+                i_ = k;
+            }
+            if (op == "=~" || op == "!~") {
+                bool hit = false;
+                if (regexp_) {
+                    const std::regex* re = nullptr;
+                    std::regex local;
+                    try {
+                        if (cache_) {
+                            auto it = cache_->find(rhs);
+                            if (it == cache_->end())
+                                it = cache_->emplace(rhs, std::regex(rhs)).first;
+                            re = &it->second;
+                        }
+                        else {
+                            local = std::regex(rhs);
+                            re = &local;
+                        }
+                    }
+                    catch (const std::regex_error&) {
+                        throw ExprError("invalid regular expression '" + rhs + "' in filter");
+                    }
+                    hit = value && std::regex_match(*value, *re);
+                }
+                else {
+                    hit = value && globMatch(rhs, *value);
+                }
+                return value && hit == (op == "=~");
+            }
+            if (!value)
+                return false;
+            bool lb = false, rb = false;
+            const bool eq = boolLike(*value, lb) && boolLike(rhs, rb) ? lb == rb : *value == rhs;
+            return eq == (op == "==");
+        }
+
+        std::string_view s_;
+        Lookup lookup_;
+        bool regexp_ = false;
+        RegexCache* cache_ = nullptr;
+        std::size_t i_ = 0;
+    };
+
+    /// Keeps the objects (cells or pins) that match a -filter expression.
+    /// Returns false, with `objs` cleared and a warning, when the filter is
+    /// malformed or uses a property that is not available.
+    bool applyFilter(std::vector<Object>& objs, const std::string& filter, bool pins, bool regexp,
+                     const std::string& ctx, const Command& cmd) {
+        std::vector<std::string> props;
+        try {
+            FilterParser(
+                filter,
+                [&](const std::string& p) {
+                    props.push_back(p);
+                    return std::optional<std::string>{};
+                },
+                regexp, &regexCache_)
+                .parse();
+            for (const auto& p : props)
+                if (!(pins ? resolver_.pinPropertyKnown(p) : resolver_.cellPropertyKnown(p))) {
+                    diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
+                         ctx + ": -filter property '" + p + "' is not available in the design; the query returns nothing",
+                         cmd.line);
+                    objs.clear();
+                    return false;
+                }
+            std::erase_if(objs, [&](const Object& o) {
+                return !FilterParser(
+                            filter,
+                            [&](const std::string& p) {
+                                return pins ? resolver_.pinProperty(o, p) : resolver_.cellProperty(o, p);
+                            },
+                            regexp, &regexCache_)
+                            .parse();
+            });
+        }
+        catch (const ExprError& e) {
+            diag("CON-PARSE", Severity::Warning, ctx + ": " + e.what(), cmd.line);
+            objs.clear();
+            return false;
+        }
+        return true;
+    }
+
+    Value getCells(const Command& cmd) {
+        Args a = parseArgs(cmd, "get_cells",
+                           {{"-quiet", false}, {"-nocase", false}, {"-regexp", false}, {"-filter", true},
+                            {"-of_objects", true}, {"-hierarchical", false}});
+        const bool quiet = a.flags.contains("-quiet");
+        const bool nocase = a.flags.contains("-nocase");
+        const bool hier = a.flags.contains("-hierarchical");
+        const bool regexp = a.flags.contains("-regexp");
+        const std::string filter = a.opts.contains("-filter") ? a.opts["-filter"].back().text : std::string();
+        std::vector<Object> result;
+        if (a.opts.contains("-of_objects")) {
+            // the cells of pins
+            bool unsupportedKind = false;
+            for (const auto& ov : a.opts["-of_objects"])
+                for (const auto& o : objectsOf(ov, cmd, "get_cells -of_objects")) {
+                    if (o.kind != ObjectKind::Pin) {
+                        unsupportedKind = true;
+                        continue;
+                    }
+                    for (auto& c : resolver_.pinCells(o))
+                        if (std::ranges::find(result, c.name, &Object::name) == result.end())
+                            result.push_back(std::move(c));
+                }
+            if (unsupportedKind)
+                diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
+                     "get_cells: -of_objects supports pins; other objects contribute nothing", cmd.line);
+            if (!filter.empty())
+                applyFilter(result, filter, false, regexp, "get_cells", cmd);
+            return objectsValue(std::move(result));
+        }
+        std::vector<std::string> patterns;
+        for (const auto& pv : a.positional) {
+            if (pv.hasObjects)
+                for (const auto& o : pv.objects)
+                    patterns.push_back(o.name);
+            else
+                for (auto& p : splitList(pv.text))
+                    patterns.push_back(std::move(p));
+        }
+        if (patterns.empty())
+            patterns.emplace_back(regexp ? ".*" : "*");
+        for (const auto& pat : patterns) {
+            std::vector<Object> r;
+            if (regexp) {
+                try {
+                    r = resolver_.cellsRegexp(pat, hier, nocase);
+                }
+                catch (const std::regex_error&) {
+                    diag("CON-PARSE", Severity::Error, "get_cells: invalid regular expression '" + pat + "'", cmd.line);
+                    continue;
+                }
+            }
+            else {
+                r = resolver_.cells(pat, hier, nocase);
+            }
+            if (!filter.empty() && !applyFilter(r, filter, false, regexp, "get_cells", cmd))
+                return objectsValue({});
+            if (r.empty() && !quiet)
+                diag("CON-UNMATCHED", Severity::Warning,
+                     "get_cells: nothing matches '" + pat + "'" + (filter.empty() ? "" : " with filter {" + filter + "}"),
+                     cmd.line);
+            result.insert(result.end(), r.begin(), r.end());
+        }
+        return objectsValue(std::move(result));
+    }
+
     Value exec(const Command& cmd) {
         const Value head = subst(cmd.words[0], cmd.line);
         const std::string& name = head.text;
@@ -1194,13 +2693,30 @@ private:
             return v;
         }
         if (name == "get_cells")
-            return getObjects(cmd, name);
+            return getCells(cmd);
+        if (name == "expr")
+            return exprCmd(cmd);
+        if (name == "if")
+            return ifCmd(cmd);
+        if (name == "foreach")
+            return foreachCmd(cmd);
+        if (name == "for" || name == "while")
+            return loopCmd(cmd, name);
+        if (name == "break" || name == "continue") {
+            ctl_ = name == "break" ? Ctl::Break : Ctl::Continue;
+            return {};
+        }
+        if (name == "incr" || name == "llength" || name == "lindex" || name == "lappend")
+            return listCmd(cmd, name);
+        if (name == "puts")
+            return {}; // progress messages of vendor scripts
+        if (name == "get_property")
+            return getProperty(cmd);
         if (name == "all_inputs" || name == "all_outputs" || name == "all_registers") {
             diag("CON-UNSUPPORTED-COMMAND", Severity::Warning, name + " is not supported; it returns nothing", cmd.line);
             return objectsValue({});
         }
-        if (name == "if" || name == "for" || name == "foreach" || name == "while" || name == "proc" ||
-            name == "source" || name == "expr" || name == "switch" || name == "eval") {
+        if (name == "proc" || name == "source" || name == "switch" || name == "eval") {
             diag("CON-UNSUPPORTED-COMMAND", Severity::Warning,
                  "Tcl command '" + name + "' is not supported; the command was skipped", cmd.line);
             return {};
@@ -1223,6 +2739,10 @@ private:
     DiagnosticSink& sink_;
     std::unordered_map<std::string, Value> vars_;
     std::map<std::string, int> ignored_;
+    enum class Ctl : std::uint8_t { None, Break, Continue };
+    Ctl ctl_ = Ctl::None;
+    bool quiet_ = false; ///< evaluating a command given -quiet
+    std::unordered_map<std::string, std::regex> regexCache_; ///< -regexp filters
 };
 
 } // namespace

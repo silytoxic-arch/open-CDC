@@ -5,7 +5,8 @@
 #
 # Analyzes PULP's AXI clock-domain crossing through its interface wrapper
 # (axi_cdc_intf: AXI_BUS interfaces with modports, packages, typedef macros,
-# common_cells Gray FIFOs), and alexforencich's verilog-ethernet RGMII MAC with
+# common_cells Gray FIFOs), alexforencich's verilog-ethernet Arty example with
+# its own Vivado Tcl constraint scripts, and the verilog-ethernet RGMII MAC with
 # its asynchronous frame FIFOs (Xilinx IDDR/ODDR/BUFR/BUFIO, four clocks); the
 # CDC summaries must match.
 set -euo pipefail
@@ -71,6 +72,34 @@ cat > rgmii.ocdc.json <<'JSON'
  "constraints": ["rgmii.sdc"]}
 JSON
 
+# verilog-ethernet's Arty example (MMCM, MII, UDP/IP) with the project's own
+# Vivado Tcl constraint scripts (foreach over instances by REF_NAME, -regexp
+# filters, netlist traversal of reset sources, per-crossing max delays)
+cat > arty_eth.ocdc.json <<'JSON'
+{"format": "opencdc-project", "version": 1, "name": "arty_eth", "top": "fpga",
+ "sources": [
+ "verilog-ethernet/example/Arty/fpga/rtl/fpga.v", "verilog-ethernet/example/Arty/fpga/rtl/fpga_core.v",
+  "verilog-ethernet/example/Arty/fpga/rtl/debounce_switch.v",
+  "verilog-ethernet/example/Arty/fpga/rtl/sync_signal.v", "verilog-ethernet/rtl/ssio_sdr_in.v",
+  "verilog-ethernet/rtl/mii_phy_if.v", "verilog-ethernet/rtl/eth_mac_mii_fifo.v",
+  "verilog-ethernet/rtl/eth_mac_mii.v", "verilog-ethernet/rtl/eth_mac_1g.v",
+  "verilog-ethernet/rtl/axis_gmii_rx.v", "verilog-ethernet/rtl/axis_gmii_tx.v", "verilog-ethernet/rtl/lfsr.v",
+  "verilog-ethernet/rtl/eth_axis_rx.v", "verilog-ethernet/rtl/eth_axis_tx.v",
+  "verilog-ethernet/rtl/udp_complete.v", "verilog-ethernet/rtl/udp_checksum_gen.v",
+  "verilog-ethernet/rtl/udp.v", "verilog-ethernet/rtl/udp_ip_rx.v", "verilog-ethernet/rtl/udp_ip_tx.v",
+  "verilog-ethernet/rtl/ip_complete.v", "verilog-ethernet/rtl/ip.v", "verilog-ethernet/rtl/ip_eth_rx.v",
+  "verilog-ethernet/rtl/ip_eth_tx.v", "verilog-ethernet/rtl/ip_arb_mux.v", "verilog-ethernet/rtl/arp.v",
+  "verilog-ethernet/rtl/arp_cache.v", "verilog-ethernet/rtl/arp_eth_rx.v", "verilog-ethernet/rtl/arp_eth_tx.v",
+  "verilog-ethernet/rtl/eth_arb_mux.v", "verilog-ethernet/lib/axis/rtl/arbiter.v",
+  "verilog-ethernet/lib/axis/rtl/priority_encoder.v", "verilog-ethernet/lib/axis/rtl/axis_fifo.v",
+  "verilog-ethernet/lib/axis/rtl/axis_async_fifo.v", "verilog-ethernet/lib/axis/rtl/axis_async_fifo_adapter.v",
+  "verilog-ethernet/lib/axis/rtl/sync_reset.v"],
+ "constraints": [
+ "verilog-ethernet/example/Arty/fpga/fpga.xdc", "verilog-ethernet/syn/vivado/mii_phy_if.tcl",
+  "verilog-ethernet/syn/vivado/eth_mac_fifo.tcl", "verilog-ethernet/lib/axis/syn/vivado/axis_async_fifo.tcl",
+  "verilog-ethernet/lib/axis/syn/vivado/sync_reset.tcl"]}
+JSON
+
 fail=0
 check() { # project expected-regex
     local out
@@ -83,4 +112,5 @@ check() { # project expected-regex
 }
 check axi_cdc.ocdc.json "80 registers.*0 unsupported construct.*80/80 registers resolved.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 52 crossing path\(s\), 50 synchronized.*Rules   : 0 error violation"
 check rgmii.ocdc.json "179/179 registers resolved.*async-fifo x2.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 30 crossing path\(s\), 29 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 1 path\(s\) at potential risk, 1 path\(s\) need review"
+check arty_eth.ocdc.json "608/608 registers resolved.*Summary : 0 error\(s\), 9 warning\(s\).*CDC     : 27 crossing path\(s\), 27 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 0 path\(s\) at potential risk, 0 path\(s\) need review"
 exit $fail

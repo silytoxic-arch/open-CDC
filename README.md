@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 17, frame FIFOs and FIFO structures, clock-level exceptions, verified on verilog-ethernet**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 18, vendor Tcl constraint scripts and register-level timing exceptions**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–17)
+## What works today (stages 1–18)
 
 | Feature | Status |
 |---|---|
@@ -23,6 +23,8 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | RTL extraction into a word-level Design IR: registers with clock, async resets, sync reset and enable; latches; combinational cells; memories; instance tree | ✅ |
 | `opencdc analyze --dump-ir`, and a JSON register list | ✅ |
 | SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins, `get_clocks -of_objects [get_nets …]` in clock groups and `set_input_delay -clock`, clock-level `set_false_path` / `set_max_delay -datapath_only` (`-from [get_clocks a] -to [get_clocks b]`), abbreviated options such as `-of`) | ✅ |
+| Register-level timing exceptions: `set_false_path` and `set_max_delay -datapath_only` between registers, pins, ports and clocks, with one side alone (`-to` reset pins) or mixed (`-from <clock> -to <registers>`); a crossing they cover whose clock relation is unknown is analyzed as asynchronous, with the constraint named | ✅ |
+| Vendor Tcl constraint scripts: `foreach`, `if`/`elseif`/`else`, `for`, `while`, `expr`, `llength`/`lindex`/`lappend`/`incr`, `get_property` (clock `PERIOD`, cell properties); `get_cells` returns flip-flops and instances, with `-hierarchical`, `-regexp` and `-filter` (`NAME`, `PARENT`, `REF_NAME`, `ORIG_REF_NAME`, `IS_SEQUENTIAL`, HDL attributes such as `ASYNC_REG`); netlist traversal with `get_pins`/`get_nets`/`get_cells -of_objects` (flip-flop pins `C D Q CE CLR PRE R S`, `REF_PIN_NAME`, `DIRECTION`, `IS_LEAF`, `IS_PRESET`, …). Verified with the constraint scripts shipped with alexforencich's verilog-ethernet (`axis_async_fifo.tcl`, `sync_reset.tcl`, `eth_mac_fifo.tcl`, `mii_phy_if.tcl`) | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
 | Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), clock groups with one group, overlapping groups, or related clocks declared asynchronous (`CON-GROUP-*`) | ✅ |
 | Vivado clock report cross-check (`--vivado-clocks`, project field `vivadoClockReports`, GUI project editor): `report_clocks` / `report_timing_summary` output read back, clocks matched by source pin or name, period mismatches (`VIV-PERIOD-MISMATCH`) and clocks only one side knows reported | ✅ |

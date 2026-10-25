@@ -239,6 +239,8 @@ json clocksJson(const clock::ClockModel& m, const constraints::ConstraintSet* co
                             {"clockDefinitions", cons->clocks.size()},
                             {"clockGroups", cons->groups.size()},
                             {"inputDelays", cons->inputDelays.size()},
+                            {"clockExceptions", cons->clockExceptions.size()},
+                            {"pathExceptions", cons->pathExceptions.size()},
                             {"ignoredCommands", cons->ignoredCommands}};
     }
     return j;

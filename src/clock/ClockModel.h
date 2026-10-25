@@ -85,6 +85,9 @@ public:
     /// per set_input_delay (parallel to ConstraintSet::inputDelays): the
     /// clock of "-clock [get_clocks -of_objects ...]", resolved after tracing
     std::vector<std::optional<ClockId>> inputDelayClocks;
+    /// per path exception (ConstraintSet::pathExceptions): the clocks named
+    /// by get_clocks -of_objects on its -from and -to sides
+    std::vector<std::pair<std::vector<ClockId>, std::vector<ClockId>>> pathExceptionClocks;
 
     void initRelations();
     void setRelation(ClockId a, ClockId b, ClockRelation r, std::string reason);

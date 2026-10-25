@@ -626,16 +626,120 @@ TEST_CASE("Register-level datapath-only max delays and false paths constrain sin
     // negative: a max delay that is not datapath-only constrains nothing for CDC
     auto plain = analyze(v, clocks + "set_max_delay -from [get_cells a_reg] -to [get_cells s1_reg] 10.0\n");
     CHECK(plain.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
-    // negative: netlist property filters and -of_objects are not evaluated
+    // negative: pin queries with filters and -of_objects are not evaluated
     // (no warning, no exception)
     auto filt = analyze(v, clocks + "set_max_delay 2 -quiet -from [get_pins -filter {REF_PIN_NAME == C} -of_objects "
-                                    "[get_cells -hier -filter {ars_ff1 == TRUE}]] -to [get_cells s1_reg]\n"
-                                    "set_false_path -from [get_cells -hier -filter {X == 1}] -to [get_cells s1_reg]\n");
+                                    "[get_cells -hier -filter {ars_ff1 == TRUE}]] -to [get_cells s1_reg]\n");
     CHECK(filt.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
     CHECK(filt.countCode("CON-UNSUPPORTED-OPTION") == 0);
     CHECK(filt.countCode("CON-UNMATCHED") == 0);
+    // negative: a cell filter on a property the design does not have selects
+    // nothing (warned), so the exception constrains nothing
+    auto unk = analyze(v, clocks + "set_false_path -from [get_cells -hier -filter {X == 1}] -to [get_cells s1_reg]\n");
+    CHECK(unk.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
+    CHECK(unk.countCode("CON-UNSUPPORTED-OPTION") == 1);
+    CHECK(unk.countCode("CON-UNMATCHED") == 1);
     // negative: an exception whose -to matches nothing warns
     auto none = analyze(v, clocks + "set_false_path -from [get_cells a_reg] -to [get_cells nothing_reg]\n");
     CHECK(none.countCode("CON-UNMATCHED") >= 1);
     CHECK(none.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
+}
+
+TEST_CASE("Vendor Tcl constraint scripts: foreach over instances by REF_NAME, regexp, per-instance max delays", "[cdc][constraints]") {
+    // the style of alexforencich's sync_reset.tcl / axis_async_fifo.tcl
+    constexpr const char* v = "module sync2(input clk, input d, output q);\n"
+                              "  reg s1, s2;\n"
+                              "  always @(posedge clk) begin s1 <= d; s2 <= s1; end\n"
+                              "  assign q = s2;\n"
+                              "endmodule\n"
+                              "module top(input clk_a, input clk_b, input d, input e, output q0, output q1);\n"
+                              "  reg a, b;\n"
+                              "  always @(posedge clk_a) begin a <= d; b <= e; end\n"
+                              "  sync2 u_s0 (.clk(clk_b), .d(a), .q(q0));\n"
+                              "  sync2 u_s1 (.clk(clk_b), .d(b), .q(q1));\n"
+                              "endmodule\n";
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    const std::string script =
+        "foreach inst [get_cells -hier -filter {(ORIG_REF_NAME == %M || REF_NAME == %M)}] {\n"
+        "    puts \"Inserting timing constraints for sync2 instance $inst\"\n"
+        "    set read_clk [get_clocks -of_objects [get_cells \"$inst/s1_reg $inst/s2_reg\"]]\n"
+        "    set read_clk_period [if {[llength $read_clk]} {get_property -min PERIOD $read_clk} {expr 1.0}]\n"
+        "    set sync_ffs [get_cells -quiet -hier -regexp {.*/s[12]_reg} -filter \"PARENT == $inst\"]\n"
+        "    if {[llength $sync_ffs]} {\n"
+        "        set_property ASYNC_REG TRUE $sync_ffs\n"
+        "        set_max_delay -from [get_cells -hier -regexp {[ab]_reg}] -to [get_cells \"$inst/s1_reg\"] -datapath_only $read_clk_period\n"
+        "    }\n"
+        "}\n";
+    auto withModule = [&](const std::string& m) {
+        std::string s = script;
+        for (auto pos = s.find("%M"); pos != std::string::npos; pos = s.find("%M"))
+            s.replace(pos, 2, m);
+        return s;
+    };
+    auto r = analyze(v, clocks + withModule("sync2"));
+    CHECK(r.countCode("CON-UNSUPPORTED-COMMAND") == 0);
+    CHECK(r.countCode("CON-PARSE") == 0);
+    CHECK(r.countCode("CON-UNSUPPORTED-OPTION") == 0);
+    for (const auto* pair : {"a/u_s0.s1", "b/u_s1.s1"}) {
+        const std::string pr(pair);
+        const auto slash = pr.find('/');
+        const auto& p = r.path("top." + pr.substr(0, slash), "top." + pr.substr(slash + 1));
+        CHECK(p.relation == clock::ClockRelation::Asynchronous);
+        CHECK(std::ranges::any_of(p.notes, [](const std::string& n) { return n.find("set_max_delay -datapath_only") != std::string::npos; }));
+    }
+    // negative: the script finds no instance of another module: nothing is
+    // constrained; only the instance query (without -quiet) warns, as in Vivado
+    auto none = analyze(v, clocks + withModule("axis_async_fifo"));
+    CHECK(none.path("top.a", "top.u_s0.s1").relation == clock::ClockRelation::Unknown);
+    CHECK(none.countCode("CON-UNMATCHED") == 1);
+}
+
+TEST_CASE("Path exceptions: reset source hunted through the netlist, reset pins alone, clock-to-register, -quiet", "[cdc][constraints]") {
+    constexpr const char* v = "module top(input clk_a, input clk_b, input rst_a, input d, output q, output r);\n"
+                              "  reg a, s1, s2, x1, x2;\n"
+                              "  reg rs1, rs2;\n"
+                              "  always @(posedge clk_a) begin a <= d; x1 <= d; end\n"
+                              "  always @(posedge clk_b) begin s1 <= a; s2 <= s1; x2 <= x1; end\n"
+                              "  always @(posedge clk_b or posedge x1)\n"
+                              "    if (x1) begin rs1 <= 1'b1; rs2 <= 1'b1; end else begin rs1 <= a; rs2 <= rs1; end\n"
+                              "  assign q = s2 ^ x2;\n"
+                              "  assign r = rs2;\n"
+                              "endmodule\n";
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    // the "hunt down source" idiom of axis_async_fifo.tcl
+    auto hunt = analyze(v, clocks + "set dest [get_cells s1_reg]\n"
+                                    "set dest_pins [get_pins -of_objects $dest -filter {REF_PIN_NAME == D}]\n"
+                                    "set net [get_nets -segments -of_objects $dest_pins]\n"
+                                    "set source_pins [get_pins -of_objects $net -filter {IS_LEAF && DIRECTION == OUT}]\n"
+                                    "set source [get_cells -of_objects $source_pins]\n"
+                                    "set_max_delay -from $source -to $dest -datapath_only 7.0\n");
+    CHECK(hunt.countCode("CON-UNMATCHED") == 0);
+    CHECK(hunt.path("top.a", "top.s1").relation == clock::ClockRelation::Asynchronous);
+    CHECK(hunt.path("top.x1", "top.x2").relation == clock::ClockRelation::Unknown); // not covered
+
+    // reset pins alone (sync_reset.tcl): the asynchronous reset crossing
+    // into rs1/rs2 is covered, the data crossing into rs1 is not
+    auto rst = analyze(v, clocks + "set_false_path -to [get_pins -of_objects [get_cells {rs1_reg rs2_reg}] -filter {IS_PRESET || IS_RESET}]\n");
+    const auto* resetPath = rst.find("top.x1", "top.rs1");
+    REQUIRE(resetPath);
+    CHECK(resetPath->pin == Pin::AsyncReset);
+    CHECK(resetPath->relation == clock::ClockRelation::Asynchronous);
+    CHECK(rst.path("top.a", "top.rs1").relation == clock::ClockRelation::Unknown);
+
+    // -from a clock -to registers (the FIFO output register idiom)
+    auto mixed = analyze(v, clocks + "set_false_path -from [get_clocks -of_objects [get_cells a_reg]] -to [get_cells {s1_reg x2_reg}]\n");
+    CHECK(mixed.path("top.a", "top.s1").relation == clock::ClockRelation::Asynchronous);
+    CHECK(mixed.path("top.x1", "top.x2").relation == clock::ClockRelation::Asynchronous);
+    CHECK(mixed.path("top.a", "top.rs1").relation == clock::ClockRelation::Unknown); // not a named destination
+    // negative: from the other clock
+    auto other = analyze(v, clocks + "set_false_path -from [get_clocks clk_b] -to [get_cells s1_reg]\n");
+    CHECK(other.path("top.a", "top.s1").relation == clock::ClockRelation::Unknown);
+
+    // -quiet: an exception that matches nothing is noted, not warned
+    auto quiet = analyze(v, clocks + "set_false_path -quiet -to [get_cells -hier -filter {nosuch_attr == TRUE}]\n"
+                                     "set_false_path -to [get_cells -hier -filter {nosuch_attr == TRUE}]\n");
+    CHECK(quiet.countCode("CON-UNSUPPORTED-OPTION") == 2);
+    CHECK(quiet.countSeverity("CON-UNSUPPORTED-OPTION", Severity::Warning) == 1);
 }

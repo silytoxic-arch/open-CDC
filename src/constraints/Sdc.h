@@ -6,8 +6,10 @@
 
 #include <filesystem>
 #include <map>
+#include <tuple>
 #include <unordered_map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,7 +22,10 @@ enum class ObjectKind : std::uint8_t { Port, Pin, Net, Clock, Cell };
 struct Object {
     ObjectKind kind = ObjectKind::Net;
     std::string name;                ///< matched name (for clocks: the name pattern)
-    std::vector<graph::BitRef> bits; ///< resolved bits (empty for clocks)
+    std::vector<graph::BitRef> bits; ///< resolved bits (empty for clocks and hierarchical cells)
+    std::int32_t item = -1;          ///< cells / pins: resolver table index (register, instance or port)
+    bool instance = false;           ///< cells: a hierarchical instance (no bits)
+    std::string pin{};               ///< flip-flop pins: C, D, Q, CE, CLR, PRE, R, S (bits: the signal on the pin)
 };
 
 /// Resolves object patterns against a design. Patterns use Tcl glob syntax
@@ -36,9 +41,42 @@ public:
     virtual std::vector<Object> ports(std::string_view pattern, bool nocase) = 0;
     virtual std::vector<Object> pins(std::string_view pattern, bool hierarchical, bool nocase) = 0;
     virtual std::vector<Object> nets(std::string_view pattern, bool hierarchical, bool nocase) = 0;
-    /// Flip-flop cells "<reg>_reg" (bits: Q); none by default.
+    /// Flip-flop cells "<reg>_reg" (bits: Q) and hierarchical instances (no
+    /// bits); none by default.
     virtual std::vector<Object> cells(std::string_view /*pattern*/, bool /*hierarchical*/, bool /*nocase*/) {
         return {};
+    }
+    /// Cells whose full name (or, with `hierarchical`, a trailing part of it)
+    /// matches the ECMAScript regular expression; vector registers also match
+    /// per bit ("x_reg[3]"). Throws std::regex_error on a bad expression.
+    virtual std::vector<Object> cellsRegexp(std::string_view /*regex*/, bool /*hierarchical*/, bool /*nocase*/) {
+        return {};
+    }
+    /// Whether cells can have this property (NAME, PARENT, REF_NAME,
+    /// ORIG_REF_NAME, IS_SEQUENTIAL, or an HDL attribute present in the design).
+    virtual bool cellPropertyKnown(std::string_view /*prop*/) { return false; }
+    /// Value of a property of a cell returned by cells(); nullopt if the cell
+    /// does not have it (e.g. REF_NAME of a flip-flop).
+    virtual std::optional<std::string> cellProperty(const Object& /*cell*/, std::string_view /*prop*/) {
+        return std::nullopt;
+    }
+    /// Clock bits of the flip-flops of a cell (empty for instances).
+    virtual std::vector<graph::BitRef> cellClocks(const Object& /*cell*/) { return {}; }
+
+    // Netlist traversal (get_pins/get_nets/get_cells -of_objects)
+    /// Pins of a cell: flip-flop pins, or the ports of an instance.
+    virtual std::vector<Object> cellPins(const Object& /*cell*/) { return {}; }
+    /// Nets on pins (all segments).
+    virtual std::vector<Object> pinNets(const Object& /*pin*/) { return {}; }
+    /// Flip-flop pins on a net: drivers (Q) and loads (D, C, CE, resets).
+    virtual std::vector<Object> netPins(const Object& /*net*/) { return {}; }
+    /// The cell of a pin (flip-flop or instance).
+    virtual std::vector<Object> pinCells(const Object& /*pin*/) { return {}; }
+    /// Pin properties: NAME, REF_PIN_NAME, DIRECTION, IS_LEAF, IS_CLOCK,
+    /// IS_ENABLE, IS_PRESET, IS_CLEAR, IS_SET, IS_RESET.
+    virtual bool pinPropertyKnown(std::string_view /*prop*/) { return false; }
+    virtual std::optional<std::string> pinProperty(const Object& /*pin*/, std::string_view /*prop*/) {
+        return std::nullopt;
     }
 };
 
@@ -52,9 +90,32 @@ public:
     std::vector<Object> ports(std::string_view pattern, bool nocase) override;
     std::vector<Object> pins(std::string_view pattern, bool hierarchical, bool nocase) override;
     std::vector<Object> cells(std::string_view pattern, bool hierarchical, bool nocase) override;
+    std::vector<Object> cellsRegexp(std::string_view regex, bool hierarchical, bool nocase) override;
+    bool cellPropertyKnown(std::string_view prop) override;
+    std::optional<std::string> cellProperty(const Object& cell, std::string_view prop) override;
+    std::vector<graph::BitRef> cellClocks(const Object& cell) override;
+    std::vector<Object> cellPins(const Object& cell) override;
+    std::vector<Object> pinNets(const Object& pin) override;
+    std::vector<Object> netPins(const Object& net) override;
+    std::vector<Object> pinCells(const Object& pin) override;
+    bool pinPropertyKnown(std::string_view prop) override;
+    std::optional<std::string> pinProperty(const Object& pin, std::string_view prop) override;
     std::vector<Object> nets(std::string_view pattern, bool hierarchical, bool nocase) override;
 
 private:
+    struct CellInfo {
+        std::string parent;                            ///< instance path, '/'-separated ("" at the top)
+        std::string ref;                               ///< instances: definition name
+        const std::vector<ir::Attribute>* attrs = nullptr;
+        const ir::Register* reg = nullptr;             ///< registers
+        ir::InstanceId inst;                           ///< registers
+        std::uint32_t qOffset = 0;                     ///< registers: first Q bit of the register (bit of its net)
+    };
+    /// Pins of register `r` restricted to the Q bits `qbits` (named after `cellName`).
+    std::vector<Object> registerPins(std::size_t r, const std::string& cellName, const std::vector<graph::BitRef>& qbits);
+    std::string bitCellName(std::size_t r, const graph::BitRef& q) const; ///< "x_reg[3]" or "x_reg"
+    void buildLoads();
+    void buildInstances();
     struct Named {
         std::string name; ///< full relative name, '/'-separated hierarchy
         graph::BitRef first;
@@ -77,6 +138,16 @@ private:
     std::vector<Named> pins_;
     std::vector<Named> regs_;      ///< per register: name "<prefix><net>_reg", bits = Q
     std::vector<graph::BitRef> regClock_; ///< clock bit of regs_[i]
+    std::vector<CellInfo> regInfo_;       ///< parallel to regs_
+    bool instancesBuilt_ = false;
+    std::vector<std::string> insts_;      ///< hierarchical instance names (tops excluded)
+    std::vector<CellInfo> instInfo_;      ///< parallel to insts_
+    std::set<std::string, std::less<>> attrNames_; ///< upper-case attribute names on registers/instances
+    bool loadsBuilt_ = false;
+    /// driver of a bit -> flip-flop load pins on it: (register, pin name, Q bit of that flip-flop)
+    std::map<std::tuple<int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>,
+             std::vector<std::tuple<std::size_t, std::string, graph::BitRef>>>
+        loads_;
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> regsByNet_; ///< (inst, net) -> regs_ indices
 };
 
@@ -124,13 +195,28 @@ struct ClockException {
     SourceLocation loc;
 };
 
-/// set_false_path / set_max_delay -datapath_only between registers or pins
-/// (-from [get_cells a_reg] -to [get_cells b_reg]): the designer has
-/// constrained these crossings; their clock relation counts as asynchronous.
+/// Which pins of a destination register an exception names.
+enum class EndpointRole : std::uint8_t { Any, Data, AsyncReset };
+
+struct PathEndpoint {
+    graph::BitRef bit; ///< register Q bit (or port)
+    EndpointRole role = EndpointRole::Any;
+};
+
+/// set_false_path / set_max_delay -datapath_only between registers, pins,
+/// ports or clocks, at least one side being registers, pins or ports
+/// (-from [get_cells a_reg] -to [get_cells b_reg], -from <clock> -to
+/// <registers>, -to <reset pins> alone): the designer has constrained these
+/// crossings; their clock relation counts as asynchronous. An empty side
+/// (no -from or no -to) matches everything.
 struct PathException {
     std::string command;
-    std::vector<graph::BitRef> from; ///< register Q bits, clock pins or ports
-    std::vector<graph::BitRef> to;
+    std::vector<graph::BitRef> from;  ///< register Q bits or input ports
+    std::vector<PathEndpoint> to;     ///< register Q bits with the pins named
+    std::vector<std::string> fromClocks; ///< clock name patterns
+    std::vector<std::string> toClocks;
+    std::vector<graph::BitRef> fromClockBits; ///< get_clocks -of_objects
+    std::vector<graph::BitRef> toClockBits;
     SourceLocation loc;
 };
 
