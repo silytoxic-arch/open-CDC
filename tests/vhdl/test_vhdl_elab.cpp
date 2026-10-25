@@ -857,3 +857,50 @@ TEST_CASE("VHDL: textio routines with arguments are accepted in initial value fu
     CHECK(r.errors() == 0);
     CHECK(r.count("VHDL-NO-OVERLOAD") == 0);
 }
+
+// ===========================================================================
+// Stage 15 fixes found on real code (microwatt Arty, LiteX)
+// ===========================================================================
+
+TEST_CASE("VHDL: a function that reads a file has an unknown result", "[vhdl][elab]") {
+    // litedram-initmem: the loop bound exceeds the RAM, endfile() ends it in simulation
+    auto r = elaborate(lib("use std.textio.all;\n"
+                           "entity t is port (clk : in std_ulogic; a : in natural range 0 to 3;\n"
+                           "  q : out std_ulogic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type ram_t is array (0 to 3) of std_ulogic_vector(7 downto 0);\n"
+                           "  procedure load(ram : inout ram_t; name : string) is\n"
+                           "    file f : text open read_mode is name; variable l : line; variable w : std_ulogic_vector(7 downto 0);\n"
+                           "  begin\n"
+                           "    for i in 0 to 99 loop exit when endfile(f); readline(f, l); hread(l, w); ram(i) := w; end loop;\n"
+                           "  end procedure;\n"
+                           "  impure function init_ram(name : string) return ram_t is\n"
+                           "    variable r : ram_t := (others => (others => '0'));\n"
+                           "  begin load(r, name); return r; end function;\n"
+                           "  signal mem : ram_t := init_ram(\"x.hex\");\n"
+                           "begin\n"
+                           "  process (clk) begin if rising_edge(clk) then q <= mem(a); end if; end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-INDEX") == 0);
+    CHECK(r.count("IR-UNSUPPORTED-INIT") == 1);
+}
+
+TEST_CASE("VHDL: null slice targets and slices with multiplied bounds", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is generic (N : natural := 8); port (d : in std_ulogic_vector(127 downto 0);\n"
+                           "  s : in std_ulogic; w : in natural range 0 to 1; q : out std_ulogic_vector(7 downto 0);\n"
+                           "  r : out std_ulogic_vector(63 downto 0); a, b : in std_ulogic; k : out std_ulogic_vector(1 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  q(q'left downto N) <= (others => '0');\n" // null range
+                           "  q(N - 1 downto 0) <= d(7 downto 0);\n"
+                           "  r <= d((w + 1) * 64 - 1 downto w * 64);\n"
+                           "  with a & b select k <= \"01\" when \"10\", \"10\" when \"01\", \"00\" when others;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-AMBIGUOUS") == 0);
+    CHECK(r.has("[64] = dyn_select<1@127:0>(A=d"));
+}

@@ -243,3 +243,18 @@ TEST_CASE("Design resolver: ports, bits, hierarchical nets, pins and register pi
     REQUIRE(regc.size() == 1);
     CHECK(view.name(regc[0].bits.at(0)) == "top.g[0].u_leaf.ck");
 }
+
+TEST_CASE("Options can be abbreviated to a unique prefix", "[constraints]") {
+    FakeResolver r;
+    auto p = parse("create_clock -name c -per 10 [get_ports clk]\n"
+                   "set_clock_groups -async -group c -group d\n",
+                   r);
+    REQUIRE(p.set.clocks.size() == 1);
+    CHECK(p.set.clocks[0].periodNs == 10.0);
+    REQUIRE(p.set.groups.size() == 1);
+    CHECK(p.set.groups[0].kind == GroupKind::Asynchronous);
+    CHECK(p.countCode("CON-UNKNOWN-OPTION") == 0);
+    // negative: an ambiguous prefix is still unknown (-p: -period or nothing else? -physically_exclusive)
+    auto q = parse("set_clock_groups -a -group c -group d\n", r); // -asynchronous or -allow_paths
+    CHECK(q.countCode("CON-UNKNOWN-OPTION") == 1);
+}

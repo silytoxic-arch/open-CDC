@@ -78,6 +78,7 @@ public:
         createConstraintClocks();
         collectKnownRoots();
         traceAllRegisters();
+        resolveGroupObjects();
         resolveGeneratedMasters();
         resolveDividerPeriods();
         computeRelations();
@@ -720,12 +721,18 @@ private:
                 continue;
             }
             std::vector<std::vector<std::size_t>> members(g.groups.size());
-            for (std::size_t k = 0; k < g.groups.size(); ++k)
+            const auto gi = static_cast<std::size_t>(&g - cons_.groups.data());
+            for (std::size_t k = 0; k < g.groups.size(); ++k) {
                 for (const auto& p : g.groups[k])
                     for (std::size_t c = 0; c < n; ++c)
                         if (constraints::globMatch(p, m.clocks[c].name) &&
                             std::ranges::find(members[k], c) == members[k].end())
                             members[k].push_back(c);
+                if (gi < groupObjectClocks_.size() && k < groupObjectClocks_[gi].size())
+                    for (const ClockId c : groupObjectClocks_[gi][k])
+                        if (std::ranges::find(members[k], c.index()) == members[k].end())
+                            members[k].push_back(c.index());
+            }
             std::vector<int> seenIn(n, -1);
             for (std::size_t k = 0; k < members.size(); ++k)
                 for (const auto c : members[k]) {
@@ -754,6 +761,37 @@ private:
         }
     }
 
+    /// get_clocks -of_objects in set_clock_groups: the clocks on the named
+    /// nets/pins/ports, per constraint and group
+    void resolveGroupObjects() {
+        groupObjectClocks_.assign(cons_.groups.size(), {});
+        for (std::size_t g = 0; g < cons_.groups.size(); ++g) {
+            const auto& grp = cons_.groups[g];
+            groupObjectClocks_[g].resize(grp.groups.size());
+            for (std::size_t k = 0; k < grp.memberBits.size() && k < grp.groups.size(); ++k)
+                for (const auto& b : grp.memberBits[k]) {
+                    // only nets already on a clock path (or constraint sources)
+                    // name clocks: tracing a data net would invent a clock
+                    Trace t;
+                    if (const auto it = memo_.find(b); it != memo_.end())
+                        t = it->second;
+                    else if (const auto sc = sourceClocks_.find(b); sc != sourceClocks_.end())
+                        for (const ClockId c : sc->second)
+                            t.sources.emplace_back(c, false);
+                    if (t.sources.empty()) {
+                        sink_.report({"CON-UNMATCHED", Severity::Warning,
+                                      "set_clock_groups: get_clocks -of_objects finds no clock on '" + view_.name(b) +
+                                          "' (no register is clocked through it)",
+                                      grp.loc, {}});
+                        continue;
+                    }
+                    for (const auto& [c, inv] : t.sources)
+                        if (std::ranges::find(groupObjectClocks_[g][k], c) == groupObjectClocks_[g][k].end())
+                            groupObjectClocks_[g][k].push_back(c);
+                }
+        }
+    }
+
     std::vector<ClockId> ancestors(ClockId c) const {
         std::vector<ClockId> out{c};
         for (std::size_t guard = 0; guard < model_->clocks.size(); ++guard) {
@@ -778,8 +816,14 @@ private:
         std::vector<Resolved> groups;
         for (const auto& g : cons_.groups) {
             Resolved r{&g, {}};
+            const auto gi = static_cast<std::size_t>(&g - cons_.groups.data());
             for (const auto& patterns : g.groups) {
                 std::vector<bool> mem(n, false);
+                const std::size_t k = r.member.size();
+                if (gi < groupObjectClocks_.size() && k < groupObjectClocks_[gi].size())
+                    for (const ClockId c : groupObjectClocks_[gi][k])
+                        if (c.index() < n)
+                            mem[c.index()] = true;
                 for (const auto& p : patterns) {
                     bool any = false;
                     for (std::size_t c = 0; c < n; ++c)
@@ -906,6 +950,7 @@ private:
     const constraints::ConstraintSet& cons_;
     DiagnosticSink& sink_;
     std::shared_ptr<ClockModel> model_;
+    std::vector<std::vector<std::vector<ClockId>>> groupObjectClocks_; ///< constraint -> group -> clocks (-of_objects)
 
     std::unordered_map<BitRef, std::vector<ClockId>, BitRefHash> sourceClocks_;
     std::unordered_map<BitRef, ClockId, BitRefHash> primary_;

@@ -9,8 +9,9 @@
 # 2. Elaborates and analyzes the open-logic clock-crossing components, a
 #    fully featured neorv32 SoC and surf's Xilinx clock manager (MMCM/PLL
 #    primitive models) and async FIFO, and the microwatt POWER SoC (VHDL-2008,
-#    Verilog UART, Lattice ECP5 PLL declared as a local component); the CDC
-#    summaries must match.
+#    Verilog UART, Lattice ECP5 PLL declared as a local component; and the Arty
+#    A7 configuration with LiteDRAM, LiteEth and LiteSDCard, five clock
+#    domains); the CDC summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -156,6 +157,45 @@ json.dump({"format": "opencdc-project", "version": 1, "name": "microwatt", "top"
                           "RESET_LOW": "true", "CLK_INPUT": "12000000", "CLK_FREQUENCY": "40000000"},
            "constraints": ["mw.sdc"]},
           open(os.path.join(work, "microwatt.ocdc.json"), "w"), indent=1)
+# microwatt for the Arty A7-35 (microwatt.core target arty_a7-35: filesets and parameters)
+core = ("decode_types wishbone_types common fetch1 predecode decode1 helpers decode2 register_file cr_file crhelpers "
+        "ppc_fx_insns sim_console logical countbits bitsort control execute1 fpu loadstore1 mmu dcache divider rotator "
+        "pmu writeback insn_helpers core icache plrufn cache_ram core_debug utils wishbone_arbiter "
+        "wishbone_debug_master wishbone_bram_wrapper soc xics gpio syscon sync_fifo spi_rxtx spi_flash_ctrl").split()
+arty = ([os.path.join(mw, f + ".vhdl") for f in core] + [os.path.join(work, "mw_git.vhdl")] +
+        [os.path.join(mw, f) for f in ["fpga/main_bram.vhdl", "fpga/soc_reset.vhdl", "fpga/pp_fifo.vhd",
+                                       "fpga/pp_soc_uart.vhd", "fpga/pp_utilities.vhd", "nonrandom.vhdl",
+                                       "xilinx-mult.vhdl", "xilinx-mult-32s.vhdl", "dmi_dtm_xilinx.vhdl",
+                                       "fpga/clk_gen_plle2.vhd", "fpga/top-arty.vhdl",
+                                       "litedram/generated/arty/litedram_core.v",
+                                       "litedram/generated/arty/litedram-initmem.vhdl",
+                                       "litedram/extras/litedram-wrapper-l2.vhdl",
+                                       "liteeth/generated/arty/liteeth_core.v",
+                                       "litesdcard/generated/xilinx.100e6/litesdcard_core.v"]] +
+        [os.path.join(mw, "uart16550", f) for f in ["raminfr.v", "uart_receiver.v", "uart_regs.v", "uart_rfifo.v",
+                                                    "uart_sync_flops.v", "uart_tfifo.v", "uart_top.v",
+                                                    "uart_transmitter.v", "uart_wb.v"]])
+arty_params = {"MEMORY_SIZE": "16384", "RAM_INIT_FILE": '"%s"' % os.path.join(mw, "fpga/firmware.hex"),
+               "USE_LITEDRAM": "true", "USE_LITEETH": "true", "USE_LITESDCARD": "true", "NO_BRAM": "true",
+               "SPI_FLASH_OFFSET": "3145728", "LOG_LENGTH": "512", "UART_IS_16550": "true", "HAS_UART1": "true",
+               "HAS_FPU": "false", "HAS_BTC": "false", "USE_LCD": "false"}
+def arty_project(name, sources):
+    json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": "toplevel", "language": "verilog-2005",
+               "sources": sources, "includeDirs": [os.path.join(mw, "uart16550")], "parameters": arty_params,
+               "constraints": [os.path.join(mw, "fpga/arty_a7.xdc")]},
+              open(os.path.join(work, name + ".ocdc.json"), "w"), indent=1)
+arty_project("microwatt_arty", arty)
+# top-arty.vhdl drives ddram_clk_p_vec/ddram_clk_n_vec and uart1_txd twice (real multiple drivers,
+# reported as IR-MULTIDRIVER); the corrected copy lets the analysis run to the end
+top = open(os.path.join(mw, "fpga/top-arty.vhdl")).read()
+for a, b in [("\tddram_clk_p_vec <= (others => ddram_clk_p);\n", "\tddram_clk_p <= ddram_clk_p_vec(0);\n"),
+             ("\tddram_clk_n_vec <= (others => ddram_clk_n);\n", "\tddram_clk_n <= ddram_clk_n_vec(0);\n"),
+             ("    uart1_txd <= '1';\n", "")]:
+    assert a in top, a
+    top = top.replace(a, b)
+open(os.path.join(work, "mw_top_arty_fixed.vhdl"), "w").write(top)
+arty_project("microwatt_arty_fixed",
+             [os.path.join(work, "mw_top_arty_fixed.vhdl") if f.endswith("fpga/top-arty.vhdl") else f for f in arty])
 EOF
 
 check() { # project expected-regex
@@ -178,5 +218,7 @@ check surf_cm7_pll.ocdc.json          "Clocks  : 5.*reset-sync x3.*PLLE2_ADV.*Su
 check surf_fifo_async.ocdc.json       "Summary : 0 error.*CDC     : 7 crossing path\(s\).*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 0 path\(s\) at potential risk"
 check surf_gty_qpll.ocdc.json         "GTYE4_COMMON.*Summary : 0 error\(s\), 0 warning\(s\)"
 check microwatt.ocdc.json             "RTL     : 50 module bodies, 1217 registers.*0 latches.*CLKOP  \\[divider\\].*\\(40 MHz\\).*1217/1217 registers resolved.*EHXPLLL.*Summary : 0 error\\(s\\), 1 warning"
+check microwatt_arty.ocdc.json        "IR-MULTIDRIVER.*ddram_clk_p_vec.*IR-MULTIDRIVER.*ddram_clk_n_vec.*IR-MULTIDRIVER.*uart1_txd.*Summary : 3 error\\(s\\), 2 warning"
+check microwatt_arty_fixed.ocdc.json  "Clocks  : 8 \\(2445/2445 registers resolved\\).*bscan.TCK.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 173 crossing path\\(s\\), 145 synchronized"
 check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodies, 7[0-9][0-9] registers.*0 latches.*Summary : 0 error"
 exit $fail

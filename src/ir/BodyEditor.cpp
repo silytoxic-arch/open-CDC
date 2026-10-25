@@ -4,7 +4,6 @@
 #include "ir/Dump.h"
 
 #include <algorithm>
-#include <optional>
 #include <tuple>
 
 namespace opencdc::ir {
@@ -460,18 +459,26 @@ void BodyEditor::checkMultipleDrivers(DiagnosticSink& sink) {
         std::uint32_t lo;
         std::uint32_t hi;
         std::string what;
+        const Connection* conn = nullptr; ///< continuous assignment (compared bit by bit)
     };
     std::vector<std::vector<Drv>> drivers(body_.nets.size());
-    auto add = [&](const SigSpec& s, const std::string& what) {
+    auto add = [&](const SigSpec& s, const std::string& what, const Connection* conn = nullptr) {
         for (const auto& c : s.chunks())
             if (!c.isConst())
-                drivers[c.net.index()].push_back({c.offset, c.offset + c.width, what});
+                drivers[c.net.index()].push_back({c.offset, c.offset + c.width, what, conn});
+    };
+    // the same continuous assignment written twice (same target, same
+    // source) is one driver: LiteX emits such duplicates
+    auto identical = [](const Drv& a, const Drv& b) {
+        return a.conn && b.conn && a.conn->kind == ConnKind::Assign && b.conn->kind == ConnKind::Assign &&
+               a.conn->lhs == b.conn->lhs && a.conn->rhs == b.conn->rhs;
     };
     for (const auto& p : body_.ports)
         if (p.dir == PortDir::In)
             add(body_.netSig(p.net), "input port");
     for (const auto& c : body_.connections)
-        add(c.lhs, (c.kind == ConnKind::Process ? processWord_ + " at " : std::string("assignment at ")) + toString(c.origin));
+        add(c.lhs, (c.kind == ConnKind::Process ? processWord_ + " at " : std::string("assignment at ")) + toString(c.origin),
+            &c);
     for (const auto& r : body_.registers)
         add(r.q, processWord_ + " at " + toString(r.origin));
     for (const auto& l : body_.latches)
@@ -489,7 +496,7 @@ void BodyEditor::checkMultipleDrivers(DiagnosticSink& sink) {
         for (std::size_t i = 0; i + 1 < ds.size(); ++i) {
             for (std::size_t j = i + 1; j < ds.size() && ds[j].lo < ds[i].hi; ++j) {
                 // Several assignments from the same procedural block are one driver.
-                if (ds[i].what == ds[j].what)
+                if (ds[i].what == ds[j].what || identical(ds[i], ds[j]))
                     continue;
                 const auto& net = body_.nets[n];
                 const std::uint32_t bit = ds[j].lo;

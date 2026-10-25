@@ -8,6 +8,7 @@
 #include <cmath>
 #include <functional>
 #include <numeric>
+#include <unordered_set>
 
 namespace opencdc::vhdl {
 
@@ -162,35 +163,40 @@ std::optional<SVal> Elaborator::dynamicSlice(const SVal& arr, const Expr& range,
     const Type& T = *arr.type;
     if (!T.isArray() || T.indexTypes.size() != 1 || !T.indexRanges[0])
         return std::nullopt;
-    // e = base + c, with c static (base null: e itself is static)
+    // e = k * base + c with k, c static (base null: e itself is static)
     struct Linear {
         const Expr* base = nullptr;
+        std::int64_t k = 0;
         std::int64_t c = 0;
     };
-    std::function<std::optional<Linear>(const Expr&)> linear = [&](const Expr& e) -> std::optional<Linear> {
+    std::function<Linear(const Expr&)> linear = [&](const Expr& e) -> Linear {
         if (e.kind == ExprKind::Integer)
-            return Linear{nullptr, e.ival};
-        if (e.kind == ExprKind::Binary && (e.op == Op::Add || e.op == Op::Sub)) {
-            auto a = linear(*e.lhs);
-            auto b = linear(*e.rhs);
-            if (!a || !b)
-                return std::nullopt;
-            if (e.op == Op::Add && (!a->base || !b->base))
-                return Linear{a->base ? a->base : b->base, a->c + b->c};
-            if (e.op == Op::Sub && !b->base)
-                return Linear{a->base, a->c - b->c};
-            return Linear{&e, 0};
+            return Linear{nullptr, 0, e.ival};
+        if (e.kind == ExprKind::Binary && (e.op == Op::Add || e.op == Op::Sub || e.op == Op::Mul)) {
+            const Linear a = linear(*e.lhs);
+            const Linear b = linear(*e.rhs);
+            if (e.op == Op::Mul) {
+                if (!a.base)
+                    return Linear{b.base, a.c * b.k, a.c * b.c};
+                if (!b.base)
+                    return Linear{a.base, a.k * b.c, a.c * b.c};
+                return Linear{&e, 1, 0};
+            }
+            const std::int64_t sign = e.op == Op::Add ? 1 : -1;
+            if (!a.base || !b.base || sameExpr(a.base, b.base))
+                return Linear{a.base ? a.base : b.base, a.k + sign * b.k, a.c + sign * b.c};
+            return Linear{&e, 1, 0};
         }
         if (auto v = constInt(e, ctx))
-            return Linear{nullptr, *v};
-        return Linear{&e, 0};
+            return Linear{nullptr, 0, *v};
+        return Linear{&e, 1, 0};
     };
-    const auto lf = linear(*range.lhs);
-    const auto rt = linear(*range.rhs);
-    if (!lf || !rt || !lf->base || !sameExpr(lf->base, rt->base))
+    const Linear lf = linear(*range.lhs);
+    const Linear rt = linear(*range.rhs);
+    if (!lf.base || !rt.base || !sameExpr(lf.base, rt.base) || lf.k != rt.k)
         return std::nullopt;
     const bool ascending = range.dir == RangeDir::To;
-    const std::int64_t span = ascending ? rt->c - lf->c : lf->c - rt->c;
+    const std::int64_t span = ascending ? rt.c - lf.c : lf.c - rt.c;
     const IntRange& ar = *T.indexRanges[0];
     if (span < 0 || ascending != ar.ascending || static_cast<std::uint64_t>(span) >= ar.length())
         return std::nullopt;
@@ -847,8 +853,17 @@ bool Elaborator::evalArgs(Symbol& sub, const std::vector<Assoc>& args, Ctx& ctx,
 SVal Elaborator::callSubprogram(Symbol& sym, std::vector<SVal>& args, std::vector<std::vector<Target>>& outTargets,
                                 const Type* result, Ctx& ctx, Loc l) {
     if (sym.builtin != Builtin::None || (!sym.decl && sym.paramsResolved)) {
-        if (!sym.isFunction && sym.builtin == Builtin::Ignored)
+        if (!sym.isFunction && sym.builtin == Builtin::Ignored) {
+            // a file read inside a subprogram: the file's contents are not
+            // read, so the subprogram stops here and its result is unknown
+            static const std::unordered_set<std::string> reads{"readline", "read", "hread", "oread", "sread"};
+            if (ctx.inlineDepth > 0 && ctx.st && reads.contains(sym.key)) {
+                ++fileReads_;
+                ctx.st->returned = ir::SigSpec::constant(1, 1);
+                ctx.st->alive = ir::SigSpec::constant(0, 1);
+            }
             return SVal{};
+        }
         return callBuiltin(sym.builtin, sym, args, result, ctx, l);
     }
     if (!sym.body) {
@@ -918,7 +933,10 @@ SVal Elaborator::callSubprogram(Symbol& sym, std::vector<SVal>& args, std::vecto
         st.returned = ir::SigSpec::constant(0, 1);
         fctx.st = &st;
         fctx.returnType = result ? result : sym.type;
+        const auto reads = fileReads_;
         execList(sym.body->body, fctx);
+        if (fileReads_ != reads)
+            return SVal{fctx.returnType, std::nullopt, {}}; // depends on a file's contents
         if (!st.retValue.valid()) {
             error("VHDL-NO-RETURN", "function '" + sym.display + "' ended without a return statement", l);
             return SVal{result, std::nullopt, {}};
@@ -1364,8 +1382,10 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                 if (!r || !T->indexRanges[0])
                     return false;
                 const IntRange& ar = *T->indexRanges[0];
-                if (r->isNull())
+                if (r->isNull()) {
+                    setType(types.constrainedArray(T, {*r})); // nothing to assign, but the value is typed
                     return true;
+                }
                 if (!ar.contains(r->left) || !ar.contains(r->right) || r->ascending != ar.ascending) {
                     error("VHDL-SLICE", "slice target outside the range of '" + T->name + "'", e.loc);
                     return false;

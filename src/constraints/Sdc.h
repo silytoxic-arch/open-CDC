@@ -101,6 +101,9 @@ struct ClockGroups {
     std::string name;
     GroupKind kind = GroupKind::Asynchronous;
     std::vector<std::vector<std::string>> groups; ///< clock name patterns, resolved after clock analysis
+    /// per group (parallel to `groups`, may be shorter): the clocks on these
+    /// nets, pins or ports belong to the group (get_clocks -of_objects)
+    std::vector<std::vector<graph::BitRef>> memberBits;
     SourceLocation loc;
 };
 

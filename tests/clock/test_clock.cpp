@@ -348,3 +348,35 @@ TEST_CASE("Constraint checks: clock group mistakes", "[clock][constraints][check
     CHECK(ok.countCode("CON-GROUP-OVERLAP") == 0);
     CHECK(ok.countCode("CON-GROUP-RELATED") == 0);
 }
+
+TEST_CASE("set_clock_groups with get_clocks -of_objects", "[clock][constraints]") {
+    // microwatt arty_a7.xdc: -group [get_clocks -include_generated_clocks -of [get_nets system_clk]]
+    const char* design = "module top(input clk_a, input clk_b, input d, output reg q1, output reg q2, output reg q3);\n"
+                         "  reg div = 1'b0;\n"
+                         "  wire system_clk = div;\n"
+                         "  always @(posedge clk_a) div <= ~div;\n"
+                         "  always @(posedge system_clk) q1 <= d;\n"
+                         "  always @(posedge clk_b) q2 <= q1;\n"
+                         "  always @(posedge clk_a) q3 <= q2;\n"
+                         "endmodule\n";
+    const char* clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                         "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    auto r = analyze(design, std::string(clocks) +
+                                 "set_clock_groups -group [get_clocks -include_generated_clocks -of [get_nets system_clk]] "
+                                 "-group [get_clocks -of_objects [get_ports clk_b]] -asynchronous\n");
+    CHECK(r.countCode("CON-UNKNOWN-OPTION") == 0);
+    CHECK(r.countCode("CON-UNSUPPORTED-OPTION") == 0);
+    CHECK(r.countCode("CON-UNMATCHED") == 0);
+    CHECK(r.rel("top.div", "clk_b") == ClockRelation::Asynchronous);
+    // only the divider's family is named: clk_a itself stays unrelated to clk_b
+    CHECK(r.rel("clk_a", "clk_b") == ClockRelation::Unknown);
+
+    // negative: a net that carries no clock matches nothing
+    auto n = analyze(design, std::string(clocks) +
+                                 "set_clock_groups -asynchronous -group [get_clocks -of_objects [get_nets d]] -group clk_b\n");
+    CHECK(n.countCode("CON-UNMATCHED") == 1);
+    CHECK(n.rel("top.div", "clk_b") == ClockRelation::Unknown);
+    // -of_objects of other queries is still not supported
+    auto p = analyze(design, std::string(clocks) + "set_input_delay -clock clk_a 1 [get_ports -of_objects [get_nets d]]\n");
+    CHECK(p.countCode("CON-UNSUPPORTED-OPTION") == 1);
+}

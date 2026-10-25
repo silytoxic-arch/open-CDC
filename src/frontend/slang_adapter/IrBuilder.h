@@ -90,6 +90,8 @@ struct LTarget {
     std::uint32_t regionWidth = 0;
     std::int32_t left = 0;
     std::int32_t right = 0;
+    bool sub = false;               ///< dynamic: only [subOffset, +width) of the element is written
+    std::uint32_t subOffset = 0;
 };
 
 inline LTarget wholeTarget(const sast::ValueSymbol* sym, std::uint32_t width) {

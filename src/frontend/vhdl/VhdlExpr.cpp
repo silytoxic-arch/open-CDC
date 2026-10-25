@@ -639,6 +639,20 @@ bool Elaborator::resolveOverload(std::vector<Candidate>& cands, const std::vecto
         if (univ.size() == 1)
             ok = std::move(univ);
     }
+    if (ok.size() > 1 && !expected) {
+        // no context type (a case selector such as "a & b"): of several
+        // concatenations, the predefined vector of the element type
+        // (std_ulogic_vector, bit_vector, string) is the one tools use
+        std::vector<Candidate> std;
+        for (const auto& c : ok)
+            if (c.result && (&c.result->baseType() == &std_.stdUlogicVector->baseType() ||
+                             &c.result->baseType() == &std_.bitVector->baseType() ||
+                             &c.result->baseType() == &std_.string->baseType()))
+                std.push_back(c);
+        const bool concat = what.find("\"&\"") != std::string::npos;
+        if (concat && std.size() == 1)
+            ok = std::move(std);
+    }
     if (ok.size() > 1) {
         // otherwise ambiguous
         if (!quiet && !reported_.contains("ovl:" + what + std::to_string(l.file) + ":" + std::to_string(l.line))) {

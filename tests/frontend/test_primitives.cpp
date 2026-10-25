@@ -998,3 +998,32 @@ TEST_CASE("Primitives negative: a local component that is no vendor primitive st
     CHECK(run->count("IR-UNRESOLVED-INSTANCE") == 1);
     CHECK(run->count("FE-PRIMITIVES") == 0);
 }
+
+TEST_CASE("Primitives: DSP48 slices, BSCANE2 JTAG clock, differential I/O buffers", "[primitives][dsp]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input [24:0] a, input [17:0] b, output [47:0] p, output [47:0] p2,\n"
+        "           output reg [47:0] q, output reg sel_q, inout dq_p, inout dq_n, output dq_o);\n"
+        "  reg [24:0] ar; always @(posedge clk_a) ar <= a;\n"
+        "  DSP48E1 #(.AREG(0), .BREG(0), .MREG(0), .PREG(1)) m (.CLK(clk_b), .A({5'd0, ar}), .B(b), .C(48'd0),\n"
+        "    .CEP(1'b1), .RSTP(1'b0), .OPMODE(7'b0000101), .ALUMODE(4'd0), .P(p));\n"
+        "  DSP48E2 #(.AREG(0), .BREG(0), .CREG(0), .DREG(0), .ADREG(0), .MREG(0), .PREG(0)) c (.CLK(clk_b),\n"
+        "    .A({5'd0, ar}), .B(b), .P(p2));\n"
+        "  always @(posedge clk_b) q <= p2;\n"
+        "  wire tck, sel;\n"
+        "  BSCANE2 #(.JTAG_CHAIN(2)) bs (.TCK(tck), .SEL(sel), .TDO(1'b0));\n"
+        "  always @(posedge clk_a) sel_q <= sel;\n"
+        "  IOBUFDS io (.I(ar[0]), .T(1'b0), .IO(dq_p), .IOB(dq_n), .O(dq_o));\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(crosses(*run, "top.ar", "top.m.")); // PREG: registered on CLK = clk_b
+    CHECK(run->path("top.ar", "top.q") != nullptr); // all registers off: combinational to q
+    bool tck = false;
+    for (const auto& c : run->r->clocks->clocks)
+        tck = tck || (c.name == "top.bs.TCK" && c.kind == clock::ClockKind::BlackBox);
+    CHECK(tck);
+    CHECK(crosses(*run, "top.bs.", "top.sel_q")); // TAP state in the TCK domain
+}

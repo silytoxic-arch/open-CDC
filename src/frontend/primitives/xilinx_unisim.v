@@ -224,6 +224,17 @@ module IOBUF #(parameter DRIVE = 12, parameter IOSTANDARD = "DEFAULT", parameter
     assign O = IO;
 endmodule
 
+module IOBUFDS #(parameter DIFF_TERM = "FALSE", parameter IBUF_LOW_PWR = "TRUE", parameter IOSTANDARD = "DEFAULT",
+                 parameter SLEW = "SLOW")
+                (output O, inout IO, inout IOB, input I, input T);
+    assign O = IO;
+endmodule
+
+module OBUFTDS #(parameter IOSTANDARD = "DEFAULT", parameter SLEW = "SLOW") (output O, output OB, input I, input T);
+    assign O = I;
+    assign OB = ~I;
+endmodule
+
 // --------------------------------------------------------- shift-register LUTs
 module SRL16E #(parameter [15:0] INIT = 16'h0000, parameter [0:0] IS_CLK_INVERTED = 1'b0)
                (output Q, input A0, input A1, input A2, input A3, input CE, input CLK, input D);
@@ -617,6 +628,119 @@ module OSERDESE3 #(parameter integer DATA_WIDTH = 8, parameter [0:0] INIT = 1'b0
     always @(posedge CLK) sh <= {1'b0, sh[7:1]} | word;
     assign OQ = sh[0];
     assign T_OUT = T;
+endmodule
+
+// ---------------------------------------------------------------- DSP slices
+// The output P (and the cascade outputs) depend on every data and control
+// input. With any pipeline register enabled the outputs are registered on
+// CLK (CEP enables, RSTP resets); with all registers off they are
+// combinational. The individual pipeline stages are not modelled.
+module DSP48E1 #(parameter integer ACASCREG = 1, parameter integer ADREG = 1, parameter integer ALUMODEREG = 1,
+                 parameter integer AREG = 1, parameter integer BCASCREG = 1, parameter integer BREG = 1,
+                 parameter integer CARRYINREG = 1, parameter integer CARRYINSELREG = 1, parameter integer CREG = 1,
+                 parameter integer DREG = 1, parameter integer INMODEREG = 1, parameter integer MREG = 1,
+                 parameter integer OPMODEREG = 1, parameter integer PREG = 1, parameter A_INPUT = "DIRECT",
+                 parameter B_INPUT = "DIRECT", parameter USE_DPORT = "FALSE", parameter USE_MULT = "MULTIPLY",
+                 parameter USE_SIMD = "ONE48")
+                (output [29:0] ACOUT, output [17:0] BCOUT, output CARRYCASCOUT, output [3:0] CARRYOUT,
+                 output MULTSIGNOUT, output OVERFLOW, output [47:0] P, output PATTERNBDETECT, output PATTERNDETECT,
+                 output [47:0] PCOUT, output UNDERFLOW,
+                 input [29:0] A, input [29:0] ACIN, input [3:0] ALUMODE, input [17:0] B, input [17:0] BCIN,
+                 input [47:0] C, input CARRYCASCIN, input CARRYIN, input [2:0] CARRYINSEL, input CEA1, input CEA2,
+                 input CEAD, input CEALUMODE, input CEB1, input CEB2, input CEC, input CECARRYIN, input CECTRL,
+                 input CED, input CEINMODE, input CEM, input CEP, input CLK, input [24:0] D, input [4:0] INMODE,
+                 input MULTSIGNIN, input [6:0] OPMODE, input [47:0] PCIN, input RSTA, input RSTALLCARRYIN,
+                 input RSTALUMODE, input RSTB, input RSTC, input RSTCTRL, input RSTD, input RSTINMODE, input RSTM,
+                 input RSTP);
+    wire [47:0] f = (A[24:0] ^ ACIN[24:0] ^ D) * (B ^ BCIN) + C + PCIN +
+                    {OPMODE, ALUMODE, INMODE, CARRYINSEL, CARRYIN, CARRYCASCIN, MULTSIGNIN};
+    wire [47:0] p;
+    generate
+        if (PREG != 0 || MREG != 0 || AREG != 0 || BREG != 0 || CREG != 0 || DREG != 0 || ADREG != 0) begin : g_reg
+            reg [47:0] r = 48'd0;
+            always @(posedge CLK) if (RSTP) r <= 48'd0; else if (CEP) r <= f;
+            assign p = r;
+        end else begin : g_comb
+            assign p = f;
+        end
+    endgenerate
+    assign P = p;
+    assign PCOUT = p;
+    assign ACOUT = A;
+    assign BCOUT = B;
+    assign CARRYOUT = p[47:44];
+    assign CARRYCASCOUT = p[47];
+    assign MULTSIGNOUT = p[47];
+    assign OVERFLOW = p[46];
+    assign UNDERFLOW = p[45];
+    assign PATTERNDETECT = &p;
+    assign PATTERNBDETECT = ~|p;
+endmodule
+
+module DSP48E2 #(parameter integer ACASCREG = 1, parameter integer ADREG = 1, parameter integer ALUMODEREG = 1,
+                 parameter integer AREG = 1, parameter integer BCASCREG = 1, parameter integer BREG = 1,
+                 parameter integer CARRYINREG = 1, parameter integer CARRYINSELREG = 1, parameter integer CREG = 1,
+                 parameter integer DREG = 1, parameter integer INMODEREG = 1, parameter integer MREG = 1,
+                 parameter integer OPMODEREG = 1, parameter integer PREG = 1, parameter A_INPUT = "DIRECT",
+                 parameter B_INPUT = "DIRECT", parameter AMULTSEL = "A", parameter BMULTSEL = "B",
+                 parameter PREADDINSEL = "A", parameter USE_MULT = "MULTIPLY", parameter USE_SIMD = "ONE48")
+                (output [29:0] ACOUT, output [17:0] BCOUT, output CARRYCASCOUT, output [3:0] CARRYOUT,
+                 output MULTSIGNOUT, output OVERFLOW, output [47:0] P, output PATTERNBDETECT, output PATTERNDETECT,
+                 output [47:0] PCOUT, output UNDERFLOW, output [7:0] XOROUT,
+                 input [29:0] A, input [29:0] ACIN, input [3:0] ALUMODE, input [17:0] B, input [17:0] BCIN,
+                 input [47:0] C, input CARRYCASCIN, input CARRYIN, input [2:0] CARRYINSEL, input CEA1, input CEA2,
+                 input CEAD, input CEALUMODE, input CEB1, input CEB2, input CEC, input CECARRYIN, input CECTRL,
+                 input CED, input CEINMODE, input CEM, input CEP, input CLK, input [26:0] D, input [4:0] INMODE,
+                 input MULTSIGNIN, input [8:0] OPMODE, input [47:0] PCIN, input RSTA, input RSTALLCARRYIN,
+                 input RSTALUMODE, input RSTB, input RSTC, input RSTCTRL, input RSTD, input RSTINMODE, input RSTM,
+                 input RSTP);
+    wire [47:0] f = (A[26:0] ^ ACIN[26:0] ^ D) * (B ^ BCIN) + C + PCIN +
+                    {OPMODE, ALUMODE, INMODE, CARRYINSEL, CARRYIN, CARRYCASCIN, MULTSIGNIN};
+    wire [47:0] p;
+    generate
+        if (PREG != 0 || MREG != 0 || AREG != 0 || BREG != 0 || CREG != 0 || DREG != 0 || ADREG != 0) begin : g_reg
+            reg [47:0] r = 48'd0;
+            always @(posedge CLK) if (RSTP) r <= 48'd0; else if (CEP) r <= f;
+            assign p = r;
+        end else begin : g_comb
+            assign p = f;
+        end
+    endgenerate
+    assign P = p;
+    assign PCOUT = p;
+    assign ACOUT = A;
+    assign BCOUT = B;
+    assign CARRYOUT = p[47:44];
+    assign CARRYCASCOUT = p[47];
+    assign MULTSIGNOUT = p[47];
+    assign OVERFLOW = p[46];
+    assign UNDERFLOW = p[45];
+    assign PATTERNDETECT = &p;
+    assign PATTERNBDETECT = ~|p;
+    assign XOROUT = p[7:0];
+endmodule
+
+// ---------------------------------------------------------------- JTAG
+// The JTAG clock TCK is a clock source of its own (CDC-010 until it is
+// constrained); DRCK is TCK gated. The TAP state outputs change in the TCK
+// domain.
+module BSCANE2 #(parameter DISABLE_JTAG = "FALSE", parameter integer JTAG_CHAIN = 1)
+               (output CAPTURE, output DRCK, output RESET, output RUNTEST, output SEL, output SHIFT, output TCK,
+                output TDI, output TMS, output UPDATE, input TDO);
+    (* OPENCDC_CLOCK_PIN = "TCK" *) wire tck_src;
+    opencdc_async_source u_tck (tck_src);
+    assign TCK = tck_src;
+    assign DRCK = tck_src;
+    reg [7:0] tap = 8'd0;
+    always @(posedge tck_src) tap <= tap + 8'd1;
+    assign CAPTURE = tap[0];
+    assign RESET = tap[1];
+    assign RUNTEST = tap[2];
+    assign SEL = tap[3];
+    assign SHIFT = tap[4];
+    assign TDI = tap[5];
+    assign TMS = tap[6];
+    assign UPDATE = tap[7];
 endmodule
 
 // ---------------------------------------------------------------- UltraRAM

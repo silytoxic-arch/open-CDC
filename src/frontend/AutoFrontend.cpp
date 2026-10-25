@@ -279,6 +279,7 @@ public:
 
         std::vector<Diagnostic> lastDiags;
         std::shared_ptr<ir::Design> finalDesign;
+        std::shared_ptr<const ir::Design> lastDesign; ///< last converged round, also with errors
         bool converged = false;
         for (int round = 0; round < kMaxRounds && !converged; ++round) {
             writeWrapper(wrapperPath);
@@ -434,6 +435,7 @@ public:
                     std::ranges::any_of(lastDiags, [](const Diagnostic& d) { return d.isError(); });
                 if (!errors)
                     finalDesign = compact(*design, tops);
+                lastDesign = design; // for diagnostics even when the design has errors
             }
         }
         if (!converged && finalDesign == nullptr && !lastDiags.empty() &&
@@ -444,8 +446,8 @@ public:
                                  {}, {}});
         // Unconnected pins of vendor primitives are normal (an MMCM has 20).
         std::set<std::tuple<std::string, std::uint32_t, std::uint32_t>> primitiveSites;
-        if (finalDesign)
-            for (const auto& b : finalDesign->bodies)
+        if (const ir::Design* sites = finalDesign ? finalDesign.get() : lastDesign.get())
+            for (const auto& b : sites->bodies)
                 for (const auto& c : b.children)
                     if (models_.contains(c.definition) || primitiveModules_.contains(lower(c.definition)))
                         primitiveSites.emplace(c.loc.file, c.loc.line, c.loc.column);

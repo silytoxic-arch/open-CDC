@@ -720,6 +720,20 @@ private:
                     opt = "-hierarchical";
                 auto it = spec.find(opt);
                 if (it == spec.end()) {
+                    // Tcl commands accept any unique prefix of an option (-of for -of_objects)
+                    auto match = spec.end();
+                    int count = 0;
+                    for (auto k = spec.begin(); k != spec.end(); ++k)
+                        if (k->first.starts_with(opt)) {
+                            match = k;
+                            ++count;
+                        }
+                    if (count == 1) {
+                        it = match;
+                        opt = match->first;
+                    }
+                }
+                if (it == spec.end()) {
                     // Most options take a value: skip it too unless it is another option.
                     const bool nextIsValue = i + 1 < cmd.words.size() &&
                                              !(cmd.words[i + 1].kind == Word::Kind::Bare &&
@@ -794,9 +808,19 @@ private:
         if (a.opts.contains("-filter"))
             diag("CON-UNSUPPORTED-OPTION", Severity::Warning, name + ": -filter is not supported and was ignored", cmd.line);
         if (a.opts.contains("-of_objects")) {
-            diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
-                 name + ": -of_objects is not supported; the command returns nothing", cmd.line);
-            return objectsValue({});
+            if (!clocks) {
+                diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
+                     name + ": -of_objects is not supported; the command returns nothing", cmd.line);
+                return objectsValue({});
+            }
+            // get_clocks -of_objects <nets/pins/ports>: the clocks on these
+            // objects, known only after clock analysis (kept as their bits)
+            std::vector<Object> result;
+            for (const auto& ov : a.opts["-of_objects"])
+                for (auto& o : objectsOf(ov, cmd, "get_clocks -of_objects"))
+                    if (!o.bits.empty())
+                        result.push_back({ObjectKind::Clock, "-of_objects " + o.name, std::move(o.bits)});
+            return objectsValue(std::move(result));
         }
         std::vector<Object> result;
         for (const auto& pv : a.positional) {
@@ -991,12 +1015,23 @@ private:
                                                             : GroupKind::PhysicallyExclusive;
         for (const auto& gv : a.opts["-group"]) {
             std::vector<std::string> names;
-            if (gv.hasObjects)
-                for (const auto& o : gv.objects)
-                    names.push_back(o.name);
-            else
+            std::vector<BitRef> bits;
+            if (gv.hasObjects) {
+                for (const auto& o : gv.objects) {
+                    if (o.kind == ObjectKind::Clock && !o.bits.empty())
+                        bits.insert(bits.end(), o.bits.begin(), o.bits.end()); // get_clocks -of_objects
+                    else
+                        names.push_back(o.name);
+                }
+            }
+            else {
                 names = splitList(gv.text);
+            }
             g.groups.push_back(std::move(names));
+            if (!bits.empty()) {
+                g.memberBits.resize(g.groups.size());
+                g.memberBits.back() = std::move(bits);
+            }
         }
         if (g.groups.empty()) {
             diag("CON-PARSE", Severity::Error, "set_clock_groups without -group", cmd.line);

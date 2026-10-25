@@ -1364,13 +1364,48 @@ bool BodyBuilder::lvalueInto(const sast::Expression& e, std::vector<LTarget>& ou
             const auto& valueExpr = e.kind == EK::ElementSelect ? e.as<sast::ElementSelectExpression>().value()
                                                                 : e.as<sast::RangeSelectExpression>().value();
             std::vector<LTarget> inner;
-            if (!lvalueInto(valueExpr, inner) || inner.size() != 1 || inner[0].dynamic)
+            if (!lvalueInto(valueExpr, inner) || inner.size() != 1)
                 return false;
             auto info = selectInfo(*valueExpr.type);
             if (!info)
                 return false;
             LTarget t = inner[0];
             const std::uint32_t w = exprWidth(e);
+            if (t.dynamic) {
+                // mem[i][7:0], mem[i][k*8 +: 8]: a static part of a dynamically indexed element
+                if (t.sub || t.width != t.unitWidth)
+                    return false;
+                std::optional<std::int64_t> i1, i2;
+                if (e.kind == EK::ElementSelect) {
+                    const auto& sel = e.as<sast::ElementSelectExpression>().selector();
+                    i1 = i2 = constIndex(lower(sel), sel.type->isSigned());
+                }
+                else {
+                    const auto& rs = e.as<sast::RangeSelectExpression>();
+                    i1 = constIndex(lower(rs.left()), rs.left().type->isSigned());
+                    const auto r = constIndex(lower(rs.right()), rs.right().type->isSigned());
+                    if (i1 && r) {
+                        if (rs.getSelectionKind() == sast::RangeSelectionKind::Simple)
+                            i2 = r;
+                        else if (*r > 0)
+                            i2 = rs.getSelectionKind() == sast::RangeSelectionKind::IndexedUp ? *i1 + *r - 1
+                                                                                              : *i1 - *r + 1;
+                    }
+                }
+                if (!i1 || !i2)
+                    return false;
+                const auto o1 = elementOffset(*i1, info->left, info->right);
+                const auto o2 = elementOffset(*i2, info->left, info->right);
+                if (!o1 || !o2)
+                    return false;
+                t.sub = true;
+                t.subOffset = std::min(*o1, *o2) * info->elemWidth;
+                t.width = w;
+                if (t.subOffset + t.width > t.unitWidth)
+                    return false;
+                out.push_back(t);
+                return true;
+            }
 
             auto setStatic = [&](std::int64_t i1, std::int64_t i2) -> bool {
                 auto o1 = elementOffset(i1, info->left, info->right);

@@ -162,9 +162,23 @@ void BodyBuilder::assignTargets(const std::vector<LTarget>& targets, const SigSp
         }
         else {
             const SigSpec region = base.extract(t.offset, t.regionWidth);
+            SigSpec elem = part;
+            if (t.sub) {
+                // read-modify-write of the element: only part of it is assigned
+                Cell rd;
+                rd.kind = CellKind::DynSelect;
+                rd.inputs = {region, t.index};
+                rd.width = t.unitWidth;
+                rd.isSigned = t.indexSigned;
+                rd.elemWidth = t.unitWidth;
+                rd.rangeLeft = t.left;
+                rd.rangeRight = t.right;
+                rd.origin = loc(l);
+                elem = emit(std::move(rd)).replaced(t.subOffset, part);
+            }
             Cell c;
             c.kind = CellKind::DynInsert;
-            c.inputs = {region, t.index, part};
+            c.inputs = {region, t.index, elem};
             c.width = t.regionWidth;
             c.isSigned = t.indexSigned;
             c.elemWidth = t.unitWidth;

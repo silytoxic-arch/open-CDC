@@ -582,6 +582,9 @@ public:
     int errors_ = 0;
     int depth_ = 0;
     std::unordered_set<std::string> reported_;
+    /// textio reads executed so far: a function that reads a file has a
+    /// result that is not known at elaboration time
+    std::uint64_t fileReads_ = 0;
 };
 
 } // namespace opencdc::vhdl

@@ -755,3 +755,32 @@ TEST_CASE("Async FIFO example IR matches the reviewed golden dump", "[extract][g
                           "rtl/afifo.v"},
                          {}, "afifo") == goldenText("afifo.ir"));
 }
+
+TEST_CASE("Identical duplicate assignments are one driver", "[extract][multidriver]") {
+    // LiteX emits the same continuous assignment several times
+    auto e = extract("module m(input [3:0] a, output [1:0] x, output [1:0] y);\n"
+                     "  assign {x, y} = a;\n"
+                     "  assign {x, y} = a;\n"
+                     "endmodule\n");
+    CHECK(e.countCode("IR-MULTIDRIVER") == 0);
+    auto n = extract("module m(input [3:0] a, input [3:0] b, output [1:0] x, output [1:0] y);\n"
+                     "  assign {x, y} = a;\n"
+                     "  assign {x, y} = b;\n"
+                     "endmodule\n");
+    CHECK(n.countCode("IR-MULTIDRIVER") >= 1);
+}
+
+TEST_CASE("Static part of a dynamically indexed memory element as target", "[extract][memory]") {
+    // LiteX byte-enable write: mem[adr][i*8 +: 8] <= dat[i*8 +: 8]
+    auto e = extract("module m(input clk, input [3:0] we, input [1:0] adr, input [31:0] dat, output [31:0] q);\n"
+                     "  reg [31:0] mem [0:3];\n"
+                     "  always @(posedge clk) begin : wr\n"
+                     "    integer i;\n"
+                     "    for (i = 0; i < 4; i = i + 1) if (we[i]) mem[adr][i*8 +: 8] <= dat[i*8 +: 8];\n"
+                     "  end\n"
+                     "  assign q = mem[adr];\n"
+                     "endmodule\n");
+    CHECK(e.countCode("IR-UNSUPPORTED-LVALUE") == 0);
+    CHECK(e.contains("dyn_insert"));
+    CHECK(e.contains("dyn_select"));
+}
