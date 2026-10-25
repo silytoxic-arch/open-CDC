@@ -893,3 +893,27 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 
   CLI 显示为 `period=5ns (200 MHz) = clk_in x 0.5`；HTML 报告和 GUI 显示 `= clk_in × 0.5`；JSON 增加 `periodRatio`、`periodBasis` 两个字段。
 - **原语文档**：`docs/primitives.md` 列出每个模型描述了什么、忽略了什么。单元测试检查库中每个模型都出现在文档中。
+
+## 20. 约束建议与更多 PLL（阶段 13）
+
+### 20.1 约束建议（`engine/SdcSuggest`）
+
+| 时钟 | 建议 |
+|---|---|
+| 已约束（create_clock / create_generated_clock） | 注释列出 |
+| 未约束的输入端口（Primary） | `create_clock -period 10.000 [get_ports {p}]`，TODO：真实周期 |
+| 黑盒时钟：厂商模型引脚（GT `RXOUTCLK`） | `create_clock … [get_pins {inst/RXOUTCLK}]`，TODO |
+| 黑盒时钟：用户黑盒 | `create_clock … [get_nets {…}]`，TODO |
+| 厂商模型派生（MMCM/PLL/BUFR） | 注释："由厂商工具自动推导"，并给出周期和推导式 |
+| 逻辑分频寄存器 | `create_generated_clock -source [get_pins {r_reg/C}] -divide_by N [get_pins {r_reg/Q}]`：单个翻转寄存器 N=2；多位寄存器的第 k 位按二进制计数器 N=2^(k+1)，VERIFY |
+
+时钟组：每个时钟沿主时钟链找到根；关系为"未知"的时钟对，把它们的根用并查集合并成连通分量。每个分量生成一条 `set_clock_groups -asynchronous`，每个根一个 `-group [get_clocks -include_generated_clocks {…}]`，并标 VERIFY（来源独立并不等于设计按异步处理）。输出的文本 OpenCDC 和 Vivado 都能读取；测试把建议读回去，检查所有未知关系都已消除。
+
+输出位置：CLI `--suggest-sdc`、GUI"导出建议约束"、HTML 报告的"未知时钟关系与建议约束"一节。
+
+### 20.2 PLL 模型
+
+- 新增 `OPENCDC_CLOCK_FREQ_IN`、`OPENCDC_CLOCK_FREQ_OUT` 两个属性，值为频率字符串（`"125.000000 MHz"`；没有单位时按 MHz）。时钟分析由它们计算比例 fin/fout 和输入周期，用于 `altera_pll` 和 Gowin（`FCLKIN`）。
+- `altpll`：比例 `clkN_divide_by / clkN_multiply_by`，输入周期为 `inclk0_input_frequency`（ps）/ 1000。
+- Lattice ECP5 `EHXPLLL`：反馈取自 CLKOP，CLKOP 的周期比例为 `CLKI_DIV / CLKFB_DIV`，CLKOSx 的比例在此基础上乘 `CLKOSx_DIV / CLKOP_DIV`。iCE40：比例 (DIVR+1)·2^DIVQ / (DIVF+1)。Gowin `rPLL`：(IDIV_SEL+1)/(FBDIV_SEL+1)，`CLKOUTD` 再乘 `DYN_SDIV_SEL`。
+- Gowin 的通用单元名（`DFF`、`CLKDIV` 等）不建模：它们和常见的用户模块重名，缺失的用户模块必须仍然报错。

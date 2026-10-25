@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 12, GT transceiver models, documented primitive library, clock period derivation**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 13, suggested constraints, Intel/Lattice/Gowin PLL models**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–12)
+## What works today (stages 1–13)
 
 | Feature | Status |
 |---|---|
@@ -15,7 +15,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | SystemVerilog interfaces: interface instances (with their own logic), modport/generic interface ports, interface arrays, ports passed down the hierarchy; verified on PULP `axi_cdc_intf` | ✅ |
 | VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM and surf | ✅ |
 | Mixed Verilog/VHDL designs in both directions, with parameters/generics and ports converted across the border; VHDL records ↔ SystemVerilog packed structs, and VHDL element associations (`p.f`, `p(i)`, `p(h downto l)`) on Verilog ports | ✅ |
-| Built-in models of vendor primitives, used when the design instantiates them without a definition: Xilinx UNISIM flip-flops/latches/buffers/SRLs/LUTs/block RAM/DDR/I-O delays, XPM CDC macros, `xpm_fifo_async` and XPM memories, MMCM/PLL clock generators (outputs become clocks derived from the input clock, with periods from the multiply/divide parameters), GT transceivers (recovered/transmit clocks as clock sources of their own), Intel `altera_std_synchronizer`/`dcfifo`/`altsyncram`/`altddio`; also from VHDL via `unisim.vcomponents`, `xpm.vcomponents`, `altera_mf.altera_mf_components` | ✅ |
+| Built-in models of vendor primitives, used when the design instantiates them without a definition: Xilinx UNISIM flip-flops/latches/buffers/SRLs/LUTs/block RAM/DDR/I-O delays, XPM CDC macros, `xpm_fifo_async` and XPM memories, MMCM/PLL clock generators (outputs become clocks derived from the input clock, with periods from the multiply/divide parameters), GT transceivers (recovered/transmit clocks as clock sources of their own), Intel `altera_std_synchronizer`/`dcfifo`/`altsyncram`/`altddio`/`altpll`/`altera_pll`, Lattice ECP5/iCE40 and Gowin PLLs; also from VHDL via `unisim.vcomponents`, `xpm.vcomponents`, `altera_mf.altera_mf_components` | ✅ |
 | Module list and elaborated instance hierarchy | ✅ |
 | Frontend diagnostics with file/line, including unsupported or erroneous code | ✅ |
 | CLI `opencdc analyze`, with a JSON result | ✅ |
@@ -23,6 +23,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | RTL extraction into a word-level Design IR: registers with clock, async resets, sync reset and enable; latches; combinational cells; memories; instance tree | ✅ |
 | `opencdc analyze --dump-ir`, and a JSON register list | ✅ |
 | SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins) | ✅ |
+| Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
 | Clock domain analysis: register clock tracing through hierarchy, inverters, gating, clock muxes, dividers; clock relation matrix (same / synchronous / asynchronous / exclusive / **unknown**, with a reason for each pair) | ✅ |
 | GUI Clock Domain Viewer (frequency, derived clocks under their master, period derivation such as `clk_in × 0.5`), JSON `clockAnalysis` section | ✅ |
 | Sequential dependency graph: register inputs traced back through logic and hierarchy | ✅ |
@@ -109,6 +110,7 @@ opencdc analyze examples/cdc_advanced/cdc_advanced.ocdc.json -q --schematic-dir 
 opencdc analyze examples/cdc_advanced/cdc_advanced_waived.ocdc.json    # same design with two waivers
 opencdc analyze examples/cdc_advanced/cdc_advanced.ocdc.json -q --html report.html --csv report/
 opencdc analyze examples/primitives/primitives.ocdc.json      # MMCM (derived clocks with periods), XPM, block RAM
+opencdc analyze my.ocdc.json -q --suggest-sdc suggested.sdc    # constraints for missing clocks and unknown relations
 python3 tools/bench/gen_bench.py soc --domains 8 --blocks 1250 --out bench/soc_100k   # benchmark design
 opencdc-gui examples/smoke/smoke.ocdc.json
 ```
@@ -183,6 +185,7 @@ Designs that instantiate FPGA vendor primitives directly need no simulation libr
 | Xilinx clocking | `MMCME2/3/4_BASE/ADV`, `PLLE2/3/4_BASE/ADV`: every `CLKOUT*` becomes a clock derived from `CLKIN1`, so its domains are synchronous to each other and follow the input clock's constraints. Each output's period is the input period × `DIVCLK_DIVIDE` × `CLKOUTn_DIVIDE[_F]` / `CLKFBOUT_MULT[_F]` (the input period comes from the input clock's constraint, or from `CLKIN1_PERIOD`), so CDC-007 can check pulses; the clock is named after the pin (`top.mmcm.CLKOUT0`). `LOCKED` has no clock domain (a reset released by it must be synchronized, CDC-006) |
 | Xilinx XPM | `xpm_cdc_single`, `_array_single`, `_gray`, `_handshake`, `_pulse`, `_async_rst`, `_sync_rst`, `xpm_fifo_async` — recognized as the matching synchronizer structures; `xpm_memory_sdpram`, `_tdpram`, `_spram`, `_dpdistram` (`CLOCKING_MODE = "independent_clock"` crosses clocks, `"common_clock"` does not) |
 | Xilinx GT | `GTXE2/GTHE2/GTPE2/GTHE3/GTHE4/GTYE3/GTYE4_CHANNEL` and `_COMMON`, `IBUFDS_GTE3/4`: `RXOUTCLK`/`TXOUTCLK` are clock sources of their own (constrain them like in Vivado: `create_clock -period 3.2 [get_pins u_gt/RXOUTCLK]`), `TXDATA` is captured on `TXUSRCLK2`, `RXDATA` comes out on `RXUSRCLK2`, reset-done/lock outputs have no clock domain |
+| Intel / Lattice / Gowin PLLs | `altpll` (multiply/divide), `altera_pll` (frequency strings), Lattice `EHXPLLL` (ECP5), `SB_PLL40_CORE/PAD` (iCE40), Gowin `rPLL`/`PLLVR`: outputs are derived clocks with computed periods, lock outputs have no clock domain (Verilog only) |
 | Intel | `altera_std_synchronizer`, `altera_std_synchronizer_bundle`, `altera_reset_synchronizer`, `dcfifo`, `altsyncram` / `altera_syncram` (port B on `clock1` when its address or output register says so), `altddio_in`, `altddio_out` |
 
 VHDL code reaches them through `library unisim; use unisim.vcomponents.all;`, `library xpm; use xpm.vcomponents.all;` or `library altera_mf; use altera_mf.altera_mf_components.all;`. `ASYNC_REG` on an instance (Verilog attribute or VHDL `attribute ASYNC_REG of s1 : label is "TRUE"`) marks a synchronizer stage. Parameters the models do not use are ignored, and connections to pins they do not model (cascade, ECC, ...) are listed as `FE-PRIMITIVE-PORT` information. Other unknown modules remain errors (`FE-UNKNOWN-MODULE`).
