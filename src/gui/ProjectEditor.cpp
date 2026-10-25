@@ -93,6 +93,7 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
       parameters_(makeTable({tr("Parameter / generic"), tr("Value (HDL syntax)")}, this)),
       constraints_(nullptr),
       waivers_(nullptr),
+      vivadoReports_(nullptr),
       unknownClock_(new QComboBox(this)),
       minStages_(new QSpinBox(this)),
       reconvDepth_(new QSpinBox(this)) {
@@ -175,12 +176,23 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
                                                  tr("Waivers (*.json);;All files (*)")));
     });
     connect(rmWv, &QPushButton::clicked, this, [this] { delete waivers_->currentItem(); });
+    vivadoReports_ = makePathList(config.vivadoClockReports);
+    auto* addViv = button(tr("Add..."), this);
+    auto* rmViv = button(tr("Remove"), this);
+    connect(addViv, &QPushButton::clicked, this, [this] {
+        addVivadoReports(QFileDialog::getOpenFileNames(this, tr("Add Vivado clock reports"), baseDir_,
+                                                       tr("Reports (*.rpt *.txt);;All files (*)")));
+    });
+    connect(rmViv, &QPushButton::clicked, this, [this] { delete vivadoReports_->currentItem(); });
     auto* conPage = new QWidget(tabs);
     auto* conLayout = new QVBoxLayout(conPage);
     conLayout->addWidget(new QLabel(tr("SDC / XDC constraints:"), conPage));
     conLayout->addWidget(withButtons(constraints_, {addCon, rmCon}, conPage), 2);
     conLayout->addWidget(new QLabel(tr("Waiver files:"), conPage));
     conLayout->addWidget(withButtons(waivers_, {addWv, rmWv}, conPage), 1);
+    conLayout->addWidget(new QLabel(tr("Vivado clock reports (report_clocks output, periods are cross-checked):"),
+                                    conPage));
+    conLayout->addWidget(withButtons(vivadoReports_, {addViv, rmViv}, conPage), 1);
     tabs->addTab(conPage, tr("Constraints && Waivers"));
 
     // Preprocessor and parameters
@@ -295,6 +307,8 @@ void ProjectEditor::addConstraints(const QStringList& files) { addPathItems(cons
 void ProjectEditor::addIncludeDir(const QString& dir) { addPathItems(includeDirs_, {dir}); }
 void ProjectEditor::addWaivers(const QStringList& files) { addPathItems(waivers_, files); }
 
+void ProjectEditor::addVivadoReports(const QStringList& files) { addPathItems(vivadoReports_, files); }
+
 void ProjectEditor::setParameter(const QString& name, const QString& value) {
     for (int r = 0; r < parameters_->rowCount(); ++r)
         if (cell(parameters_, r, 0) == name) {
@@ -341,6 +355,7 @@ engine::ProjectConfig ProjectEditor::config() const {
     }
     c.constraints = listPaths(constraints_);
     c.waivers = listPaths(waivers_);
+    c.vivadoClockReports = listPaths(vivadoReports_);
     c.options.unknownClockRelation = static_cast<engine::UnknownClockPolicy>(unknownClock_->currentData().toInt());
     c.options.minSyncStages = static_cast<std::uint32_t>(minStages_->value());
     c.options.reconvergenceDepth = static_cast<std::uint32_t>(reconvDepth_->value());

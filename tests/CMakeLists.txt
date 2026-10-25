@@ -19,6 +19,7 @@ add_executable(opencdc_tests
     engine/test_waivers.cpp
     engine/test_report.cpp
     engine/test_sdc_suggest.cpp
+    engine/test_vivado_clocks.cpp
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_sv_interfaces.cpp
@@ -92,6 +93,10 @@ opencdc_cli_test(suggest_sdc 3
     "Suggested SDC: .*suggested.sdc \\(0 clock\\(s\\), 0 clock group\\(s\\), 0 TODO period\\(s\\); resolves 0 unknown"
     analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json -q
     --suggest-sdc ${CMAKE_CURRENT_BINARY_DIR}/suggested.sdc)
+opencdc_cli_test(vivado_clocks 3
+    "Vivado clock report check .*1/1 report\\(s\\), 5 Vivado clock\\(s\\), 4 matched, 0 period mismatch\\(es\\), 0 unmatched"
+    analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json
+    --vivado-clocks ${PROJECT_SOURCE_DIR}/examples/primitives/vivado_clocks.rpt)
 
 # ---- Installed tree (install rules, Qt deployment on Windows) ----
 add_test(NAME package.install_smoke

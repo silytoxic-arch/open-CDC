@@ -2,7 +2,8 @@
 //
 //   opencdc --version
 //   opencdc analyze <project.ocdc.json> [--json <out.json>] [--dump-ir <out.txt>]
-//                   [--schematic-dir <dir>] [--html <report.html>] [--csv <dir>] [--suggest-sdc <file>] [--quiet]
+//                   [--schematic-dir <dir>] [--html <report.html>] [--csv <dir>] [--suggest-sdc <file>]
+//                   [--vivado-clocks <report_clocks.txt>]... [--quiet]
 //
 // Exit codes: 0 = ran, no errors and no error-severity CDC violations;
 //             1 = ran, errors reported (HDL/constraint errors);
@@ -28,6 +29,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #    define NOMINMAX
@@ -56,6 +58,7 @@ struct Outputs {
     std::string html;
     std::string csvDir;
     std::string suggestSdc;
+    std::vector<std::string> vivadoClocks; ///< extra Vivado report_clocks outputs to compare with
 };
 
 bool writeText(const std::filesystem::path& file, const std::string& text) {
@@ -80,6 +83,9 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
         std::cerr << format(project.error()) << '\n';
         return kExitUsage;
     }
+
+    for (const auto& f : outs.vivadoClocks)
+        project.value().vivadoClockReports.push_back(std::filesystem::absolute(fromUtf8(f)));
 
     NullProgressSink progress;
     CancellationToken cancel;
@@ -321,6 +327,8 @@ int main(int argc, char** argv) {
     analyze->add_option("--csv", outs.csvDir, "Write paths.csv and violations.csv into this directory");
     analyze->add_option("--suggest-sdc", outs.suggestSdc,
                         "Write suggested constraints (missing clocks, clock groups for unknown relations) to this file");
+    analyze->add_option("--vivado-clocks", outs.vivadoClocks,
+                        "Compare the clock periods with a Vivado 'report_clocks' output (repeatable)");
     analyze->add_option("--schematic-dir", outs.schematicDir,
                         "Write the CDC schematic of every path as path-<id>.svg into this directory");
     analyze->add_flag("-q,--quiet", quiet, "Print only the summary");

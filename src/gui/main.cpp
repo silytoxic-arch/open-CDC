@@ -340,7 +340,8 @@ int runEditTest(MainWindow& window, const QString& project) {
     if (same.sources != orig.sources || same.sourceLibraries != orig.sourceLibraries || same.name != orig.name ||
         same.top != orig.top || same.language != orig.language || same.constraints != orig.constraints ||
         same.parameters != orig.parameters || same.includeDirs != orig.includeDirs ||
-        same.waivers != orig.waivers || same.defines.size() != orig.defines.size() ||
+        same.waivers != orig.waivers || same.vivadoClockReports != orig.vivadoClockReports ||
+        same.defines.size() != orig.defines.size() ||
         same.options.minSyncStages != orig.options.minSyncStages)
         return fail("project editor changes a project it did not edit");
     if (orig.sources.empty())

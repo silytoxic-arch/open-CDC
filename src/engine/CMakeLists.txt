@@ -9,6 +9,9 @@ add_library(opencdc_engine STATIC
     ResultJson.h
     SdcSuggest.cpp
     SdcSuggest.h
+    ClockNaming.h
+    VivadoClocks.cpp
+    VivadoClocks.h
     WaiverFile.cpp
     WaiverFile.h)
 

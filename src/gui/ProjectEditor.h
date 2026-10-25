@@ -38,6 +38,7 @@ public:
     void addConstraints(const QStringList& files);
     void addIncludeDir(const QString& dir);
     void addWaivers(const QStringList& files);
+    void addVivadoReports(const QStringList& files);
     void setParameter(const QString& name, const QString& value);
     void setDefine(const QString& name, const QString& value, bool hasValue);
 
@@ -62,6 +63,7 @@ private:
     QTableWidget* parameters_;
     QListWidget* constraints_;
     QListWidget* waivers_;
+    QListWidget* vivadoReports_;
     QComboBox* unknownClock_;
     QSpinBox* minStages_;
     QSpinBox* reconvDepth_;

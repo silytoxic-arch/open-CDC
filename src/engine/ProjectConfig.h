@@ -45,6 +45,7 @@ struct AnalysisOptions {
 ///   "parameters":  {"DEPTH": 16, "MODE": "\"FAST\""},  (optional; top-level parameter / generic overrides)
 ///   "constraints": ["constraints/clocks.sdc"],  (optional; SDC/XDC subset)
 ///   "waivers":     ["waivers.json"],            (optional; see engine/WaiverFile.h)
+///   "vivadoClockReports": ["impl/clocks.rpt"],  (optional; Vivado report_clocks output, see engine/VivadoClocks.h)
 ///   "options":     {"unknownClockRelation": "report",   (optional; report | assume_async | assume_sync)
 ///                   "minSyncStages": 2,                 (optional; 1..8)
 ///                   "reconvergenceDepth": 2}            (optional; 0..8)
@@ -62,6 +63,9 @@ struct ProjectConfig {
     std::vector<std::pair<std::string, std::string>> parameters;
     std::vector<std::filesystem::path> constraints; ///< absolute
     std::vector<std::filesystem::path> waivers;     ///< absolute
+    /// Vivado `report_clocks` outputs whose periods are compared with the
+    /// clock model (absolute).
+    std::vector<std::filesystem::path> vivadoClockReports;
     AnalysisOptions options;
 
     [[nodiscard]] frontend::FrontendInput toFrontendInput() const;

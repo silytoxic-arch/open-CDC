@@ -1,5 +1,7 @@
 #include "engine/AnalysisSession.h"
 
+#include "engine/VivadoClocks.h"
+
 #include "engine/WaiverFile.h"
 #include "rules/Waiver.h"
 
@@ -193,6 +195,28 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
                  " clock pair(s) with unknown relation (policy: " +
                  std::string(toString(config.options.unknownClockRelation)) + ")"});
         progress.update(clkStage, 1.0);
+
+        // ---- Stage: comparison with Vivado's clock list (optional) ----
+        if (!config.vivadoClockReports.empty()) {
+            const auto& d = *result->design;
+            const std::string top = d.tops.empty() ? std::string() : d.instances[d.tops.front().index()].hierPath;
+            std::size_t read = 0;
+            VivadoClockCheck total;
+            for (const auto& f : config.vivadoClockReports)
+                if (const auto c = checkVivadoClockReport(*clocks, top, f, sink)) {
+                    ++read;
+                    total.vivadoClocks += c->vivadoClocks;
+                    total.matched += c->matched;
+                    total.mismatched += c->mismatched;
+                    total.unmatched += c->unmatched;
+                }
+            pushStage({"Vivado clock report check",
+                       read == config.vivadoClockReports.size() ? StageStatus::Completed : StageStatus::Failed,
+                       std::to_string(read) + "/" + std::to_string(config.vivadoClockReports.size()) +
+                           " report(s), " + std::to_string(total.vivadoClocks) + " Vivado clock(s), " +
+                           std::to_string(total.matched) + " matched, " + std::to_string(total.mismatched) +
+                           " period mismatch(es), " + std::to_string(total.unmatched) + " unmatched"});
+        }
 
         // ---- Stages: CDC paths, synchronizers, rules ----
         if (!cancel.cancelled()) {
