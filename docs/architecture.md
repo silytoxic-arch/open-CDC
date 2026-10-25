@@ -982,3 +982,30 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 - 原样分析：报告 3 个 `IR-MULTIDRIVER` 错误，均为设计本身的多驱动：`ddram_clk_p_vec`/`ddram_clk_n_vec` 既由 LiteDRAM 包装器的输出驱动，又由 `ddram_clk_p_vec <= (others => ddram_clk_p)` 驱动（方向写反，顶层输出 `ddram_clk_p` 在使用 DRAM 时没有驱动）；`uart1_txd` 既被赋值为 `'1'`，又由 SoC 的 UART1 输出驱动（`HAS_UART1` 为真）。
 - 修正这三行后：8 个时钟（100 MHz 输入、PLLE2 的 4 个输出、两个以太网时钟、JTAG TCK），2445 个寄存器全部解析，173 条跨域路径，其中 145 条已同步，32 个同步器结构（LiteEth 的 Gray 计数器、脉冲同步器、异步 FIFO，PLL `LOCKED` 的复位同步器等）。
 - XDC 中的三条 `set_clock_groups` 生效后，系统时钟与以太网时钟之间不再有未知关系。剩余的"需复核"路径全部来自 JTAG 时钟：XDC 没有约束 TCK。
+
+## 23. 限定数据识别与时钟对汇总（阶段 16）
+
+### 23.1 限定条件的识别范围
+
+| 结构 | 处理 |
+|---|---|
+| 源数据参与计算目的寄存器的使能（`if (req_sync && addr == K) q <= x`） | 使能路径同样寻找限定条件；有来自源时钟的同步信号时为限定数据 |
+| 源数据只作为多路选择器的选择端，被选的是限定信号（`q <= match(src) ? req_sync : 0`） | 数据锥中被选择的值也作为限定候选 |
+| 与限定信号相与（`q <= req_sync & f(src)`） | 目的数据位由与门驱动，且其一个输入来自源时钟的同步器输出 |
+| `q <= req_sync ? f(src) : 0`（降低为由 `!req_sync` 控制的同步清零） | 同步复位引脚直接来自同步器输出时视为限定 |
+| 经译码后又连续打两拍的源数据 | 先识别直接由源驱动的同步链（其输出才是已知的限定信号），再处理逻辑之后的链：有限定条件时为限定数据，而不是"逻辑后面的两级同步"（CDC-004） |
+
+负例：或运算（`req_sync | f(src)`）、源数据与限定信号异或、没有限定信号的译码，仍按未同步或 CDC-004 处理。
+
+### 23.2 时钟对汇总（`engine/ClockPairs`）
+按（源时钟, 目的时钟）统计路径数、已同步数、违例、潜在风险和需复核数，按路径数降序排列。出现在 CLI 摘要（最多 12 行；若需复核的路径来自未知关系，提示使用 `--suggest-sdc`）、GUI 运行报告、HTML 报告"Crossings by clock pair"一节和 JSON `cdc.clockPairs`。
+
+### 23.3 约束
+- `set_input_delay -clock [get_clocks -of_objects …]`：与时钟组相同，在时钟追踪之后解析（`ClockModel::inputDelayClocks`）。
+- `BSCANE2` 模型的 TAP 寄存器经 `TCK` 引脚取时钟，所以 `create_clock … [get_pins {…/bscan/TCK}]` 覆盖整个 JTAG 时钟域。
+
+### 23.4 microwatt Arty 的结果
+- 不加 JTAG 约束：173 条跨域路径中 170 条已同步（阶段 15 为 145 条）。需复核的 156 条按时钟对汇总后，全部是 JTAG TCK 与系统时钟之间的路径。
+- 加上 `--suggest-sdc` 建议的 TCK 时钟和时钟组：需复核路径为 0，剩下 2 个错误，都是设计问题：
+  - CDC-006：`dmi_dtm_xilinx` 用系统时钟域的 `sys_reset` 异步复位 JTAG 域的寄存器，释放没有同步；
+  - CDC-004：DMI 应答 `dmi_ack` 在系统时钟域先经地址多路选择，再进入 JTAG 域的两级同步器。

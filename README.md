@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 15, real multi-clock SoC (microwatt on Arty A7 with LiteDRAM/LiteEth), `get_clocks -of_objects`, DSP and JTAG primitives**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 16, qualifier recognition through decode logic, crossings summarized by clock pair**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–15)
+## What works today (stages 1–16)
 
 | Feature | Status |
 |---|---|
@@ -22,7 +22,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Qt6 GUI: project explorer, design hierarchy, messages, source viewer with jump-to-source, run report; new/edit/save-as project (sources and their VHDL library, constraints, waivers, parameters, defines, include directories, options) | ✅ |
 | RTL extraction into a word-level Design IR: registers with clock, async resets, sync reset and enable; latches; combinational cells; memories; instance tree | ✅ |
 | `opencdc analyze --dump-ir`, and a JSON register list | ✅ |
-| SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins, `get_clocks -of_objects [get_nets …]` in clock groups, abbreviated options such as `-of`) | ✅ |
+| SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins, `get_clocks -of_objects [get_nets …]` in clock groups and `set_input_delay -clock`, abbreviated options such as `-of`) | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
 | Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), clock groups with one group, overlapping groups, or related clocks declared asynchronous (`CON-GROUP-*`) | ✅ |
 | Vivado clock report cross-check (`--vivado-clocks`, project field `vivadoClockReports`, GUI project editor): `report_clocks` / `report_timing_summary` output read back, clocks matched by source pin or name, period mismatches (`VIV-PERIOD-MISMATCH`) and clocks only one side knows reported | ✅ |
@@ -30,7 +30,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | GUI Clock Domain Viewer (frequency, derived clocks under their master, period derivation such as `clk_in × 0.5`), JSON `clockAnalysis` section | ✅ |
 | Sequential dependency graph: register inputs traced back through logic and hierarchy | ✅ |
 | CDC path search between asynchronous / unknown-relation clocks; single-bit / multi-bit; control / data; full hierarchical path | ✅ |
-| Synchronizer recognition: 1/2/3/N-flop chains (including vector shift registers and chains across modules) with checked conditions; data qualified by a synchronized enable/select. Results are reported in three levels: structure recognized, necessary conditions verified, protocol conditions unverified | ✅ |
+| Synchronizer recognition: 1/2/3/N-flop chains (including vector shift registers and chains across modules) with checked conditions; data qualified by a synchronized enable/select, also when the source data is decoded into the enable, selects the qualifier, or is ANDed with it (`q <= req_sync & f(src)`, `q <= req_sync ? f(src) : 0`). Results are reported in three levels: structure recognized, necessary conditions verified, protocol conditions unverified | ✅ |
 | Protocol synchronizers: toggle (pulse), Gray code (encoder and ±1 step proven), request/acknowledge handshake, asynchronous FIFO (memory + Gray pointers in both directions), reset synchronizers; grouped into synchronizer structures | ✅ |
 | Asynchronous reset crossings (grouped per reset source and clock), reconvergence (bit-level, configurable depth), multi-bit incoherency, pulse loss (with clock periods), multi-domain logic | ✅ |
 | Rules CDC-001 … CDC-010, all ten (specs in [docs/rules](docs/rules)) | ✅ |
@@ -39,6 +39,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | View linkage: path/violation selection drives the schematic; hierarchy tree with CDC path and issue counts per instance and an instance filter for the path table | ✅ |
 | `opencdc analyze --schematic-dir <dir>`: one SVG schematic per path (no Qt needed) | ✅ |
 | Waivers: by rule, path fingerprint, source/destination glob; reason required, optional expiry; waived hits stay visible everywhere ([docs/waivers.md](docs/waivers.md)) | ✅ |
+| Crossings summarized by clock pair (paths, synchronized, violations, risk, review) in the CLI, the GUI run report, the HTML report and the JSON result (`clockPairs`) | ✅ |
 | Reports: self-contained HTML (summary, stages, clocks, rules, every path with its schematic, structures, waivers, diagnostics, unanalyzed constructs), CSV (paths, rule hits), JSON (streamed) — from the CLI and the GUI | ✅ |
 | Scale: 10⁶ registers analyzed in ~19 s / 2.6 GB on 2 vCPUs; GUI tables are model/view ([docs/benchmarks.md](docs/benchmarks.md)) | ✅ |
 | Install rules and packages: Windows ZIP + NSIS installer with the Qt and MSVC runtimes bundled, Linux TGZ/DEB; built and tested by CI on Windows (MSVC `/W4 /WX`) and Linux (GCC, Clang, sanitizers) | ✅ |
