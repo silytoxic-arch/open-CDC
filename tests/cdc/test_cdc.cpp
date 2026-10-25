@@ -158,6 +158,18 @@ TEST_CASE("Unclocked inputs are excluded unless set_input_delay assigns a clock"
                                   "set_input_delay -clock clk_a 1.0 [get_ports async_in]\n");
     const auto& p = clocked.path("top.async_in", "top.s1");
     CHECK(p.srcClockName == "clk_a");
+
+    // the same with -clock [get_clocks -of_objects [get_ports clk_a]]
+    auto of = analyze(v, "create_clock -name clk_a -period 10 [get_ports clk_a]\n" + std::string(kAsync) +
+                             "set_input_delay -clock [get_clocks -of_objects [get_ports clk_a]] 1.0 "
+                             "[get_ports async_in]\n");
+    CHECK(of.path("top.async_in", "top.s1").srcClockName == "clk_a");
+    CHECK(of.countCode("CON-UNMATCHED") == 0);
+    // negative: a net without a clock assigns no domain
+    auto bad = analyze(v, "create_clock -name clk_a -period 10 [get_ports clk_a]\n" + std::string(kAsync) +
+                              "set_input_delay -clock [get_clocks -of_objects [get_nets y]] 1.0 [get_ports async_in]\n");
+    CHECK(bad.cdc->paths.empty());
+    CHECK(bad.countCode("CON-UNMATCHED") == 1);
 }
 
 TEST_CASE("Asynchronous reset crossings become reset paths (stage 5)", "[cdc][crossing]") {

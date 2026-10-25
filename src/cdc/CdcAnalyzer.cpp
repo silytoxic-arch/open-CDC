@@ -110,8 +110,18 @@ private:
         }
         // Inputs: set_input_delay -clock assigns a domain.
         std::unordered_map<BitRef, std::vector<ClockEdge>, graph::BitRefHash> inputClock;
-        for (const auto& d : st_.cons.inputDelays) {
-            auto id = st_.clocks.find(d.clock);
+        for (std::size_t di = 0; di < st_.cons.inputDelays.size(); ++di) {
+            const auto& d = st_.cons.inputDelays[di];
+            std::optional<clock::ClockId> id;
+            if (!d.clockBits.empty()) {
+                if (di < st_.clocks.inputDelayClocks.size())
+                    id = st_.clocks.inputDelayClocks[di];
+                if (!id)
+                    continue; // reported by clock analysis
+            }
+            else {
+                id = st_.clocks.find(d.clock);
+            }
             if (!id) {
                 st_.sink.report({"CDC-INPUT-CLOCK", Severity::Warning,
                                  "set_input_delay refers to unknown clock '" + d.clock +

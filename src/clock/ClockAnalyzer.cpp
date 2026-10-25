@@ -764,6 +764,24 @@ private:
     /// get_clocks -of_objects in set_clock_groups: the clocks on the named
     /// nets/pins/ports, per constraint and group
     void resolveGroupObjects() {
+        // set_input_delay -clock [get_clocks -of_objects ...]
+        model_->inputDelayClocks.assign(cons_.inputDelays.size(), std::nullopt);
+        for (std::size_t i = 0; i < cons_.inputDelays.size(); ++i) {
+            const auto& d = cons_.inputDelays[i];
+            for (const auto& b : d.clockBits) {
+                if (const auto it = memo_.find(b); it != memo_.end() && !it->second.sources.empty())
+                    model_->inputDelayClocks[i] = it->second.sources.front().first;
+                else if (const auto sc = sourceClocks_.find(b); sc != sourceClocks_.end() && !sc->second.empty())
+                    model_->inputDelayClocks[i] = sc->second.front();
+                if (model_->inputDelayClocks[i])
+                    break;
+            }
+            if (!d.clockBits.empty() && !model_->inputDelayClocks[i])
+                sink_.report({"CON-UNMATCHED", Severity::Warning,
+                              "set_input_delay: get_clocks -of_objects finds no clock on '" +
+                                  view_.name(d.clockBits.front()) + "' (no register is clocked through it)",
+                              d.loc, {}});
+        }
         groupObjectClocks_.assign(cons_.groups.size(), {});
         for (std::size_t g = 0; g < cons_.groups.size(); ++g) {
             const auto& grp = cons_.groups[g];

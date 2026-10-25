@@ -111,6 +111,7 @@ struct ClockGroups {
 /// domain for CDC analysis (delay values are not used).
 struct InputDelay {
     std::string clock;                 ///< clock name (resolved after clock analysis)
+    std::vector<graph::BitRef> clockBits; ///< -clock [get_clocks -of_objects ...]: the clock on these bits
     std::vector<graph::BitRef> bits;
     std::vector<std::string> portNames;
     bool clockFall = false;

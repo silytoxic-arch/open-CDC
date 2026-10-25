@@ -975,6 +975,8 @@ private:
         d.clockFall = a.flags.contains("-clock_fall");
         const auto& cv = a.opts["-clock"].back();
         d.clock = cv.hasObjects && !cv.objects.empty() ? cv.objects.front().name : cv.text;
+        if (cv.hasObjects && !cv.objects.empty() && cv.objects.front().kind == ObjectKind::Clock)
+            d.clockBits = cv.objects.front().bits; // get_clocks -of_objects
         // Positional arguments: <delay_value> <port_pin_list> (the number is skipped).
         for (const auto& pv : a.positional) {
             if (!pv.hasObjects && toNumber(pv.text))

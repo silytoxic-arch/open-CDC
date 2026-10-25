@@ -82,6 +82,9 @@ public:
     std::vector<Clock> clocks;
     std::vector<RegisterClocking> registers; ///< indexed by DesignView::globalRegister()
     std::size_t latchCount = 0;               ///< level-sensitive elements (domain not analyzed)
+    /// per set_input_delay (parallel to ConstraintSet::inputDelays): the
+    /// clock of "-clock [get_clocks -of_objects ...]", resolved after tracing
+    std::vector<std::optional<ClockId>> inputDelayClocks;
 
     void initRelations();
     void setRelation(ClockId a, ClockId b, ClockRelation r, std::string reason);

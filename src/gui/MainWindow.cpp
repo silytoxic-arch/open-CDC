@@ -3,6 +3,7 @@
 
 #include "core/PathUtil.h"
 #include "core/Version.h"
+#include "engine/ClockPairs.h"
 #include "engine/Report.h"
 #include "engine/SdcSuggest.h"
 #include "rules/RuleEngine.h"
@@ -649,6 +650,20 @@ void MainWindow::populateResult(const engine::AnalysisResult& result) {
         for (const auto& [id, n] : rules::countHits(*result.cdc))
             html += "<tr><td>" + qs(id) + "</td><td>" + QString::number(n) + "</td></tr>";
         html += "</table>";
+        if (const auto pairs = engine::summarizeClockPairs(result); !pairs.empty()) {
+            html += "<p><b>" + tr("Crossings by clock pair") + "</b></p><table border='1' cellspacing='0' "
+                    "cellpadding='3'><tr><th>" + tr("Source clock") + "</th><th>" + tr("Destination clock") +
+                    "</th><th>" + tr("Relation") + "</th><th>" + tr("Paths") + "</th><th>" + tr("Synchronized") +
+                    "</th><th>" + tr("Violations") + "</th><th>" + tr("Potential risk") + "</th><th>" +
+                    tr("Needs review") + "</th></tr>";
+            for (const auto& cp : pairs)
+                html += "<tr><td>" + qs(cp.srcClock).toHtmlEscaped() + "</td><td>" + qs(cp.dstClock).toHtmlEscaped() +
+                        "</td><td>" + qs(cp.relation) + "</td><td>" + QString::number(cp.paths) + "</td><td>" +
+                        QString::number(cp.synchronized) + "</td><td>" + QString::number(cp.violations) + "</td><td>" +
+                        QString::number(cp.potentialRisk) + "</td><td>" + QString::number(cp.needsReview) +
+                        "</td></tr>";
+            html += "</table>";
+        }
         const auto& structures = result.cdc->structures;
         constexpr std::size_t kMaxListedStructures = 300; // QTextEdit tables get slow beyond this
         if (!structures.empty() && structures.size() > kMaxListedStructures) {
