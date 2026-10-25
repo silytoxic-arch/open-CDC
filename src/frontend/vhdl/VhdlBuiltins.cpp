@@ -429,6 +429,12 @@ void Elaborator::createBuiltins() {
         N.fn("to_signed", Builtin::ToSigned, {in, Sg}, Sg, {"arg", "size_res"});
         N.fn("std_match", Builtin::StdMatch, {U, U}, bl);
         N.fn("std_match", Builtin::StdMatch, {Sg, Sg}, bl);
+        if (elem == std_.stdUlogic) { // ieee.numeric_std only
+            N.fn("std_match", Builtin::StdMatch, {elem, elem}, bl);
+            N.fn("std_match", Builtin::StdMatch, {std_.stdUlogicVector, std_.stdUlogicVector}, bl);
+            N.fn("is_x", Builtin::IsX, {U}, bl);
+            N.fn("is_x", Builtin::IsX, {Sg}, bl);
+        }
         N.fn("to_01", Builtin::To01, {U, elem}, U, {"s", "xmap"});
         N.fn("to_01", Builtin::To01, {Sg, elem}, Sg, {"s", "xmap"});
         N.fn("to_01", Builtin::To01, {U}, U, {"s"});

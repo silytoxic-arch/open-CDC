@@ -604,6 +604,12 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
                 }
                 return;
             }
+            // VHDL requires the choices to cover every value of the selector's
+            // subtype: when no earlier alternative matched, the last one does
+            // (encodings outside the subtype, such as the fourth code of a
+            // three-literal enumeration, do not occur)
+            if (!conds.empty())
+                conds.back() = one();
             std::function<void(std::size_t, ProcState&)> run = [&](std::size_t k, ProcState& state) {
                 if (k >= s.caseAlts.size())
                     return;

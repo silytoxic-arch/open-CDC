@@ -370,6 +370,51 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
     for (const auto& g : c.items)
         conds.push_back(itemCond(g));
 
+    // without a default, the case is still complete when its constant items
+    // list every value of a narrow selector (casez/casex: wildcard bits match
+    // both values): the last item then needs no condition, so the uncovered
+    // rest does not become a latch
+    if (!c.defaultCase && !c.items.empty() && sel.width() > 0 && sel.width() <= 12) {
+        const std::uint32_t w = sel.width();
+        std::vector<bool> seen(std::size_t{1} << w, false);
+        bool constant = true;
+        for (const auto& g : c.items)
+            for (const auto* ie : g.expressions) {
+                const auto vc = lower(*ie).resized(w, false).asConst();
+                if (!vc) {
+                    constant = false;
+                    break;
+                }
+                std::uint64_t fixed = 0;
+                std::vector<std::uint32_t> dc; // don't-care bit positions
+                for (std::uint32_t i = 0; i < w && constant; ++i) {
+                    const auto b = (*vc)[i];
+                    if (b == ir::Logic::L1)
+                        fixed |= std::uint64_t{1} << i;
+                    else if (b != ir::Logic::L0) {
+                        const bool wild = c.condition == sast::CaseStatementCondition::WildcardXOrZ ||
+                                          (c.condition == sast::CaseStatementCondition::WildcardJustZ &&
+                                           b == ir::Logic::Z);
+                        if (wild)
+                            dc.push_back(i);
+                        else
+                            constant = false; // never matches a two-state value
+                    }
+                }
+                if (!constant)
+                    break;
+                for (std::uint64_t m = 0; m < (std::uint64_t{1} << dc.size()); ++m) {
+                    std::uint64_t v = fixed;
+                    for (std::size_t k = 0; k < dc.size(); ++k)
+                        if ((m >> k) & 1U)
+                            v |= std::uint64_t{1} << dc[k];
+                    seen[v] = true;
+                }
+            }
+        if (constant && std::ranges::all_of(seen, [](bool b) { return b; }))
+            conds.back() = SigSpec::constant(1, 1);
+    }
+
     for (std::size_t k = c.items.size(); k-- > 0;) {
         const SigSpec& cond = conds[k];
         if (auto kc = cond.asConst(); kc && kc->isFullyDefined()) {

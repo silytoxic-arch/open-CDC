@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -92,7 +93,13 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
     const auto bundle = lib.verilogModel("altera_std_synchronizer_bundle");
     CHECK(bundle.find("module altera_std_synchronizer #") != std::string::npos);
     CHECK(lib.verilogModel("FDRE").find("module FD ") == std::string::npos);
-    CHECK(lib.vhdlPackages().size() == 3);
+    std::set<std::string> libs;
+    for (const auto& pkg : lib.vhdlPackages())
+        libs.insert(pkg.library);
+    for (const char* l : {"unisim", "xpm", "altera_mf", "ecp5u", "sb_ice40_components_syn", "ice40up", "gw1n", "gw2a"})
+        CHECK(libs.contains(l));
+    for (const char* n : {"DP16KD", "IDDRX1F", "ODDRX1F", "SB_RAM40_4K", "SB_RAM40_4KNRNW", "SDPB", "DPB"})
+        CHECK(lib.find(n).has_value());
 }
 
 TEST_CASE("Primitives: FDRE chain with ASYNC_REG on the instances is a two-flop synchronizer", "[primitives]") {
@@ -822,4 +829,172 @@ TEST_CASE("Constraint checks: generator input period and constrained generator o
                         "create_clock -name fast -period 4 [get_nets c0]\n");
     CHECK(good->count("CON-INPUT-PERIOD") == 0);
     CHECK(good->count("CON-PERIOD-MISMATCH") == 0);
+}
+
+TEST_CASE("Primitives: Lattice and Gowin block RAMs and DDR cells", "[primitives][lattice]") {
+    std::string dp16 = "  DP16KD #(.DATA_WIDTH_A(18), .DATA_WIDTH_B(18)) ram (.CLKA(clk_a), .CEA(1'b1), .WEA(1'b1),\n"
+                       "    .CLKB(clk_b), .CEB(1'b1), .WEB(1'b0), .OCEA(1'b1), .OCEB(1'b1), .RSTA(1'b0), .RSTB(1'b0),\n"
+                       "    .CSA0(1'b0), .CSA1(1'b0), .CSA2(1'b0), .CSB0(1'b0), .CSB1(1'b0), .CSB2(1'b0),\n"
+                       "    .DIA0(dr[0]), .DIA1(dr[1]), .ADA4(ar[0]), .ADA5(ar[1]), .ADB4(br[0]), .ADB5(br[1]),\n"
+                       "    .DOB0(q[0]), .DOB1(q[1]));\n";
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input d, input [15:0] din, input [10:0] a,\n"
+        "           output [1:0] q, output [15:0] q2, output [31:0] q3, output [15:0] q4, output o, output reg r);\n"
+        "  reg [15:0] dr; reg [10:0] ar, br;\n"
+        "  always @(posedge clk_a) begin dr <= din; ar <= a; end\n"
+        "  always @(posedge clk_b) br <= a;\n" +
+            dp16 +
+            "  SB_RAM40_4K ice (.WCLK(clk_a), .WCLKE(1'b1), .WE(1'b1), .WADDR(ar), .WDATA(dr), .MASK(16'h0),\n"
+            "    .RCLK(clk_b), .RCLKE(1'b1), .RE(1'b1), .RADDR(br), .RDATA(q2));\n"
+            "  SDPB #(.BIT_WIDTH_0(32), .BIT_WIDTH_1(32)) sdp (.CLKA(clk_a), .CEA(1'b1), .ADA({ar, 3'b0}),\n"
+            "    .DI({dr, dr}), .CLKB(clk_b), .CEB(1'b1), .OCE(1'b1), .ADB({br, 3'b0}), .DO(q3), .RESETA(1'b0),\n"
+            "    .RESETB(1'b0), .BLKSELA(3'b0), .BLKSELB(3'b0));\n"
+            "  DPB dpb (.CLKA(clk_a), .CEA(1'b1), .WREA(1'b1), .ADA({ar, 3'b0}), .DIA(dr), .CLKB(clk_b),\n"
+            "    .CEB(1'b1), .WREB(1'b0), .ADB({br, 3'b0}), .DOB(q4), .DIB(16'h0));\n"
+            "  wire q0, q1;\n"
+            "  IDDRX1F iddr (.D(d), .SCLK(clk_a), .RST(1'b0), .Q0(q0), .Q1(q1));\n"
+            "  ODDRX1F oddr (.D0(q0), .D1(q1), .SCLK(clk_a), .RST(1'b0), .Q(o));\n"
+            "  always @(posedge clk_b) r <= q1;\n"
+            "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-PRIMITIVE-PORT") == 0);
+    CHECK(crosses(*run, "top.ram.mem_a", "top.ram.dob"));       // written on CLKA, read on CLKB
+    CHECK_FALSE(crosses(*run, "top.ram.mem_b", "top.ram.doa")); // WEB = 0: port B never writes
+    CHECK(crosses(*run, "top.ice.mem", "top.ice.q"));
+    CHECK(crosses(*run, "top.sdp.mem", "top.sdp.q"));
+    CHECK(crosses(*run, "top.dpb.mem_a", "top.dpb.qb"));
+    CHECK_FALSE(crosses(*run, "top.dpb.mem_b", "top.dpb.qa"));
+    CHECK_FALSE(crosses(*run, "top.iddr.", "top.oddr."));  // same clock
+    CHECK(run->path("top.iddr.Q1", "top.r") != nullptr);   // clk_a DDR output -> clk_b register
+}
+
+TEST_CASE("Primitives: Lattice and Gowin cells from VHDL component libraries", "[primitives][lattice][vhdl]") {
+    for (const auto& [lib, cells] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"ecp5u",
+              "  p : EHXPLLL generic map (CLKI_DIV => 1, CLKFB_DIV => 4, CLKOP_DIV => 6, CLKOS_DIV => 12)\n"
+              "    port map (CLKI => clk_a, CLKFB => op, CLKOP => op, CLKOS => os, RST => '0', STDBY => '0');\n"
+              "  m : DP16KD port map (CLKA => os, CEA => '1', WEA => '1', DIA0 => d, CLKB => clk_b, CEB => '1',\n"
+              "    WEB => '0', DOB0 => q);\n"},
+             {"sb_ice40_components_syn",
+              "  p : SB_PLL40_CORE generic map (DIVR => \"0000\", DIVF => \"1000010\", DIVQ => \"101\")\n"
+              "    port map (REFERENCECLK => clk_a, PLLOUTCORE => os, RESETB => '1', BYPASS => '0');\n"
+              "  m : SB_RAM40_4K port map (WCLK => os, WCLKE => '1', WE => '1', WDATA(0) => d, RCLK => clk_b,\n"
+              "    RCLKE => '1', RE => '1', RDATA(0) => q);\n"},
+             {"gw1n",
+              "  p : rPLL generic map (FCLKIN => \"100\", IDIV_SEL => 0, FBDIV_SEL => 1)\n"
+              "    port map (CLKIN => clk_a, CLKOUT => os, RESET => '0', RESET_P => '0');\n"
+              "  m : SDPB port map (CLKA => os, CEA => '1', DI(0) => d, CLKB => clk_b, CEB => '1', OCE => '1',\n"
+              "    DO(0) => q);\n"}}) {
+        INFO(lib);
+        auto run = analyze("t.vhd",
+                           "library ieee; use ieee.std_logic_1164.all;\n"
+                           "library " + lib + "; use " + lib + ".components.all;\n"
+                           "entity top is port (clk_a, clk_b, d : in std_logic; q : out std_logic); end;\n"
+                           "architecture rtl of top is\n"
+                           "  signal op, os : std_logic;\n"
+                           "begin\n" + cells + "end;\n",
+                           "top");
+        REQUIRE(run->r->cdc);
+        dumpPaths(*run);
+        CHECK(run->count("VHDL-UNKNOWN-UNIT") == 0);
+        CHECK(run->r->diagnostics.end() == std::ranges::find_if(run->r->diagnostics, [](const Diagnostic& d) {
+                  return d.severity == Severity::Error;
+              }));
+        // the RAM is written in the PLL output domain and read on clk_b (asynchronous)
+        CHECK(run->hits("CDC-001") + run->hits("CDC-007") + run->hits("CDC-003") > 0);
+        bool derived = false;
+        for (const auto& c : run->r->clocks->clocks)
+            derived = derived || (c.kind == clock::ClockKind::Divider && c.name.starts_with("top.p."));
+        CHECK(derived);
+    }
+}
+
+TEST_CASE("Primitives negative: a VHDL library the project provides is not replaced", "[primitives][lattice][vhdl]") {
+    // the project brings its own gw1n library with its own components package
+    auto run = std::make_unique<Run>();
+    engine::ProjectConfig cfg;
+    cfg.name = "own";
+    cfg.top = "top";
+    cfg.sources = {run->dir.write("pkg.vhd", "library ieee; use ieee.std_logic_1164.all;\n"
+                                             "package components is\n"
+                                             "  component MYCELL port (c, d : in std_logic; q : out std_logic); end component;\n"
+                                             "end package;\n"),
+                   run->dir.write("cell.vhd", "library ieee; use ieee.std_logic_1164.all;\n"
+                                              "entity MYCELL is port (c, d : in std_logic; q : out std_logic); end;\n"
+                                              "architecture rtl of MYCELL is begin\n"
+                                              "  process (c) begin if rising_edge(c) then q <= d; end if; end process;\n"
+                                              "end;\n"),
+                   run->dir.write("t.vhd", "library ieee; use ieee.std_logic_1164.all;\n"
+                                           "library gw1n; use gw1n.components.all;\n"
+                                           "entity top is port (clk, d : in std_logic; q : out std_logic); end;\n"
+                                           "architecture rtl of top is begin\n"
+                                           "  u : MYCELL port map (c => clk, d => d, q => q);\n"
+                                           "end;\n")};
+    cfg.sourceLibraries = {"gw1n", "gw1n", ""};
+    engine::AnalysisSession session;
+    NullProgressSink progress;
+    CancellationToken cancel;
+    run->r = session.run(cfg, progress, cancel);
+    for (const auto& d : run->r->diagnostics)
+        UNSCOPED_INFO(format(d));
+    REQUIRE(run->r->cdc);
+    CHECK_FALSE(run->r->hasErrors());
+    REQUIRE(run->r->elaboration);
+    for (const auto& f : run->r->elaboration->parsedFiles) // no vendor package was added
+        CHECK(f.filename().string().find("gowin_components") == std::string::npos);
+}
+
+TEST_CASE("Primitives: VHDL component declared locally for a vendor primitive", "[primitives][lattice][vhdl]") {
+    // microwatt clk_gen_ecp5: no vendor library clause, the component is declared
+    // in the architecture; the ECP5 PLL feeds back from CLKOS
+    auto run = analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "entity top is port (clk_a, d : in std_logic; q, q2 : out std_logic); end;\n"
+                       "architecture rtl of top is\n"
+                       "  component EHXPLLL is\n"
+                       "    generic (CLKI_DIV : integer := 1; CLKFB_DIV : integer := 1; CLKOP_DIV : integer := 8;\n"
+                       "             CLKOS_DIV : integer := 8; CLKOS_ENABLE : string := \"DISABLED\";\n"
+                       "             FEEDBK_PATH : string := \"CLKOP\");\n"
+                       "    port (CLKI, CLKFB, RST, STDBY : in std_logic; CLKOP, CLKOS, LOCK : out std_logic);\n"
+                       "  end component;\n"
+                       "  signal clkop, clkos, lock : std_logic;\n"
+                       "begin\n"
+                       "  pll : EHXPLLL generic map (CLKOP_DIV => 9, CLKOS_ENABLE => \"ENABLED\", CLKOS_DIV => 2,\n"
+                       "                             CLKFB_DIV => 20, CLKI_DIV => 1, FEEDBK_PATH => \"CLKOS\")\n"
+                       "    port map (CLKI => clk_a, CLKFB => clkos, RST => '0', STDBY => '0', CLKOP => clkop,\n"
+                       "              CLKOS => clkos, LOCK => lock);\n"
+                       "  process (clkop) begin if rising_edge(clkop) then q <= d; q2 <= lock; end if; end process;\n"
+                       "end;\n",
+                       "top", "create_clock -name clk_a -period 83.333 [get_ports clk_a]\n");
+    REQUIRE(run->r->clocks);
+    CHECK(run->count("IR-UNRESOLVED-INSTANCE") == 0);
+    CHECK(run->count("FE-PRIMITIVES") == 1);
+    bool found = false;
+    for (const auto& c : run->r->clocks->clocks)
+        if (c.name == "top.pll.CLKOP") {
+            found = true;
+            REQUIRE(c.periodNs);
+            // VCO = 12 MHz x 20 x 2 = 480 MHz, CLKOP = VCO / 9
+            CHECK(std::abs(*c.periodNs - 83.333 * 9.0 / 40.0) < 1e-3);
+        }
+    CHECK(found);
+}
+
+TEST_CASE("Primitives negative: a local component that is no vendor primitive stays a black box", "[primitives][vhdl]") {
+    auto run = analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "entity top is port (clk_a, d : in std_logic; q : out std_logic); end;\n"
+                       "architecture rtl of top is\n"
+                       "  component my_ip port (clk, d : in std_logic; q : out std_logic); end component;\n"
+                       "begin\n"
+                       "  u : my_ip port map (clk => clk_a, d => d, q => q);\n"
+                       "end;\n",
+                       "top");
+    CHECK(run->count("IR-UNRESOLVED-INSTANCE") == 1);
+    CHECK(run->count("FE-PRIMITIVES") == 0);
 }

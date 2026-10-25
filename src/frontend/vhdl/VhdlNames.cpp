@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <numeric>
 
 namespace opencdc::vhdl {
@@ -132,6 +133,87 @@ SVal Elaborator::sliceValue(const SVal& arr, const IntRange& r, Loc l) {
     const auto off = static_cast<std::uint32_t>((n - 1 - p1) * ew);
     const auto w = static_cast<std::uint32_t>((p1 - p0 + 1) * ew);
     return makeBits(st, bitsOf(arr, l).extract(off, w));
+}
+
+namespace {
+
+bool sameExpr(const Expr* a, const Expr* b) {
+    if (!a || !b)
+        return a == b;
+    if (a->kind != b->kind || a->ident.key != b->ident.key || a->op != b->op || a->text != b->text ||
+        a->ival != b->ival || a->rval != b->rval || a->args.size() != b->args.size() ||
+        a->elements.size() != b->elements.size() || a->subtype || b->subtype)
+        return false;
+    if (!sameExpr(a->prefix.get(), b->prefix.get()) || !sameExpr(a->lhs.get(), b->lhs.get()) ||
+        !sameExpr(a->rhs.get(), b->rhs.get()))
+        return false;
+    for (std::size_t k = 0; k < a->args.size(); ++k)
+        if (!sameExpr(a->args[k].formal.get(), b->args[k].formal.get()) ||
+            !sameExpr(a->args[k].actual.get(), b->args[k].actual.get()))
+            return false;
+    return a->elements.empty();
+}
+
+} // namespace
+
+std::optional<SVal> Elaborator::dynamicSlice(const SVal& arr, const Expr& range, Ctx& ctx, Loc l) {
+    if (range.kind != ExprKind::Range || !body || !body->ed)
+        return std::nullopt;
+    const Type& T = *arr.type;
+    if (!T.isArray() || T.indexTypes.size() != 1 || !T.indexRanges[0])
+        return std::nullopt;
+    // e = base + c, with c static (base null: e itself is static)
+    struct Linear {
+        const Expr* base = nullptr;
+        std::int64_t c = 0;
+    };
+    std::function<std::optional<Linear>(const Expr&)> linear = [&](const Expr& e) -> std::optional<Linear> {
+        if (e.kind == ExprKind::Integer)
+            return Linear{nullptr, e.ival};
+        if (e.kind == ExprKind::Binary && (e.op == Op::Add || e.op == Op::Sub)) {
+            auto a = linear(*e.lhs);
+            auto b = linear(*e.rhs);
+            if (!a || !b)
+                return std::nullopt;
+            if (e.op == Op::Add && (!a->base || !b->base))
+                return Linear{a->base ? a->base : b->base, a->c + b->c};
+            if (e.op == Op::Sub && !b->base)
+                return Linear{a->base, a->c - b->c};
+            return Linear{&e, 0};
+        }
+        if (auto v = constInt(e, ctx))
+            return Linear{nullptr, *v};
+        return Linear{&e, 0};
+    };
+    const auto lf = linear(*range.lhs);
+    const auto rt = linear(*range.rhs);
+    if (!lf || !rt || !lf->base || !sameExpr(lf->base, rt->base))
+        return std::nullopt;
+    const bool ascending = range.dir == RangeDir::To;
+    const std::int64_t span = ascending ? rt->c - lf->c : lf->c - rt->c;
+    const IntRange& ar = *T.indexRanges[0];
+    if (span < 0 || ascending != ar.ascending || static_cast<std::uint64_t>(span) >= ar.length())
+        return std::nullopt;
+    const auto ew = bitWidth(*T.element);
+    if (!ew)
+        return std::nullopt;
+    const Type* it = T.indexTypes.front();
+    const SVal right = convert(eval(*range.rhs, ctx, it), it, ctx, l);
+    const auto n = static_cast<std::uint64_t>(span) + 1;
+    // the subtype keeps the array's own bounds shifted to the slice length
+    const IntRange sr = ar.ascending ? IntRange{ar.left, ar.left + static_cast<std::int64_t>(n) - 1, true}
+                                     : IntRange{ar.right + static_cast<std::int64_t>(n) - 1, ar.right, false};
+    const Type* st = types.constrainedArray(&T, {sr});
+    ir::Cell c;
+    c.kind = ir::CellKind::DynSelect;
+    c.inputs = {bitsOf(arr, l), bitsOf(right, l)}; // the right bound is the element at the lowest bit offset
+    c.width = static_cast<std::uint32_t>(n * *ew);
+    c.elemWidth = *ew;
+    c.isSigned = isSignedInteger(*right.type);
+    c.rangeLeft = static_cast<std::int32_t>(ar.left);
+    c.rangeRight = static_cast<std::int32_t>(ar.right);
+    c.origin = srcLoc(l);
+    return makeBits(st, body->ed->emit(std::move(c)));
 }
 
 SVal Elaborator::fieldValue(const SVal& rec, std::size_t field, Loc l) {
@@ -298,6 +380,26 @@ SVal Elaborator::evalAggregate(const Expr& e, Ctx& ctx, const Type* expected) {
                 auto r = discreteRange(*ch, ctx);
                 if (!r)
                     continue;
+                // VHDL-2008: with a range choice the value may be an array of
+                // the aggregate's type, giving one element per index of the range
+                TypeSet ts = typesOf(*el.value, ctx);
+                if (dims == 1 && !ts.accepts(*elemT) && ts.accepts(T) && !ts.anyAggregate) {
+                    SVal piece = eval(*el.value, ctx, nullptr);
+                    if (!piece.valid() || !piece.type->isArray() || !piece.type->indexRanges[0])
+                        continue;
+                    if (arrayLength(*piece.type) != r->length()) {
+                        error("VHDL-LENGTH", "aggregate element has " + std::to_string(arrayLength(*piece.type)) +
+                                                 " element(s), its choice " + std::to_string(r->length()),
+                              el.loc);
+                        continue;
+                    }
+                    for (std::uint64_t k = 0; k < r->length(); ++k) {
+                        SVal ix = makeConst(piece.type->indexTypes[0],
+                                            Value::integer(piece.type->indexRanges[0]->indexAt(k)));
+                        named.emplace_back(r->indexAt(k), indexValue(piece, {ix}, el.loc));
+                    }
+                    continue;
+                }
                 SVal v = eval(*el.value, ctx, elemT);
                 for (std::uint64_t k = 0; k < r->length(); ++k)
                     named.emplace_back(r->indexAt(k), v);
@@ -573,6 +675,12 @@ SVal Elaborator::evalAttribute(const Expr& e, Ctx& ctx, const Type* expected) {
 // ---------------------------------------------------------------------------
 
 bool Elaborator::mapArgs(Symbol& sub, const std::vector<Assoc>& args, std::vector<const Expr*>& perFormal) {
+    if (sub.builtin == Builtin::Ignored && sub.params.empty()) {
+        // textio / simulation routines are declared without a profile: any
+        // arguments are accepted and not evaluated
+        perFormal.clear();
+        return true;
+    }
     resolveParams(sub);
     perFormal.assign(sub.params.size(), nullptr);
     std::vector<bool> given(sub.params.size(), false);
@@ -932,7 +1040,12 @@ SVal Elaborator::evalCall(const Expr& e, Ctx& ctx, const Type* expected) {
         return SVal{};
     }
     if (e.args.size() == 1 && isRangeChoice(*e.args[0].actual)) {
-        auto r = discreteRange(*e.args[0].actual, ctx);
+        const Expr& re = *e.args[0].actual;
+        if (re.kind == ExprKind::Range && !arr.known() &&
+            (!constInt(*re.lhs, ctx) || !constInt(*re.rhs, ctx)))
+            if (auto v = dynamicSlice(arr, re, ctx, e.loc))
+                return *v;
+        auto r = discreteRange(re, ctx);
         if (!r)
             return SVal{};
         return sliceValue(arr, *r, e.loc);
@@ -1301,8 +1414,41 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                 return false;
             }
             if (t.dynamic) {
-                unsupported("IR-UNSUPPORTED-TARGET", "two variable indexes in one assignment target", e.loc);
-                return false;
+                // a(i)(j): one variable index into the flattened rows,
+                // offset(i) * row length + offset(j) (offsets count elements from the LSB)
+                if (t.sub || !T->indexRanges[0] || ew == 0) {
+                    unsupported("IR-UNSUPPORTED-TARGET", "two variable indexes in one assignment target", e.loc);
+                    return false;
+                }
+                const IntRange& ro = t.range;
+                const IntRange& ri = *T->indexRanges[0];
+                const auto rows = ro.length();
+                const auto cols = ri.length();
+                if (rows * cols > 0x7fffffffULL) {
+                    unsupported("IR-UNSUPPORTED-TARGET", "two variable indexes in one assignment target", e.loc);
+                    return false;
+                }
+                auto k32 = [](std::int64_t v) { return ir::SigSpec::constant(static_cast<std::uint64_t>(v), 32); };
+                auto offsetOf = [&](const ir::SigSpec& index, bool sg, const IntRange& r) {
+                    const ir::SigSpec ix = index.resized(32, sg);
+                    return r.ascending ? cell(ir::CellKind::Sub, {k32(r.right), ix}, 32, e.loc, true)
+                                       : cell(ir::CellKind::Sub, {ix, k32(r.right)}, 32, e.loc, true);
+                };
+                const ir::SigSpec outer = offsetOf(t.index, t.indexSigned, ro);
+                const ir::SigSpec inner = offsetOf(bitsOf(idx[0], e.loc), isSignedInteger(*idx[0].type), ri);
+                Target d = t;
+                d.index = cell(ir::CellKind::Add,
+                               {cell(ir::CellKind::Mul, {outer, k32(static_cast<std::int64_t>(cols))}, 32, e.loc, true),
+                                inner},
+                               32, e.loc, true);
+                d.indexSigned = true;
+                d.elemWidth = ew;
+                d.range = IntRange{static_cast<std::int64_t>(rows * cols) - 1, 0, false};
+                d.type = T->element;
+                d.width = ew;
+                out.push_back(d);
+                setType(d.type);
+                return true;
             }
             Target d = t;
             d.dynamic = true;

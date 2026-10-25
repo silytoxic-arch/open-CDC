@@ -279,6 +279,41 @@ TEST_CASE("Incomplete combinational assignment infers a latch", "[extract][latch
     CHECK(e.contains("latch q <= $mux$"));
 }
 
+TEST_CASE("A case listing every selector value needs no default", "[extract][latch]") {
+    // uart16550 uart_receiver: 16 constant items for a 4-bit selector, some grouped
+    auto e = extract("module m(input [3:0] lcr, output reg [9:0] toc);\n"
+                     "  always @(lcr)\n"
+                     "    case (lcr[3:0])\n"
+                     "      4'b0000: toc = 447; 4'b0100: toc = 479; 4'b0001, 4'b1000: toc = 511; 4'b1100: toc = 543;\n"
+                     "      4'b0010, 4'b0101, 4'b1001: toc = 575; 4'b0011, 4'b0110, 4'b1010, 4'b1101: toc = 639;\n"
+                     "      4'b0111, 4'b1011, 4'b1110: toc = 703; 4'b1111: toc = 767;\n"
+                     "    endcase\n"
+                     "endmodule\n");
+    CHECK(e.countCode("IR-LATCH-INFERRED") == 0);
+    CHECK(e.design->stats().latches == 0);
+}
+
+TEST_CASE("A case missing a selector value without default infers a latch", "[extract][latch]") {
+    auto e = extract("module m(input [1:0] s, input a, b, c, output reg y);\n"
+                     "  always @* case (s) 2'b00: y = a; 2'b01: y = b; 2'b10: y = c; endcase\n"
+                     "endmodule\n");
+    CHECK(e.countCode("IR-LATCH-INFERRED") == 1);
+    // casez: a wildcard item covers both values of its '?' bits
+    auto w = extract("module m(input [1:0] s, input a, b, output reg y);\n"
+                     "  always @* casez (s) 2'b0?: y = a; 2'b10: y = b; 2'b11: y = a; endcase\n"
+                     "endmodule\n");
+    CHECK(w.countCode("IR-LATCH-INFERRED") == 0);
+    auto w2 = extract("module m(input [1:0] s, input a, b, output reg y);\n"
+                      "  always @* casez (s) 2'b0?: y = a; 2'b10: y = b; endcase\n"
+                      "endmodule\n");
+    CHECK(w2.countCode("IR-LATCH-INFERRED") == 1);
+    // plain case: an x bit never matches, so it covers nothing
+    auto x = extract("module m(input [1:0] s, input a, b, output reg y);\n"
+                     "  always @* case (s) 2'b0x: y = a; 2'b00: y = b; 2'b10: y = b; 2'b11: y = a; endcase\n"
+                     "endmodule\n");
+    CHECK(x.countCode("IR-LATCH-INFERRED") == 1);
+}
+
 TEST_CASE("always_latch infers a latch without warning", "[extract][latch]") {
     auto e = extract("module m(input logic en, input logic d, output logic q);\n"
                      "  always_latch if (en) q = d;\n"

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <regex>
+#include <sstream>
 
 namespace opencdc::frontend {
 
@@ -28,6 +29,16 @@ PrimitiveLibrary::PrimitiveLibrary() {
             text += src.parts[k];
         const std::string file = src.name;
         if (file.ends_with(".vhd")) {
+            // "-- OPENCDC-LIBRARIES: a b c": the package is provided in each of
+            // these libraries (one copy per library); else the file name decides
+            static const std::regex libsRe(R"(--\s*OPENCDC-LIBRARIES:([^\n]*))");
+            std::smatch m;
+            if (std::regex_search(text, m, libsRe)) {
+                std::istringstream names(m[1].str());
+                for (std::string lib; names >> lib;)
+                    packages_.push_back({lib, lib + "__" + file, text});
+                continue;
+            }
             std::string libName = file.starts_with("unisim")  ? "unisim"
                                   : file.starts_with("xpm")   ? "xpm"
                                                               : "altera_mf";

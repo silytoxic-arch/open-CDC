@@ -207,7 +207,7 @@ public:
                 vin.sourceFiles.push_back(f);
             }
         }
-        // vendor component packages (unisim, xpm, altera_mf) for libraries the
+        // vendor component packages (unisim, xpm, altera_mf, Lattice, Gowin) for libraries the
         // VHDL code uses but the project does not provide
         {
             std::set<std::string> given;
@@ -659,8 +659,19 @@ public:
                 sink.report(std::move(d));
             return r;
         }
-        if (static_cast<std::size_t>(vhdl) == input.sourceFiles.size() && !usesVendorLibrary(input))
-            return makeVhdlFrontend()->elaborate(input, sink);
+        if (static_cast<std::size_t>(vhdl) == input.sourceFiles.size() && !usesVendorLibrary(input)) {
+            // VHDL only: a component declared locally for a modelled vendor
+            // primitive (no vendor library clause) is elaborated again with the models
+            RoundSink first;
+            auto r = makeVhdlFrontend()->elaborate(input, first);
+            if (r.ok() && unresolvedPrimitive(first.diags)) {
+                MixedLinker linker(input, sink);
+                return linker.run();
+            }
+            for (auto& d : first.diags)
+                sink.report(std::move(d));
+            return r;
+        }
         MixedLinker linker(input, sink);
         return linker.run();
     }
@@ -679,9 +690,28 @@ private:
         return false;
     }
 
+    /// A VHDL instance left as a black box names a modelled vendor primitive.
+    static bool unresolvedPrimitive(const std::vector<Diagnostic>& diags) {
+        static const std::regex nameRe("entity/component '([^']+)'");
+        for (const auto& d : diags) {
+            std::smatch m;
+            if (d.code == "IR-UNRESOLVED-INSTANCE" && std::regex_search(d.message, m, nameRe) &&
+                PrimitiveLibrary::instance().find(m[1].str()))
+                return true;
+        }
+        return false;
+    }
+
     static bool usesVendorLibrary(const FrontendInput& input) {
-        static const std::regex libRe(R"((^|[^A-Za-z0-9_])library\s+[^;]*\b(unisim|xpm|altera_mf)\b)",
-                                      std::regex::icase);
+        static const std::regex libRe = [] {
+            std::set<std::string> libs;
+            for (const auto& pkg : PrimitiveLibrary::instance().vhdlPackages())
+                libs.insert(pkg.library);
+            std::string alt;
+            for (const auto& l : libs)
+                alt += (alt.empty() ? "" : "|") + l;
+            return std::regex(R"((^|[^A-Za-z0-9_])library\s+[^;]*\b()" + alt + R"()\b)", std::regex::icase);
+        }();
         for (const auto& f : input.sourceFiles) {
             std::ifstream in(f, std::ios::binary);
             std::ostringstream ss;

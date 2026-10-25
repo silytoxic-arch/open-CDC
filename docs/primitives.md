@@ -12,7 +12,9 @@ Common rules:
   - `library unisim; use unisim.vcomponents.all;`
   - `library xpm; use xpm.vcomponents.all;`
   - `library altera_mf; use altera_mf.altera_mf_components.all;`
-- (the Lattice and Gowin models are available from Verilog/SystemVerilog only)
+  - Lattice: `library ecp5u; use ecp5u.components.all;` (also `ecp5um`, `ecp5um5g`), `library sb_ice40_components_syn; use sb_ice40_components_syn.components.all;` (iCEcube2) and `library iCE40UP; use iCE40UP.components.all;` (Radiant);
+  - Gowin: `library gw1n; use gw1n.components.all;` (also `gw1nr`, `gw1ns`, `gw1nz`, `gw2a`, `gw2ar`, `gw5a`, `gw5ast`).
+- A component package is added only for a library the VHDL code names and the project does not provide itself.
 - "No clock domain" means the signal is driven by the internal black box `opencdc_async_source`. Such a signal used as an asynchronous reset is checked by CDC-006. As data, it is listed as `CDC-NO-DOMAIN` and not checked.
 
 Sources:
@@ -75,24 +77,29 @@ Sources:
 
 | Primitive | Model |
 |---|---|
-| `EHXPLLL` (ECP5) | `CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3` derived from `CLKI`: f(CLKOP) = f(CLKI) × `CLKFB_DIV` / `CLKI_DIV`, f(CLKOSx) = f(CLKOP) × `CLKOP_DIV` / `CLKOSx_DIV` (feedback from `CLKOP`); input period from the input clock or `FREQUENCY_PIN_CLKI` (MHz); `LOCK` has no clock domain |
+| `EHXPLLL` (ECP5) | `CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3` derived from `CLKI`: f(VCO) = f(CLKI) × `CLKFB_DIV` × DIV(feedback output) / `CLKI_DIV`, f(CLKx) = f(VCO) / `CLKx_DIV`; the feedback output is selected by `FEEDBK_PATH` (`CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3`, or the `INT_` variants); input period from the input clock or `FREQUENCY_PIN_CLKI` (MHz); `LOCK` has no clock domain |
 | `SB_PLL40_CORE`, `SB_PLL40_PAD` (iCE40) | `PLLOUTCORE`/`PLLOUTGLOBAL` derived from the reference: f = f(ref) × (`DIVF`+1) / ((`DIVR`+1) × 2^`DIVQ`); `LOCK` has no clock domain |
 | `SB_GB`, `SB_DFF`, `SB_DFFE`, `SB_DFFR`, `SB_DFFS`, `SB_DFFER` (iCE40) | Global buffer (wire) and flip-flops |
+| `IDDRX1F`, `ODDRX1F` (ECP5) | DDR input (falling-edge capture) and output registers on `SCLK` |
+| `DP16KD` (ECP5) | True dual-port RAM: port A on `CLKA`, port B on `CLKB`, per-port write arrays as for Xilinx block RAM; bit-level ports (`DIA0`…, `ADA0`…, `DOA0`…) |
+| `SB_RAM40_4K`, `SB_RAM40_4KNR`, `SB_RAM40_4KNW`, `SB_RAM40_4KNRNW` (iCE40) | Write port on `WCLK`/`WCLKN`, read port on `RCLK`/`RCLKN` (N: falling edge) |
 
 ## Gowin
 
 | Primitive | Model |
 |---|---|
+| `SDPB` | Semi dual-port RAM: write port on `CLKA`, read port on `CLKB` |
+| `DPB` | True dual-port RAM: port A on `CLKA`, port B on `CLKB`, per-port write arrays |
 | `rPLL`, `PLLVR` | `CLKOUT`/`CLKOUTP` derived from `CLKIN`: f = f(in) × (`FBDIV_SEL`+1) / (`IDIV_SEL`+1); `CLKOUTD` = `CLKOUT` / `DYN_SDIV_SEL`, `CLKOUTD3` = `CLKOUT` / 3; input frequency from the input clock or `FCLKIN` (MHz); `LOCK` has no clock domain |
 
-Generic Gowin cell names (`DFF`, `DFFE`, `CLKDIV`, …) are deliberately not modelled: they collide with common user module names, and a missing user module must remain an error.
+Generic Gowin cell names (`DFF`, `DFFE`, `CLKDIV`, …) are deliberately not modelled: they collide with common user module names, and a missing user module must remain an error. Gowin `IDDR`/`ODDR` are not modelled either: the names are the Xilinx cells.
 
 ## Not modelled
 
 These primitives are still reported as `FE-UNKNOWN-MODULE`:
 - Xilinx: `ICAPE2`/`ICAPE3`, `STARTUPE2/3`, `DSP48E1`/`DSP48E2`, `PCIE*`, `CMAC*`, `HBM*`;
 - Intel: transceiver IP, `altlvds`, `altiobuf`;
-- Lattice: SERDES, DDR and memory primitives; Gowin: memory and DDR primitives; Microchip primitives.
+- Lattice: SERDES (`DCUA`), gearing DDR (`IDDRX2F`, `ODDRX2F`, …), `PDPW16KD`, iCE40 `SB_IO`; Gowin: `IDDR`/`ODDR` (name clash with Xilinx), `SP`, `pROM`, SERDES; Microchip primitives.
 
 For each one you can:
 - provide your own behavioral model in the sources (it replaces the built-in lookup), or

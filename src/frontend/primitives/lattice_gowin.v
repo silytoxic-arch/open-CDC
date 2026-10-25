@@ -1,9 +1,11 @@
-// OpenCDC behavioral models of Lattice and Gowin clocking primitives (the
-// clock structure only). Output periods are derived from the divider
-// parameters; LOCK has no clock domain.
+// OpenCDC behavioral models of Lattice and Gowin primitives: clock generators
+// (the clock structure only; output periods are derived from the divider
+// parameters; LOCK has no clock domain), registers, DDR cells and block RAMs.
+// Gowin IDDR/ODDR are not modelled: their names are taken by the Xilinx cells.
 
-// Lattice ECP5 PLL with feedback from CLKOP (FEEDBK_PATH = "CLKOP"):
-//   f(CLKOP) = f(CLKI) x CLKFB_DIV / CLKI_DIV,  f(CLKOSx) = f(CLKOP) x CLKOP_DIV / CLKOSx_DIV
+// Lattice ECP5 PLL. The feedback output (FEEDBK_PATH: CLKOP, CLKOS, CLKOS2,
+// CLKOS3 or the INT_ variants) closes the loop, so
+//   f(VCO) = f(CLKI) x CLKFB_DIV x <feedback output>_DIV / CLKI_DIV,  f(CLKx) = f(VCO) / CLKx_DIV
 module EHXPLLL #(parameter CLKI_DIV = 1, parameter CLKFB_DIV = 1, parameter CLKOP_DIV = 8,
                  parameter CLKOS_DIV = 8, parameter CLKOS2_DIV = 8, parameter CLKOS3_DIV = 8,
                  parameter CLKOP_ENABLE = "ENABLED", parameter CLKOS_ENABLE = "DISABLED",
@@ -15,14 +17,19 @@ module EHXPLLL #(parameter CLKI_DIV = 1, parameter CLKFB_DIV = 1, parameter CLKO
                  input ENCLKOS2, input ENCLKOS3, output CLKOP, output CLKOS, output CLKOS2, output CLKOS3,
                  output LOCK, output INTLOCK, output REFCLK, output CLKINTFB);
     localparam real INP = FREQUENCY_PIN_CLKI > 0.0 ? 1000.0 / FREQUENCY_PIN_CLKI : 0.0;
-    localparam real OP = (1.0 * CLKI_DIV) / CLKFB_DIV; // period ratio of CLKOP
-    (* OPENCDC_CLOCK_PIN = "CLKOP", OPENCDC_CLOCK_RATIO = OP, OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg op = 1'b0;
-    (* OPENCDC_CLOCK_PIN = "CLKOS", OPENCDC_CLOCK_RATIO = OP * CLKOS_DIV / CLKOP_DIV,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg os = 1'b0;
-    (* OPENCDC_CLOCK_PIN = "CLKOS2", OPENCDC_CLOCK_RATIO = OP * CLKOS2_DIV / CLKOP_DIV,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg os2 = 1'b0;
-    (* OPENCDC_CLOCK_PIN = "CLKOS3", OPENCDC_CLOCK_RATIO = OP * CLKOS3_DIV / CLKOP_DIV,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg os3 = 1'b0;
+    localparam integer FBD = (FEEDBK_PATH == "CLKOS" || FEEDBK_PATH == "INT_OS")    ? CLKOS_DIV
+                           : (FEEDBK_PATH == "CLKOS2" || FEEDBK_PATH == "INT_OS2") ? CLKOS2_DIV
+                           : (FEEDBK_PATH == "CLKOS3" || FEEDBK_PATH == "INT_OS3") ? CLKOS3_DIV
+                                                                                   : CLKOP_DIV;
+    localparam real VCO = (1.0 * CLKI_DIV) / (1.0 * CLKFB_DIV * FBD); // period ratio of the VCO
+    (* OPENCDC_CLOCK_PIN = "CLKOP", OPENCDC_CLOCK_RATIO = VCO * CLKOP_DIV, OPENCDC_CLOCK_INPUT_PERIOD = INP *)
+    reg op = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKOS", OPENCDC_CLOCK_RATIO = VCO * CLKOS_DIV, OPENCDC_CLOCK_INPUT_PERIOD = INP *)
+    reg os = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKOS2", OPENCDC_CLOCK_RATIO = VCO * CLKOS2_DIV, OPENCDC_CLOCK_INPUT_PERIOD = INP *)
+    reg os2 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKOS3", OPENCDC_CLOCK_RATIO = VCO * CLKOS3_DIV, OPENCDC_CLOCK_INPUT_PERIOD = INP *)
+    reg os3 = 1'b0;
     always @(posedge CLKI) begin op <= ~op; os <= ~os; os2 <= ~os2; os3 <= ~os3; end
     assign CLKOP = op;
     assign CLKOS = os;
@@ -140,3 +147,193 @@ endmodule
 
 // Generic Gowin names (DFF, DFFE, CLKDIV, ...) are not modelled: they collide
 // with common user module names, and a missing user module must stay an error.
+
+// ---- Lattice ECP5 DDR and block RAM -------------------------------------
+
+module IDDRX1F (input D, input SCLK, input RST, output reg Q0, output reg Q1);
+    reg neg;
+    always @(negedge SCLK or posedge RST) if (RST) neg <= 1'b0; else neg <= D;
+    always @(posedge SCLK or posedge RST)
+        if (RST) begin Q0 <= 1'b0; Q1 <= 1'b0; end
+        else begin Q0 <= D; Q1 <= neg; end
+endmodule
+
+module ODDRX1F (input D0, input D1, input SCLK, input RST, output Q);
+    reg r0, r1;
+    always @(posedge SCLK or posedge RST)
+        if (RST) begin r0 <= 1'b0; r1 <= 1'b0; end
+        else begin r0 <= D0; r1 <= D1; end
+    assign Q = SCLK ? r0 : r1;
+endmodule
+
+// True dual-port 16 kbit RAM: port A on CLKA, port B on CLKB. Each port has
+// its own write array; a read sees both (the crossing goes through the RAM).
+module DP16KD #(parameter DATA_WIDTH_A = 18, parameter DATA_WIDTH_B = 18,
+                parameter REGMODE_A = "NOREG", parameter REGMODE_B = "NOREG",
+                parameter WRITEMODE_A = "NORMAL", parameter WRITEMODE_B = "NORMAL",
+                parameter RESETMODE = "SYNC", parameter ASYNC_RESET_RELEASE = "SYNC",
+                parameter CSDECODE_A = "0b000", parameter CSDECODE_B = "0b000", parameter GSR = "ENABLED",
+                parameter INITVAL_DATA = "NONE")
+              (input DIA0, input DIA1, input DIA2, input DIA3, input DIA4, input DIA5, input DIA6, input DIA7, input DIA8, input DIA9, input DIA10, input DIA11, input DIA12, input DIA13, input DIA14, input DIA15, input DIA16, input DIA17, input ADA0, input ADA1, input ADA2, input ADA3, input ADA4, input ADA5, input ADA6, input ADA7, input ADA8, input ADA9, input ADA10, input ADA11, input ADA12, input ADA13,
+               input CEA, input OCEA, input CLKA, input WEA, input CSA0, input CSA1, input CSA2, input RSTA,
+               input DIB0, input DIB1, input DIB2, input DIB3, input DIB4, input DIB5, input DIB6, input DIB7, input DIB8, input DIB9, input DIB10, input DIB11, input DIB12, input DIB13, input DIB14, input DIB15, input DIB16, input DIB17, input ADB0, input ADB1, input ADB2, input ADB3, input ADB4, input ADB5, input ADB6, input ADB7, input ADB8, input ADB9, input ADB10, input ADB11, input ADB12, input ADB13,
+               input CEB, input OCEB, input CLKB, input WEB, input CSB0, input CSB1, input CSB2, input RSTB,
+               output DOA0, output DOA1, output DOA2, output DOA3, output DOA4, output DOA5, output DOA6, output DOA7, output DOA8, output DOA9, output DOA10, output DOA11, output DOA12, output DOA13, output DOA14, output DOA15, output DOA16, output DOA17, output DOB0, output DOB1, output DOB2, output DOB3, output DOB4, output DOB5, output DOB6, output DOB7, output DOB8, output DOB9, output DOB10, output DOB11, output DOB12, output DOB13, output DOB14, output DOB15, output DOB16, output DOB17);
+    wire [17:0] dia = {DIA17, DIA16, DIA15, DIA14, DIA13, DIA12, DIA11, DIA10, DIA9, DIA8, DIA7, DIA6, DIA5, DIA4, DIA3, DIA2, DIA1, DIA0};
+    wire [17:0] dib = {DIB17, DIB16, DIB15, DIB14, DIB13, DIB12, DIB11, DIB10, DIB9, DIB8, DIB7, DIB6, DIB5, DIB4, DIB3, DIB2, DIB1, DIB0};
+    wire [9:0] ada = {ADA13, ADA12, ADA11, ADA10, ADA9, ADA8, ADA7, ADA6, ADA5, ADA4};
+    wire [9:0] adb = {ADB13, ADB12, ADB11, ADB10, ADB9, ADB8, ADB7, ADB6, ADB5, ADB4};
+    reg [17:0] mem_a [0:1023];
+    reg [17:0] mem_b [0:1023];
+    reg [17:0] doa, dob;
+    always @(posedge CLKA) if (CEA && WEA) mem_a[ada] <= dia;
+    always @(posedge CLKB) if (CEB && WEB) mem_b[adb] <= dib;
+    always @(posedge CLKA) if (CEA) doa <= mem_a[ada] ^ mem_b[ada];
+    always @(posedge CLKB) if (CEB) dob <= mem_a[adb] ^ mem_b[adb];
+    assign {DOA17, DOA16, DOA15, DOA14, DOA13, DOA12, DOA11, DOA10, DOA9, DOA8, DOA7, DOA6, DOA5, DOA4, DOA3, DOA2, DOA1, DOA0} = doa;
+    assign {DOB17, DOB16, DOB15, DOB14, DOB13, DOB12, DOB11, DOB10, DOB9, DOB8, DOB7, DOB6, DOB5, DOB4, DOB3, DOB2, DOB1, DOB0} = dob;
+endmodule
+
+// ---- Lattice iCE40 block RAM ----------------------------------------------
+// Write port on WCLK, read port on RCLK (N variants: falling edge).
+
+module SB_RAM40_4K #(parameter WRITE_MODE = 0, parameter READ_MODE = 0,
+                parameter [255:0] INIT_0 = 256'h0,
+                parameter [255:0] INIT_1 = 256'h0,
+                parameter [255:0] INIT_2 = 256'h0,
+                parameter [255:0] INIT_3 = 256'h0,
+                parameter [255:0] INIT_4 = 256'h0,
+                parameter [255:0] INIT_5 = 256'h0,
+                parameter [255:0] INIT_6 = 256'h0,
+                parameter [255:0] INIT_7 = 256'h0,
+                parameter [255:0] INIT_8 = 256'h0,
+                parameter [255:0] INIT_9 = 256'h0,
+                parameter [255:0] INIT_A = 256'h0,
+                parameter [255:0] INIT_B = 256'h0,
+                parameter [255:0] INIT_C = 256'h0,
+                parameter [255:0] INIT_D = 256'h0,
+                parameter [255:0] INIT_E = 256'h0,
+                parameter [255:0] INIT_F = 256'h0,
+                parameter INIT_FILE = "")
+               (output [15:0] RDATA, input [10:0] RADDR, input RCLK, input RCLKE, input RE,
+                input [10:0] WADDR, input WCLK, input WCLKE, input WE, input [15:0] WDATA, input [15:0] MASK);
+    reg [15:0] mem [0:2047];
+    reg [15:0] q;
+    always @(posedge WCLK) if (WCLKE && WE) mem[WADDR] <= WDATA;
+    always @(posedge RCLK) if (RCLKE && RE) q <= mem[RADDR];
+    assign RDATA = q;
+endmodule
+
+module SB_RAM40_4KNR #(parameter WRITE_MODE = 0, parameter READ_MODE = 0,
+                parameter [255:0] INIT_0 = 256'h0,
+                parameter [255:0] INIT_1 = 256'h0,
+                parameter [255:0] INIT_2 = 256'h0,
+                parameter [255:0] INIT_3 = 256'h0,
+                parameter [255:0] INIT_4 = 256'h0,
+                parameter [255:0] INIT_5 = 256'h0,
+                parameter [255:0] INIT_6 = 256'h0,
+                parameter [255:0] INIT_7 = 256'h0,
+                parameter [255:0] INIT_8 = 256'h0,
+                parameter [255:0] INIT_9 = 256'h0,
+                parameter [255:0] INIT_A = 256'h0,
+                parameter [255:0] INIT_B = 256'h0,
+                parameter [255:0] INIT_C = 256'h0,
+                parameter [255:0] INIT_D = 256'h0,
+                parameter [255:0] INIT_E = 256'h0,
+                parameter [255:0] INIT_F = 256'h0,
+                parameter INIT_FILE = "")
+               (output [15:0] RDATA, input [10:0] RADDR, input RCLKN, input RCLKE, input RE,
+                input [10:0] WADDR, input WCLK, input WCLKE, input WE, input [15:0] WDATA, input [15:0] MASK);
+    reg [15:0] mem [0:2047];
+    reg [15:0] q;
+    always @(posedge WCLK) if (WCLKE && WE) mem[WADDR] <= WDATA;
+    always @(negedge RCLKN) if (RCLKE && RE) q <= mem[RADDR];
+    assign RDATA = q;
+endmodule
+
+module SB_RAM40_4KNW #(parameter WRITE_MODE = 0, parameter READ_MODE = 0,
+                parameter [255:0] INIT_0 = 256'h0,
+                parameter [255:0] INIT_1 = 256'h0,
+                parameter [255:0] INIT_2 = 256'h0,
+                parameter [255:0] INIT_3 = 256'h0,
+                parameter [255:0] INIT_4 = 256'h0,
+                parameter [255:0] INIT_5 = 256'h0,
+                parameter [255:0] INIT_6 = 256'h0,
+                parameter [255:0] INIT_7 = 256'h0,
+                parameter [255:0] INIT_8 = 256'h0,
+                parameter [255:0] INIT_9 = 256'h0,
+                parameter [255:0] INIT_A = 256'h0,
+                parameter [255:0] INIT_B = 256'h0,
+                parameter [255:0] INIT_C = 256'h0,
+                parameter [255:0] INIT_D = 256'h0,
+                parameter [255:0] INIT_E = 256'h0,
+                parameter [255:0] INIT_F = 256'h0,
+                parameter INIT_FILE = "")
+               (output [15:0] RDATA, input [10:0] RADDR, input RCLK, input RCLKE, input RE,
+                input [10:0] WADDR, input WCLKN, input WCLKE, input WE, input [15:0] WDATA, input [15:0] MASK);
+    reg [15:0] mem [0:2047];
+    reg [15:0] q;
+    always @(negedge WCLKN) if (WCLKE && WE) mem[WADDR] <= WDATA;
+    always @(posedge RCLK) if (RCLKE && RE) q <= mem[RADDR];
+    assign RDATA = q;
+endmodule
+
+module SB_RAM40_4KNRNW #(parameter WRITE_MODE = 0, parameter READ_MODE = 0,
+                parameter [255:0] INIT_0 = 256'h0,
+                parameter [255:0] INIT_1 = 256'h0,
+                parameter [255:0] INIT_2 = 256'h0,
+                parameter [255:0] INIT_3 = 256'h0,
+                parameter [255:0] INIT_4 = 256'h0,
+                parameter [255:0] INIT_5 = 256'h0,
+                parameter [255:0] INIT_6 = 256'h0,
+                parameter [255:0] INIT_7 = 256'h0,
+                parameter [255:0] INIT_8 = 256'h0,
+                parameter [255:0] INIT_9 = 256'h0,
+                parameter [255:0] INIT_A = 256'h0,
+                parameter [255:0] INIT_B = 256'h0,
+                parameter [255:0] INIT_C = 256'h0,
+                parameter [255:0] INIT_D = 256'h0,
+                parameter [255:0] INIT_E = 256'h0,
+                parameter [255:0] INIT_F = 256'h0,
+                parameter INIT_FILE = "")
+               (output [15:0] RDATA, input [10:0] RADDR, input RCLKN, input RCLKE, input RE,
+                input [10:0] WADDR, input WCLKN, input WCLKE, input WE, input [15:0] WDATA, input [15:0] MASK);
+    reg [15:0] mem [0:2047];
+    reg [15:0] q;
+    always @(negedge WCLKN) if (WCLKE && WE) mem[WADDR] <= WDATA;
+    always @(negedge RCLKN) if (RCLKE && RE) q <= mem[RADDR];
+    assign RDATA = q;
+endmodule
+
+// ---- Gowin block RAM -----------------------------------------------
+
+// Semi dual-port RAM: write port A on CLKA, read port B on CLKB.
+module SDPB #(parameter READ_MODE = 1'b0, parameter BIT_WIDTH_0 = 32, parameter BIT_WIDTH_1 = 32,
+              parameter BLK_SEL_0 = 3'b000, parameter BLK_SEL_1 = 3'b000, parameter RESET_MODE = "SYNC")
+             (output [31:0] DO, input [31:0] DI, input [2:0] BLKSELA, input [2:0] BLKSELB,
+              input [13:0] ADA, input [13:0] ADB, input CLKA, input CLKB, input CEA, input CEB, input OCE,
+              input RESETA, input RESETB);
+    reg [31:0] mem [0:1023];
+    reg [31:0] q;
+    always @(posedge CLKA) if (CEA) mem[ADA[13:4]] <= DI;
+    always @(posedge CLKB) if (CEB) q <= mem[ADB[13:4]];
+    assign DO = q;
+endmodule
+
+// True dual-port RAM: port A on CLKA, port B on CLKB.
+module DPB #(parameter READ_MODE0 = 1'b0, parameter READ_MODE1 = 1'b0, parameter WRITE_MODE0 = 2'b00,
+             parameter WRITE_MODE1 = 2'b00, parameter BIT_WIDTH_0 = 16, parameter BIT_WIDTH_1 = 16,
+             parameter BLK_SEL_0 = 3'b000, parameter BLK_SEL_1 = 3'b000, parameter RESET_MODE = "SYNC")
+            (output [15:0] DOA, output [15:0] DOB, input [15:0] DIA, input [15:0] DIB, input [2:0] BLKSELA,
+             input [2:0] BLKSELB, input [13:0] ADA, input [13:0] ADB, input WREA, input WREB, input CLKA,
+             input CLKB, input CEA, input CEB, input OCEA, input OCEB, input RESETA, input RESETB);
+    reg [15:0] mem_a [0:1023];
+    reg [15:0] mem_b [0:1023];
+    reg [15:0] qa, qb;
+    always @(posedge CLKA) if (CEA && WREA) mem_a[ADA[13:4]] <= DIA;
+    always @(posedge CLKB) if (CEB && WREB) mem_b[ADB[13:4]] <= DIB;
+    always @(posedge CLKA) if (CEA) qa <= mem_a[ADA[13:4]] ^ mem_b[ADA[13:4]];
+    always @(posedge CLKB) if (CEB) qb <= mem_a[ADB[13:4]] ^ mem_b[ADB[13:4]];
+    assign DOA = qa;
+    assign DOB = qb;
+endmodule

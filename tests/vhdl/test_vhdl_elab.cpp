@@ -484,15 +484,17 @@ TEST_CASE("VHDL: byte-enable write into a part of a dynamically indexed element"
     CHECK(r.has("reg p"));
 }
 
-TEST_CASE("VHDL negative: two variable indexes in one target", "[vhdl][elab]") {
+TEST_CASE("VHDL negative: a variable index into a field of a variably indexed element", "[vhdl][elab]") {
+    // m(i)(j) is supported (stage 14); m(i).f(j) is not
     auto r = elaborate(lib("entity t is port (clk : in std_logic; i, j : in natural range 0 to 3; d : in std_logic;\n"
                            "  q : out std_logic_vector(3 downto 0)); end;\n"
                            "architecture rtl of t is\n"
-                           "  type m_t is array (0 to 3) of std_logic_vector(3 downto 0);\n"
+                           "  type e_t is record f : std_logic_vector(3 downto 0); g : std_logic; end record;\n"
+                           "  type m_t is array (0 to 3) of e_t;\n"
                            "  signal m : m_t;\n"
                            "begin\n"
-                           "  process (clk) begin if rising_edge(clk) then m(i)(j) <= d; end if; end process;\n"
-                           "  q <= m(0);\n"
+                           "  process (clk) begin if rising_edge(clk) then m(i).f(j) <= d; end if; end process;\n"
+                           "  q <= m(0).f;\n"
                            "end;\n"),
                        "t");
     CHECK(r.count("IR-UNSUPPORTED-TARGET") == 1);
@@ -724,4 +726,134 @@ TEST_CASE("VHDL: record fields untouched by the branches bypass the multiplexers
     REQUIRE(r.design);
     CHECK(r.errors() == 0);
     CHECK(r.has("rin.rdy = 1'b1"));
+}
+
+// ===========================================================================
+// Stage 14 fixes found on real code (microwatt)
+// ===========================================================================
+
+TEST_CASE("VHDL: slices with variable bounds of static length", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (d : in std_ulogic_vector(255 downto 0); a : in std_ulogic_vector(1 downto 0);\n"
+                           "  b : in std_ulogic_vector(2 downto 0); q : out std_ulogic_vector(63 downto 0);\n"
+                           "  q2 : out std_ulogic_vector(3 downto 0); q3 : out std_ulogic_vector(0 to 1)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  function select_dword(data : std_ulogic_vector(255 downto 0); addr : std_ulogic_vector(1 downto 0))\n"
+                           "    return std_ulogic_vector is\n"
+                           "    variable firstbit : integer;\n"
+                           "  begin\n"
+                           "    firstbit := to_integer(unsigned(addr)) * 64;\n"
+                           "    return data(firstbit + 63 downto firstbit);\n"
+                           "  end;\n"
+                           "  signal asc : std_ulogic_vector(0 to 7);\n"
+                           "begin\n"
+                           "  asc <= d(7 downto 0);\n"
+                           "  q <= select_dword(d, a);\n"
+                           "  process (all) variable j : integer; begin\n"
+                           "    j := (7 - to_integer(unsigned(b))) * 4;\n"
+                           "    q2 <= d(j + 3 downto j);\n"
+                           "    q3 <= asc(to_integer(unsigned(b)) to to_integer(unsigned(b)) + 1);\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-NOT-STATIC") == 0);
+    CHECK(r.has("[64] = dyn_select<1@255:0>(A=d"));
+    CHECK(r.has("[4] = dyn_select<1@255:0>(A=d"));
+    CHECK(r.has("[2] = dyn_select<1@0:7>(A=asc, S=$add")); // right bound: lowest bit offset
+}
+
+TEST_CASE("VHDL negative: slice bounds of variable length are still rejected", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (d : in std_ulogic_vector(15 downto 0); a, b : in natural range 0 to 15;\n"
+                           "  q : out std_ulogic_vector(3 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (all) begin q <= (others => '0'); q(0) <= d(a downto b)(b); end process;\n"
+                           "end;\n"),
+                       "t");
+    CHECK(r.count("VHDL-NOT-STATIC") >= 1);
+}
+
+TEST_CASE("VHDL: numeric_std std_match and is_x overloads, slices in range choices", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (v : in std_ulogic_vector(3 downto 0); u : in unsigned(3 downto 0);\n"
+                           "  s : in std_ulogic; m1, m2, m3 : out boolean; info : in std_ulogic_vector(3 downto 0);\n"
+                           "  w : out std_ulogic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  m1 <= std_match(v, \"01--\");\n"
+                           "  m2 <= std_match(s, '1') and not is_x(u);\n"
+                           "  m3 <= not is_X(signed(v));\n"
+                           "  w <= (3 downto 0 => info, others => '0');\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.has("w = {4'b0000, info}"));
+}
+
+TEST_CASE("VHDL negative: a slice in a range choice must have the choice's length", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (info : in std_ulogic_vector(3 downto 0); w : out std_ulogic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of t is begin w <= (4 downto 0 => info, others => '0'); end;\n"),
+                       "t");
+    CHECK(r.count("VHDL-LENGTH") == 1);
+}
+
+TEST_CASE("VHDL: two variable indexes in one target", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (clk, d : in std_ulogic; i : in natural range 0 to 3; j : in natural range 0 to 1;\n"
+                           "  q : out std_ulogic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type row_t is array (0 to 1) of std_ulogic;\n"
+                           "  type tab_t is array (0 to 3) of row_t;\n"
+                           "  signal tab : tab_t := (others => (others => '0'));\n"
+                           "begin\n"
+                           "  process (clk) begin if rising_edge(clk) then tab(i)(j) <= d; end if; end process;\n"
+                           "  g : for k in 0 to 3 generate q(2 * k + 1) <= tab(k)(0); q(2 * k) <= tab(k)(1); end generate;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-TARGET") == 0);
+    CHECK(r.has("dyn_insert"));
+}
+
+TEST_CASE("VHDL: a case over every literal of an enumeration infers no latch", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (a, b : in std_ulogic; sel : in std_ulogic_vector(1 downto 0); q : out std_ulogic); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type kind_t is (K_A, K_B, K_C);\n"
+                           "begin\n"
+                           "  process (all) variable k : kind_t; begin\n"
+                           "    k := K_A;\n"
+                           "    if sel = \"01\" then k := K_B; elsif sel = \"10\" then k := K_C; end if;\n"
+                           "    case k is\n"
+                           "      when K_A => q <= a;\n"
+                           "      when K_B => q <= b;\n"
+                           "      when K_C => q <= a and b;\n"
+                           "    end case;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-LATCH-INFERRED") == 0);
+}
+
+TEST_CASE("VHDL: textio routines with arguments are accepted in initial value functions", "[vhdl][elab]") {
+    auto r = elaborate(lib("use std.textio.all;\n"
+                           "entity t is generic (F : string := \"init.hex\"); port (clk : in std_ulogic; a : in natural range 0 to 3;\n"
+                           "  q : out std_ulogic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type ram_t is array (0 to 3) of std_ulogic_vector(7 downto 0);\n"
+                           "  impure function init_ram(name : string) return ram_t is\n"
+                           "    file f : text open read_mode is name; variable l : line; variable w : std_ulogic_vector(7 downto 0);\n"
+                           "    variable r : ram_t := (others => (others => '0'));\n"
+                           "  begin\n"
+                           "    for i in 0 to 3 loop exit when endfile(f); readline(f, l); hread(l, w); r(i) := w; end loop;\n"
+                           "    return r;\n"
+                           "  end function;\n"
+                           "  signal mem : ram_t := init_ram(F);\n"
+                           "begin\n"
+                           "  process (clk) begin if rising_edge(clk) then q <= mem(a); end if; end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-NO-OVERLOAD") == 0);
 }

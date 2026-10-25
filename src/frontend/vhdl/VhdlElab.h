@@ -496,6 +496,9 @@ public:
                   std::vector<std::vector<Target>>& outTargets);
     SVal indexValue(const SVal& arr, const std::vector<SVal>& idx, Loc l);
     SVal sliceValue(const SVal& arr, const IntRange& r, Loc l);
+    /// a(x + k downto x): a slice whose bounds vary but whose length is
+    /// static. nullopt when the range is not of that form.
+    std::optional<SVal> dynamicSlice(const SVal& arr, const Expr& range, Ctx& ctx, Loc l);
     SVal fieldValue(const SVal& rec, std::size_t field, Loc l);
     SVal evalAggregate(const Expr& e, Ctx& ctx, const Type* expected);
     SVal evalStringLiteral(const std::string& text, const Type* expected, Loc l);
