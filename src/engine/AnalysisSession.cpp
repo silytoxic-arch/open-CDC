@@ -171,8 +171,10 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
         std::size_t readFiles = 0;
         if (!config.constraints.empty()) {
             constraints::DesignObjectResolver resolver(*view);
+            // one interpreter for all files: procedures and variables carry over
+            constraints::SdcReader reader(resolver, *cons, sink, {config.tclSourceDirs});
             for (const auto& f : config.constraints)
-                if (constraints::readSdcFile(f, resolver, *cons, sink))
+                if (reader.readFile(f))
                     ++readFiles;
         }
         pushStage(

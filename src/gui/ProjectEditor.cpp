@@ -94,6 +94,7 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
       constraints_(nullptr),
       waivers_(nullptr),
       vivadoReports_(nullptr),
+      tclSourceDirs_(nullptr),
       unknownClock_(new QComboBox(this)),
       minStages_(new QSpinBox(this)),
       reconvDepth_(new QSpinBox(this)) {
@@ -184,6 +185,15 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
                                                        tr("Reports (*.rpt *.txt);;All files (*)")));
     });
     connect(rmViv, &QPushButton::clicked, this, [this] { delete vivadoReports_->currentItem(); });
+    tclSourceDirs_ = makePathList(config.tclSourceDirs);
+    auto* addTcl = button(tr("Add..."), this);
+    auto* rmTcl = button(tr("Remove"), this);
+    connect(addTcl, &QPushButton::clicked, this, [this] {
+        const QString dir = QFileDialog::getExistingDirectory(this, tr("Add Tcl source directory"), baseDir_);
+        if (!dir.isEmpty())
+            addTclSourceDir(dir);
+    });
+    connect(rmTcl, &QPushButton::clicked, this, [this] { delete tclSourceDirs_->currentItem(); });
     auto* conPage = new QWidget(tabs);
     auto* conLayout = new QVBoxLayout(conPage);
     conLayout->addWidget(new QLabel(tr("SDC / XDC constraints:"), conPage));
@@ -193,6 +203,10 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
     conLayout->addWidget(new QLabel(tr("Vivado clock reports (report_clocks output, periods are cross-checked):"),
                                     conPage));
     conLayout->addWidget(withButtons(vivadoReports_, {addViv, rmViv}, conPage), 1);
+    conLayout->addWidget(new QLabel(tr("Tcl source directories (relative 'source' paths in constraint scripts are "
+                                       "searched here, e.g. the directory Quartus/Vivado runs them from):"),
+                                    conPage));
+    conLayout->addWidget(withButtons(tclSourceDirs_, {addTcl, rmTcl}, conPage), 1);
     tabs->addTab(conPage, tr("Constraints && Waivers"));
 
     // Preprocessor and parameters
@@ -308,6 +322,7 @@ void ProjectEditor::addIncludeDir(const QString& dir) { addPathItems(includeDirs
 void ProjectEditor::addWaivers(const QStringList& files) { addPathItems(waivers_, files); }
 
 void ProjectEditor::addVivadoReports(const QStringList& files) { addPathItems(vivadoReports_, files); }
+void ProjectEditor::addTclSourceDir(const QString& dir) { addPathItems(tclSourceDirs_, {dir}); }
 
 void ProjectEditor::setParameter(const QString& name, const QString& value) {
     for (int r = 0; r < parameters_->rowCount(); ++r)
@@ -356,6 +371,7 @@ engine::ProjectConfig ProjectEditor::config() const {
     c.constraints = listPaths(constraints_);
     c.waivers = listPaths(waivers_);
     c.vivadoClockReports = listPaths(vivadoReports_);
+    c.tclSourceDirs = listPaths(tclSourceDirs_);
     c.options.unknownClockRelation = static_cast<engine::UnknownClockPolicy>(unknownClock_->currentData().toInt());
     c.options.minSyncStages = static_cast<std::uint32_t>(minStages_->value());
     c.options.reconvergenceDepth = static_cast<std::uint32_t>(reconvDepth_->value());

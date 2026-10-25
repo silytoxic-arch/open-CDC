@@ -46,6 +46,8 @@ struct AnalysisOptions {
 ///   "constraints": ["constraints/clocks.sdc"],  (optional; SDC/XDC subset)
 ///   "waivers":     ["waivers.json"],            (optional; see engine/WaiverFile.h)
 ///   "vivadoClockReports": ["impl/clocks.rpt"],  (optional; Vivado report_clocks output, see engine/VivadoClocks.h)
+///   "tclSourceDirs": ["syn/quartus"],           (optional; directories searched for relative Tcl `source`
+///                                                paths, e.g. the directory Quartus/Vivado runs the scripts from)
 ///   "options":     {"unknownClockRelation": "report",   (optional; report | assume_async | assume_sync)
 ///                   "minSyncStages": 2,                 (optional; 1..8)
 ///                   "reconvergenceDepth": 2}            (optional; 0..8)
@@ -66,6 +68,9 @@ struct ProjectConfig {
     /// Vivado `report_clocks` outputs whose periods are compared with the
     /// clock model (absolute).
     std::vector<std::filesystem::path> vivadoClockReports;
+    /// Directories searched for relative `source` paths in constraint
+    /// scripts, after the directory of the sourcing file (absolute).
+    std::vector<std::filesystem::path> tclSourceDirs;
     AnalysisOptions options;
 
     [[nodiscard]] frontend::FrontendInput toFrontendInput() const;

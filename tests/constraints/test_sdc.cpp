@@ -1,6 +1,7 @@
 #include "constraints/Sdc.h"
 
 #include "../DesignUtil.h"
+#include "../TestUtil.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -159,7 +160,7 @@ TEST_CASE("Errors, unsupported and ignored commands are reported", "[constraints
                    "set_false_path -through [get_ports clk]\n"            // ignored (args not evaluated)
                    "set_output_delay 1 -clock x [get_ports rst_n]\n"
                    "set_output_delay 2 -clock x [get_ports rst_n]\n"
-                   "proc f {} { puts x }\n"                               // unsupported Tcl
+                   "namespace eval ns { puts x }\n"                       // unsupported Tcl
                    "frobnicate 1 2\n"                                     // unknown
                    "get_ports -filter {NAME =~ clk*} clk\n"              // unsupported option
                    "create_clock -period 1 {clk\n",                       // unterminated
@@ -460,4 +461,146 @@ TEST_CASE("get_cells -regexp: filters compare with regular expressions", "[const
     // negative: a malformed regular expression in a filter
     auto q = parse("set a [get_cells -hier -regexp -filter {REF_NAME =~ \"(\"}]\n", r);
     CHECK(q.countCode("CON-PARSE") == 1);
+}
+
+TEST_CASE("Tcl procedures: arguments, defaults, args, return, global, local scope", "[constraints]") {
+    FakeResolver r;
+    auto p = parse("set base 2\n"
+                   "proc mk {name {period 10} args} {\n"
+                   "    global base\n"
+                   "    set local [expr {$period * $base}]\n"
+                   "    create_clock -name $name -period $local\n"
+                   "    return [llength $args]\n"
+                   "}\n"
+                   "proc twice {x} { return [expr {$x * 2}]; create_clock -name never -period 1 }\n"
+                   "proc first {l} { foreach e $l { if {$e > 1} { return $e } }; return none }\n"
+                   "set n [mk a]\n"
+                   "set m [mk b 3 x y z]\n"
+                   "create_clock -name n${n}_m${m}_t[twice 4]_f[first {1 5 7}]_g[first {0}] -period 1\n"
+                   "create_clock -name local_[info_exists_local] -period 1\n",
+                   r);
+    // 'info_exists_local' is unknown: reported, the rest runs
+    CHECK(p.countCode("CON-UNKNOWN-COMMAND") == 0); // [x] with an unknown command stays literal text
+    std::vector<std::string> names;
+    for (const auto& c : p.set.clocks)
+        names.push_back(c.name);
+    REQUIRE(names.size() == 4);
+    CHECK(names[0] == "a");
+    CHECK(p.set.clocks[0].periodNs == 20.0);
+    CHECK(p.set.clocks[1].periodNs == 6.0);
+    CHECK(names[2] == "n0_m3_t8_f5_gnone");
+    CHECK(p.set.clocks[0].loc.line == 5); // diagnostics and locations inside the body keep their line
+
+    // negative: wrong argument counts, runaway recursion, a local variable does not leak
+    auto q = parse("proc one {x} { set inner 1 }\n"
+                   "one\n"
+                   "one 1 2\n"
+                   "one 1\n"
+                   "proc rec {} { rec }\n"
+                   "rec\n"
+                   "set y $inner\n",
+                   r);
+    CHECK(q.countCode("CON-PARSE") == 4); // two argument errors, nesting limit, undefined variable
+}
+
+TEST_CASE("Tcl source: relative to the sourcing file, then the configured directories", "[constraints]") {
+    test::TempDir dir;
+    dir.write("lib/syn/clocks.sdc", "proc constrain_clk {name} { create_clock -name $name -period 8 }\n"
+                                    "return\n"
+                                    "create_clock -name after_return -period 1\n");
+    dir.write("lib/syn/more.sdc", "create_clock -name more -period 4\n");
+    const auto top = dir.write("proj/fpga.sdc", "source ../lib/syn/clocks.sdc\n"
+                                                "source syn/more.sdc\n" // only via the configured directory
+                                                "source missing.sdc\n"
+                                                "constrain_clk core\n");
+    FakeResolver r;
+    ConstraintSet set;
+    CollectingDiagnosticSink sink;
+    {
+        SdcReader reader(r, set, sink, {{dir.path() / "lib"}});
+        CHECK(reader.readFile(top));
+        // a later file sees the procedures of an earlier one
+        reader.parse("constrain_clk second\n", "second.sdc");
+    }
+    const auto diags = sink.take();
+    for (const auto& d : diags)
+        UNSCOPED_INFO(format(d));
+    std::vector<std::string> names;
+    for (const auto& c : set.clocks)
+        names.push_back(c.name);
+    CHECK(names == std::vector<std::string>{"more", "core", "second"});
+    CHECK(std::ranges::count_if(diags, [](const Diagnostic& d) {
+              return d.code == "CON-OPEN" && d.message.find("tclSourceDirs") != std::string::npos;
+          }) == 1);
+    CHECK(set.files.size() == 3); // the top file and the two sourced ones
+    // negative: a separate reader does not know the procedure
+    auto p = parse("constrain_clk x\n", r);
+    CHECK(p.countCode("CON-UNKNOWN-COMMAND") == 1);
+}
+
+TEST_CASE("Clock periods with units, Quartus commands that need no action", "[constraints]") {
+    FakeResolver r;
+    auto p = parse("create_clock -name a -period \"40.000 ns\"\n"
+                   "create_clock -name b -period {125 MHz}\n"
+                   "create_clock -name c -period \"800 ps\"\n"
+                   "derive_pll_clocks\n"
+                   "derive_clock_uncertainty\n"
+                   "set_time_format -unit ns -decimal_places 3\n"
+                   "create_clock -period 40 -name {altera_reserved_tck} {altera_reserved_tck}\n",
+                   r);
+    REQUIRE(p.set.clocks.size() == 4);
+    CHECK(p.set.clocks[0].periodNs == 40.0);
+    CHECK(p.set.clocks[1].periodNs == 8.0);
+    CHECK(p.set.clocks[2].periodNs == 0.8);
+    CHECK(p.countCode("CON-UNKNOWN-COMMAND") == 0);
+    // Quartus's reserved JTAG port is not in the RTL: noted, not warned
+    CHECK(std::ranges::all_of(p.diags, [](const Diagnostic& d) { return d.severity != Severity::Warning; }));
+    // negative: an unknown unit
+    auto q = parse("create_clock -name d -period \"8 furlongs\"\n", r);
+    CHECK(q.countCode("CON-PARSE") == 1);
+}
+
+TEST_CASE("Quartus collections: '|' names, registers by signal name, keepers, collection commands", "[constraints]") {
+    auto b = test::buildDesign("module sync2(input clk, input d, output q);\n"
+                               "  reg s1_reg, s2_reg;\n"
+                               "  always @(posedge clk) begin s1_reg <= d; s2_reg <= s1_reg; end\n"
+                               "  assign q = s2_reg;\n"
+                               "endmodule\n"
+                               "module pll(input inclk, output [1:0] clk);\n"
+                               "  assign clk = {inclk, inclk};\n"
+                               "endmodule\n"
+                               "module top(input clk_a, input clk_b, input d, output q, output [1:0] pc);\n"
+                               "  reg [1:0] a_reg;\n"
+                               "  always @(posedge clk_a) a_reg <= {a_reg[0], d};\n"
+                               "  sync2 u_s (.clk(clk_b), .d(a_reg[1]), .q(q));\n"
+                               "  pll altpll_component (.inclk(clk_a), .clk(pc));\n"
+                               "endmodule\n",
+                               "top");
+    graph::DesignView view(*b.design);
+    DesignObjectResolver r(view);
+    auto p = parse("set regs [get_registers \"u_s|s1_reg u_s|s2_reg\"]\n"
+                   "set bits [get_registers {a_reg[*]}]\n"
+                   "set all [get_registers *]\n"            // '*' crosses '|'
+                   "set keep [get_keepers *_a]\n"           // a port
+                   "set none [get_registers -nowarn nosuch*]\n"
+                   "set n 0\n"
+                   "foreach_in_collection reg $regs { if {[string_first]} {} ; incr n }\n"
+                   "set name [get_node_info -name [get_registers u_s|s1_reg]]\n"
+                   "set pin [get_pins altpll_component|auto_generated|pll1|clk[0]]\n" // inside the IP: its port
+                   "set rpin [get_pins u_s|s1_reg|clk]\n"
+                   "set cells [get_cells u_s|*]\n"
+                   "create_clock -name r[get_collection_size $regs]_b[get_collection_size $bits]_a[get_collection_size $all]_k[get_collection_size $keep]_n[get_collection_size $none]_f$n -period 1\n"
+                   "create_clock -name x_$name -period 1\n"
+                   "create_clock -name p[get_collection_size $pin]_rp[get_collection_size $rpin]_c[get_collection_size $cells] -period 1\n",
+                   r);
+    REQUIRE(p.set.clocks.size() == 3);
+    CHECK(p.set.clocks[0].name == "r2_b1_a3_k1_n0_f2"); // a_reg as one vector cell with two bits
+    CHECK(p.set.clocks[1].name == "x_u_s|s1_reg");
+    CHECK(p.set.clocks[2].name == "p1_rp1_c2");
+    CHECK(p.countCode("CON-UNMATCHED") == 0);
+    // negative: a path that does not leave the modelled hierarchy is an ordinary miss
+    auto q = parse("set x [get_pins u_s|nosuch]\n"
+                   "set y [get_registers nosuch]\n",
+                   r);
+    CHECK(q.countCode("CON-UNMATCHED") == 2);
 }

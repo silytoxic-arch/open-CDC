@@ -714,9 +714,13 @@ private:
         };
         for (const auto& g : cons_.groups) {
             if (g.groups.size() < 2) {
-                sink_.report({"CON-GROUP-SINGLE", Severity::Warning,
-                              "set_clock_groups with a single group relates nothing (each -group lists clocks that "
-                              "are exclusive or asynchronous to the clocks of the other groups)",
+                // SDC (Synopsys, Quartus, Vivado): the clocks of a single group
+                // are asynchronous (or exclusive) to all other clocks
+                sink_.report({"CON-GROUP-SINGLE", Severity::Info,
+                              "set_clock_groups with a single group: its clocks are treated as " +
+                                  std::string(g.kind == constraints::GroupKind::Asynchronous ? "asynchronous"
+                                                                                             : "exclusive") +
+                                  " to all other clocks (and to the clocks derived from those)",
                               g.loc, {}});
                 continue;
             }

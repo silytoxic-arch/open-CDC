@@ -926,7 +926,7 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 |---|---|---|
 | `CON-INPUT-PERIOD` | warning | 时钟生成器配置的输入周期（`CLKIN1_PERIOD` 等）与驱动它的时钟周期相差超过 0.1%；输出周期按实际输入时钟计算 |
 | `CON-PERIOD-MISMATCH` | warning | 生成器输出上的约束（`create_clock`/`create_generated_clock`）周期与模型推导的周期不一致 |
-| `CON-GROUP-SINGLE` | info | `set_clock_groups` 只有一个组，不起作用 |
+| `CON-GROUP-SINGLE` | info | `set_clock_groups` 只有一个组：按 SDC 语义，组内时钟与其他所有时钟异步（或互斥）（阶段 19 更正，原来的说明是"不起作用"，与实际计算不符） |
 | `CON-GROUP-OVERLAP` | warning | 同一时钟出现在一条约束的多个组中 |
 | `CON-GROUP-RELATED` | warning | 同一时钟族（共同的主时钟）的时钟被声明为异步 |
 
@@ -1082,3 +1082,42 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 - CDC 分析：路径的源节点（或源时钟）在 `-from` 中，目的寄存器在 `-to` 中且引脚角色相符（数据路径对应数据角色，异步复位路径对应复位角色），或目的时钟在 `-to` 中，就视为被覆盖。省略的一侧匹配一切。只有时钟关系为未知的路径才使用例外：改判为异步，并在说明中写明命令和位置。已知关系的路径不受影响。
 - 未求值的例外仍记为"已记录、未使用"，参数不求值，因此不会产生查询告警。
 - `-quiet`：带 `-quiet` 的例外在求值时产生的告警降为提示，并注明"command given -quiet"，与 Vivado 忽略该命令错误的语义一致。
+
+## 26. Tcl 过程与 source、Quartus SDC（阶段 19）
+
+### 26.1 一次分析一个解释器
+`SdcReader` 在一次分析的所有约束文件之间共享解释器，与 Vivado、Quartus 一致：前面文件定义的变量和过程，后面的文件可以使用。原有的 `parseSdc`/`readSdcFile` 保留为"一个文件一个解释器"的包装。`CON-IGNORED` 仍按文件汇总。
+
+### 26.2 过程、作用域、source
+| 命令 | 语义 |
+|---|---|
+| `proc name params body` | 参数可带缺省值（`{period 10}`），最后一个参数为 `args` 时收集其余参数 |
+| 调用 | 新的变量帧，参数绑定在其中；过程体在定义它的文件中运行（诊断的位置是过程体所在的文件和行）；值是 `return` 的值或最后一条命令的值；嵌套不超过 64 层 |
+| `return ?value?` | 结束过程；在文件顶层结束当前文件（被 source 的文件或约束文件） |
+| `global name…` | 把过程帧中的这些名字链接到全局帧 |
+| `source ?-encoding e? file` | 相对路径先在执行 source 的文件所在目录查找，再在工程的 `tclSourceDirs` 中查找（例如 Quartus/Vivado 运行脚本的目录）；嵌套不超过 16 层；找不到时报 CON-OPEN 警告，并提示配置 `tclSourceDirs`；读入的文件加入 `ConstraintSet::files` |
+| `switch`、`eval`、`upvar`、`uplevel`、`namespace` | 不支持，报告并跳过 |
+
+### 26.3 Quartus 集合
+| 命令 | 结果 |
+|---|---|
+| `get_registers [-nowarn] [-nocase] 模式` | 寄存器，以 Quartus 的名字表示：层次用 `|` 分隔，寄存器名就是 HDL 信号名（`u_s|s1_reg`、`a_reg[3]`）。`*` 可以跨层级匹配 |
+| `get_keepers`、`get_nodes` | 寄存器和端口 |
+| `get_cells`、`get_pins` 写成带 `|` 的名字 | 寄存器与实例；实例端口与寄存器引脚（`|clk d q ena clrn prn sclr`） |
+| 穿过 IP 内部 | `altpll_component|auto_generated|pll1|clk[0]` 这类路径伸进了内部未建模的实例时，解析为路径上最深的已知实例中、以最后一段命名的端口（`altpll_component` 的 `clk[0]`） |
+| `get_collection_size`、`foreach_in_collection`、`get_node_info`/`get_object_info -name`、`query_collection`、`add_to_collection` | 集合操作 |
+
+模式保存在变量中时（`get_pins "$clk_src"`），原始写法看不出是 Quartus 名字：Vivado 方式查询失败且模式含 `|` 时，再按 Quartus 名字解析。
+
+### 26.4 其他 Quartus 写法
+- 周期可以带单位：`"40.000 ns"`、`"800 ps"`、`{125 MHz}`。
+- `derive_pll_clocks`、`derive_clock_uncertainty`、`set_time_format` 等记录后不使用：PLL 输出时钟来自内置 PLL 模型。
+- `-from *`、`-to *` 等同于不写这一侧。
+- Quartus 没有 `-datapath_only`，跨域约束直接写 `set_max_delay`：`-from`/`-to` 用 Quartus 集合（`get_registers`/`get_keepers`/`get_nodes`）写成的最大延迟按路径例外处理；Vivado 写法的最大延迟仍需要 `-datapath_only`。
+- `altera_reserved_*` 端口由 Quartus 在布局布线时加入，RTL 中没有：未匹配时记为提示，不告警。
+- `create_generated_clock -source` 未匹配时不再报错（查询本身已经告警），只是不建立这个时钟。
+- `set_input_delay` 的端口查询未匹配时，不再另报"没有端口"。
+- 例外的某一侧查询未匹配时，"例外未使用"降为提示（查询本身已经告警）。
+
+### 26.5 单组 `set_clock_groups`
+SDC 标准、Quartus 和 Vivado 中，只有一个 `-group` 的 `set_clock_groups` 表示组内时钟与其他所有时钟异步（或互斥）。时钟关系计算一直是这样处理的，但一致性检查报的是警告"不起作用"，与计算不符。现在改为提示，说明实际的处理方式。

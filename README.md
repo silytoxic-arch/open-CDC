@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 18, vendor Tcl constraint scripts and register-level timing exceptions**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 19, Tcl procedures and `source`, Quartus SDC**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–18)
+## What works today (stages 1–19)
 
 | Feature | Status |
 |---|---|
@@ -25,8 +25,10 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | SDC/XDC subset: `create_clock`, `create_generated_clock`, `set_clock_groups`, `get_ports`/`get_pins`/`get_nets`/`get_clocks` (globs, bit selects, Vivado `<reg>_reg/Q`/`C` pins, `get_clocks -of_objects [get_nets …]` in clock groups and `set_input_delay -clock`, clock-level `set_false_path` / `set_max_delay -datapath_only` (`-from [get_clocks a] -to [get_clocks b]`), abbreviated options such as `-of`) | ✅ |
 | Register-level timing exceptions: `set_false_path` and `set_max_delay -datapath_only` between registers, pins, ports and clocks, with one side alone (`-to` reset pins) or mixed (`-from <clock> -to <registers>`); a crossing they cover whose clock relation is unknown is analyzed as asynchronous, with the constraint named | ✅ |
 | Vendor Tcl constraint scripts: `foreach`, `if`/`elseif`/`else`, `for`, `while`, `expr`, `llength`/`lindex`/`lappend`/`incr`, `get_property` (clock `PERIOD`, cell properties); `get_cells` returns flip-flops and instances, with `-hierarchical`, `-regexp` and `-filter` (`NAME`, `PARENT`, `REF_NAME`, `ORIG_REF_NAME`, `IS_SEQUENTIAL`, HDL attributes such as `ASYNC_REG`); netlist traversal with `get_pins`/`get_nets`/`get_cells -of_objects` (flip-flop pins `C D Q CE CLR PRE R S`, `REF_PIN_NAME`, `DIRECTION`, `IS_LEAF`, `IS_PRESET`, …). Verified with the constraint scripts shipped with alexforencich's verilog-ethernet (`axis_async_fifo.tcl`, `sync_reset.tcl`, `eth_mac_fifo.tcl`, `mii_phy_if.tcl`) | ✅ |
+| Tcl procedures (`proc` with default and `args` parameters, `return`, `global`) and `source` (relative to the sourcing file, then the project's `tclSourceDirs`); all constraint files of an analysis share one interpreter, as in Vivado and Quartus | ✅ |
+| Quartus SDC: `get_registers`/`get_keepers`/`get_nodes` and `get_cells`/`get_pins` with `|`-separated names (registers named after their HDL signal), `get_collection_size`, `foreach_in_collection`, `get_node_info -name`; pin paths into IP internals (`pll|auto_generated|pll1|clk[0]`) resolved to the IP's port; periods with units (`"40.000 ns"`, `{125 MHz}`); `derive_pll_clocks`; register-to-register `set_max_delay` and `-from *`. Verified with the Quartus scripts of verilog-ethernet's DE2-115 example | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
-| Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), clock groups with one group, overlapping groups, or related clocks declared asynchronous (`CON-GROUP-*`) | ✅ |
+| Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), overlapping clock groups or related clocks declared asynchronous (`CON-GROUP-*`); a single `-group` makes its clocks asynchronous to all others, as in SDC | ✅ |
 | Vivado clock report cross-check (`--vivado-clocks`, project field `vivadoClockReports`, GUI project editor): `report_clocks` / `report_timing_summary` output read back, clocks matched by source pin or name, period mismatches (`VIV-PERIOD-MISMATCH`) and clocks only one side knows reported | ✅ |
 | Clock domain analysis: register clock tracing through hierarchy, inverters, gating, clock muxes, dividers; clock relation matrix (same / synchronous / asynchronous / exclusive / **unknown**, with a reason for each pair) | ✅ |
 | GUI Clock Domain Viewer (frequency, derived clocks under their master, period derivation such as `clk_in × 0.5`), JSON `clockAnalysis` section | ✅ |
@@ -144,7 +146,8 @@ In the HTML report, a design with more than 5000 paths lists only the paths that
   "constraints": ["constraints/clocks.sdc"],
   "options": {"unknownClockRelation": "report", "minSyncStages": 2, "reconvergenceDepth": 2},
   "waivers": ["waivers.json"],
-  "vivadoClockReports": ["impl/clocks.rpt"]
+  "vivadoClockReports": ["impl/clocks.rpt"],
+  "tclSourceDirs": ["syn/quartus"]
 }
 ```
 
@@ -160,6 +163,8 @@ Different clock names alone never make two clocks asynchronous.
 `waivers` lists waiver files (see [docs/waivers.md](docs/waivers.md)).
 
 `vivadoClockReports` (optional) lists outputs of Vivado `report_clocks` (or `report_timing_summary`). Their clocks are matched to the clock model by source pin or name, and differing periods are reported as `VIV-PERIOD-MISMATCH`. The CLI option `--vivado-clocks <file>` adds a report for one run.
+
+`tclSourceDirs` (optional) lists directories searched for relative `source` paths in constraint scripts, after the directory of the sourcing file. Set it to the directory Quartus or Vivado runs the scripts from when the scripts are written relative to it (e.g. `source ../lib/eth/syn/quartus/eth_mac_1g_rgmii.sdc`). All constraint files of a project share one Tcl interpreter, so procedures defined in one file can be called in the files listed after it.
 
 `options.reconvergenceDepth` (default 2, range 0–8) is the number of register levels after synchronizer outputs that CDC-005 searches for reconvergence.
 

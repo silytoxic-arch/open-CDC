@@ -635,23 +635,138 @@ std::vector<Object> DesignObjectResolver::pinCells(const Object& pin) {
     if (pin.kind != ObjectKind::Pin)
         return {};
     const auto slash = pin.name.rfind('/');
-    if (slash == std::string::npos)
-        return {};
-    const std::string cellName = pin.name.substr(0, slash);
+    const std::string cellName = slash == std::string::npos ? std::string() : pin.name.substr(0, slash);
     buildRegisters();
     buildInstances();
     if (pin.pin.empty()) {
-        // a port of an instance
+        // a port of an instance (by its table entry: the pin may carry a Quartus name)
+        buildNames();
+        const std::string inst = pin.item >= 0 && static_cast<std::size_t>(pin.item) < pins_.size()
+                                     ? pins_[static_cast<std::size_t>(pin.item)].name.substr(
+                                           0, pins_[static_cast<std::size_t>(pin.item)].name.rfind('/'))
+                                     : cellName;
         for (std::size_t i = 0; i < insts_.size(); ++i)
-            if (insts_[i] == cellName)
-                return {{ObjectKind::Cell, cellName, {}, static_cast<std::int32_t>(i), true, {}}};
+            if (insts_[i] == inst)
+                return {{ObjectKind::Cell, inst, {}, static_cast<std::int32_t>(i), true, {}}};
         return {};
     }
     // a flip-flop pin: the cell with the same name ("x_reg[3]" or "x_reg")
-    for (auto& c : cells(cellName, false, false))
-        if (!c.instance && c.item == pin.item)
-            return {std::move(c)};
-    return {};
+    if (!cellName.empty())
+        for (auto& c : cells(cellName, false, false))
+            if (!c.instance && c.item == pin.item)
+                return {std::move(c)};
+    // otherwise (a Quartus name): the register of the pin, restricted to the
+    // pin's bits when it is the output
+    if (pin.item < 0 || static_cast<std::size_t>(pin.item) >= regs_.size())
+        return {};
+    const auto& reg = regs_[static_cast<std::size_t>(pin.item)];
+    Object c{ObjectKind::Cell, reg.name, {}, pin.item, false, {}};
+    if (pin.pin == "Q")
+        c.bits = pin.bits;
+    else
+        for (std::uint32_t b = 0; b < reg.width; ++b)
+            c.bits.push_back(BitRef{reg.first.inst, reg.first.net, reg.first.bit + b});
+    return {std::move(c)};
+}
+
+
+void DesignObjectResolver::buildQuartus() {
+    if (quartusBuilt_)
+        return;
+    quartusBuilt_ = true;
+    buildNames();
+    buildRegisters();
+    buildInstances();
+    auto bars = [](std::string s) {
+        std::ranges::replace(s, '/', '|');
+        return s;
+    };
+    for (const auto& r : regs_) {
+        // "<prefix><net>_reg" / "<prefix><net>_reg[<element>]" -> "<prefix|><net>" / "<prefix|><net>[<element>]"
+        std::string n = r.name;
+        if (n.ends_with("_reg"))
+            n.erase(n.size() - 4);
+        else if (const auto at = n.rfind("_reg["); at != std::string::npos)
+            n.erase(at, 4);
+        Named q = r;
+        q.name = bars(std::move(n));
+        qregs_.push_back(std::move(q));
+    }
+    for (const auto& p : pins_) {
+        Named q = p;
+        q.name = bars(p.name);
+        qpins_.push_back(std::move(q));
+    }
+    for (const auto& i : insts_)
+        qinsts_.push_back(bars(i));
+}
+
+std::vector<Object> DesignObjectResolver::quartus(std::string_view pattern, QuartusKind kind, bool nocase) {
+    buildQuartus();
+    std::vector<Object> out;
+    auto append = [&](std::vector<Object> r) {
+        for (auto& o : r)
+            out.push_back(std::move(o));
+    };
+    if (kind == QuartusKind::Registers || kind == QuartusKind::Keepers || kind == QuartusKind::Nodes ||
+        kind == QuartusKind::Cells)
+        append(match(qregs_, ObjectKind::Cell, pattern, false, nocase));
+    if (kind == QuartusKind::Keepers || kind == QuartusKind::Nodes)
+        append(match(ports_, ObjectKind::Port, pattern, false, nocase));
+    if (kind == QuartusKind::Cells)
+        for (std::size_t i = 0; i < qinsts_.size(); ++i)
+            if (globMatch(pattern, qinsts_[i], nocase))
+                out.push_back({ObjectKind::Cell, qinsts_[i], {}, static_cast<std::int32_t>(i), true, {}});
+    if (kind != QuartusKind::Pins)
+        return out;
+
+    append(match(qpins_, ObjectKind::Pin, pattern, false, nocase));
+    // register pins: <register>|clk d q ena clrn prn sclr
+    const auto bar = pattern.rfind('|');
+    if (bar != std::string_view::npos) {
+        static const std::map<std::string, std::string, std::less<>> pinNames = {
+            {"clk", "C"}, {"d", "D"}, {"q", "Q"}, {"ena", "CE"}, {"clrn", "CLR"}, {"prn", "PRE"}, {"sclr", "R"}};
+        const auto leaf = pattern.substr(bar + 1);
+        for (const auto& [qp, ours] : pinNames) {
+            if (!globMatch(leaf, qp, true))
+                continue;
+            for (const auto& cell : match(qregs_, ObjectKind::Cell, pattern.substr(0, bar), false, nocase))
+                for (auto& p : registerPins(static_cast<std::size_t>(cell.item), cell.name, cell.bits))
+                    if (p.pin == ours) {
+                        p.name = cell.name + "|" + qp;
+                        out.push_back(std::move(p));
+                    }
+        }
+    }
+    if (!out.empty() || pattern.find_first_of("*?") != std::string_view::npos)
+        return out;
+    // a path into an instance whose internals are not modelled: the port of
+    // the deepest instance on the path, named by the last segment
+    std::vector<std::string_view> segs;
+    for (std::size_t from = 0;;) {
+        const auto to = pattern.find('|', from);
+        segs.push_back(pattern.substr(from, to == std::string_view::npos ? std::string_view::npos : to - from));
+        if (to == std::string_view::npos)
+            break;
+        from = to + 1;
+    }
+    if (segs.size() < 3)
+        return out;
+    std::string prefix;
+    std::size_t deepest = static_cast<std::size_t>(-1);
+    std::size_t depth = 0;
+    for (std::size_t k = 0; k + 1 < segs.size(); ++k) {
+        prefix += (k ? "|" : "") + std::string(segs[k]);
+        const auto it = std::ranges::find(qinsts_, prefix);
+        if (it == qinsts_.end())
+            break;
+        deepest = static_cast<std::size_t>(it - qinsts_.begin());
+        depth = k + 1;
+    }
+    if (deepest == static_cast<std::size_t>(-1) || depth + 1 >= segs.size())
+        return out; // nothing skipped: an ordinary miss
+    std::string port = qinsts_[deepest] + "|" + std::string(segs.back());
+    return match(qpins_, ObjectKind::Pin, port, false, nocase);
 }
 
 bool DesignObjectResolver::pinPropertyKnown(std::string_view prop) {
@@ -942,6 +1057,36 @@ std::vector<std::string> splitList(std::string_view text) {
     return out;
 }
 
+/// A time with an optional unit: "8", "8.0 ns", "800 ps", "125 MHz" -> ns.
+std::optional<double> toNanoseconds(std::string_view s) {
+    std::string t(s);
+    char* end = nullptr;
+    const double v = std::strtod(t.c_str(), &end);
+    if (end == t.c_str())
+        return std::nullopt;
+    std::string unit;
+    for (const char* c = end; *c; ++c)
+        if (!std::isspace(static_cast<unsigned char>(*c)))
+            unit += static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+    if (unit.empty() || unit == "ns")
+        return v;
+    if (unit == "ps")
+        return v / 1000.0;
+    if (unit == "us")
+        return v * 1000.0;
+    if (unit == "ms")
+        return v * 1e6;
+    if (v <= 0)
+        return std::nullopt;
+    if (unit == "mhz")
+        return 1000.0 / v;
+    if (unit == "ghz")
+        return 1.0 / v;
+    if (unit == "khz")
+        return 1e6 / v;
+    return std::nullopt;
+}
+
 std::optional<double> toNumber(std::string_view s) {
     double v = 0;
     std::string tmp(s);
@@ -957,7 +1102,9 @@ const std::set<std::string, std::less<>>& knownCommands() {
         "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "get_ports", "get_pins", "get_nets",
         "get_clocks", "all_clocks", "get_cells", "all_inputs", "all_outputs", "all_registers", "expr", "if",
         "foreach", "for", "while", "break", "continue", "incr", "llength", "lindex", "lappend", "puts",
-        "get_property", "list", "concat"};
+        "get_property", "list", "concat", "proc", "return", "global", "source", "get_registers", "get_keepers",
+        "get_nodes", "get_collection_size", "get_node_info", "get_object_info", "query_collection",
+        "add_to_collection", "foreach_in_collection"};
     return cmds;
 }
 
@@ -972,14 +1119,26 @@ bool isTimingOrMiscCommand(std::string_view c) {
         "set_max_time_borrow", "set_propagated_clock", "set_ideal_network", "set_dont_touch",
         "set_operating_conditions", "set_wire_load_model", "group_path", "set_clock_transition",
         "create_pblock", "add_cells_to_pblock", "resize_pblock", "set_clock_gating_check", "set_data_check",
-        "set_external_delay", "config_timing_pessimism", "set_assert", "set_hierarchy_separator"};
+        "set_external_delay", "config_timing_pessimism", "set_assert", "set_hierarchy_separator",
+        // Quartus: PLL output clocks come from the built-in PLL models
+        "derive_pll_clocks", "derive_clock_uncertainty", "derive_clocks", "set_time_format", "set_max_skew",
+        "set_net_delay", "set_scc_mode", "set_annotated_delay"};
     return cmds.contains(c);
 }
 
 class Interp {
 public:
-    Interp(std::string file, IObjectResolver& resolver, ConstraintSet& out, DiagnosticSink& sink)
-        : file_(std::move(file)), resolver_(resolver), out_(out), sink_(sink) {}
+    Interp(IObjectResolver& resolver, ConstraintSet& out, DiagnosticSink& sink, SdcOptions options)
+        : resolver_(resolver), out_(out), sink_(sink), options_(std::move(options)) {}
+
+    /// Runs one constraint file; the interpreter state (variables,
+    /// procedures) carries over to the next file.
+    void runFile(std::string_view text, const std::string& fileName) {
+        file_ = fileName;
+        runScript(text, 1);
+        ctl_ = Ctl::None; // a `return` (or stray break) at file level ends the file
+        reportIgnored();
+    }
 
     Value runScript(std::string_view text, std::uint32_t firstLine) {
         Tokenizer tok(text, firstLine);
@@ -996,7 +1155,7 @@ public:
             if (!cmd.words.empty())
                 last = exec(cmd);
             if (ctl_ != Ctl::None)
-                break; // break / continue: unwind to the enclosing loop
+                break; // break / continue / return: unwind to the enclosing loop or procedure
         }
         return last;
     }
@@ -1013,6 +1172,7 @@ public:
         }
         diag("CON-IGNORED", Severity::Info,
              "commands not used by clock analysis (recorded, not applied): " + list, 0);
+        ignored_.clear();
     }
 
 private:
@@ -1067,14 +1227,14 @@ private:
                     name = raw.substr(i + 1, j - i - 1);
                     i = j - 1;
                 }
-                auto it = vars_.find(name);
-                if (it == vars_.end()) {
+                const Value* var = findVar(name);
+                if (!var) {
                     diag("CON-PARSE", Severity::Warning, "undefined variable '$" + name + "'", line);
                     continue;
                 }
-                v.text += it->second.text;
-                if (it->second.hasObjects) {
-                    v.objects.insert(v.objects.end(), it->second.objects.begin(), it->second.objects.end());
+                v.text += var->text;
+                if (var->hasObjects) {
+                    v.objects.insert(v.objects.end(), var->objects.begin(), var->objects.end());
                     v.hasObjects = true;
                 }
                 continue;
@@ -1130,7 +1290,8 @@ private:
         while (j < inner.size() && !std::isspace(static_cast<unsigned char>(inner[j])))
             ++j;
         const auto name = inner.substr(i, j - i);
-        return knownCommands().contains(name) || isTimingOrMiscCommand(name);
+        return knownCommands().contains(name) || isTimingOrMiscCommand(name) ||
+               procs_.contains(std::string(name));
     }
 
     struct Args {
@@ -1205,8 +1366,14 @@ private:
                 r = resolver_.pins(pat, false, false);
             if (r.empty())
                 r = resolver_.nets(pat, false, false);
-            if (r.empty())
-                diag("CON-UNMATCHED", Severity::Warning, ctx + ": no port, pin or net matches '" + pat + "'", cmd.line);
+            if (r.empty() && pat.find('|') != std::string::npos) // a Quartus name
+                r = resolver_.quartus(pat, QuartusKind::Pins, false);
+            if (r.empty()) {
+                if (pat.starts_with("altera_reserved_"))
+                    unmatched(ctx, pat, cmd.line);
+                else
+                    diag("CON-UNMATCHED", Severity::Warning, ctx + ": no port, pin or net matches '" + pat + "'", cmd.line);
+            }
             out.insert(out.end(), r.begin(), r.end());
         }
         return out;
@@ -1307,12 +1474,17 @@ private:
                                         : name == "get_pins"  ? resolver_.pins(pat, hier, nocase)
                                         : name == "get_cells" ? resolver_.cells(pat, hier, nocase)
                                                               : resolver_.nets(pat, hier, nocase);
+                if (r.empty() && pins && pat.find('|') != std::string::npos)
+                    r = resolver_.quartus(pat, QuartusKind::Pins, nocase); // a Quartus name held in a variable
                 if (!filter.empty() && !applyFilter(r, filter, true, false, name, cmd))
                     return objectsValue({});
-                if (r.empty() && !quiet)
-                    diag("CON-UNMATCHED", Severity::Warning,
-                         name + ": nothing matches '" + pat + "'" + (filter.empty() ? "" : " with filter {" + filter + "}"),
-                         cmd.line);
+                if (r.empty() && !quiet) {
+                    if (filter.empty())
+                        unmatched(name, pat, cmd.line);
+                    else
+                        diag("CON-UNMATCHED", Severity::Warning,
+                             name + ": nothing matches '" + pat + "' with filter {" + filter + "}", cmd.line);
+                }
                 result.insert(result.end(), r.begin(), r.end());
             }
         }
@@ -1346,7 +1518,7 @@ private:
         def.loc = {file_, cmd.line, 0};
         def.add = a.flags.contains("-add");
         if (a.opts.contains("-period")) {
-            auto p = toNumber(a.opts["-period"].back().text);
+            auto p = toNanoseconds(a.opts["-period"].back().text);
             if (!p || *p <= 0)
                 diag("CON-PARSE", Severity::Error, "create_clock: invalid -period '" + a.opts["-period"].back().text + "'",
                      cmd.line);
@@ -1413,8 +1585,11 @@ private:
             const auto& mv = a.opts["-master_clock"].back();
             def.masterClock = mv.hasObjects && !mv.objects.empty() ? mv.objects.front().name : mv.text;
         }
-        if (def.masterSource.empty() && def.masterClock.empty())
+        if (def.masterSource.empty() && def.masterClock.empty()) {
+            if (a.opts.contains("-source"))
+                return {}; // the -source query matched nothing (reported by the query): no clock
             diag("CON-PARSE", Severity::Error, "create_generated_clock: -source or -master_clock is required", cmd.line);
+        }
         std::vector<Object> objs;
         for (const auto& pv : a.positional) {
             auto o = objectsOf(pv, cmd, "create_generated_clock");
@@ -1451,9 +1626,11 @@ private:
         if (cv.hasObjects && !cv.objects.empty() && cv.objects.front().kind == ObjectKind::Clock)
             d.clockBits = cv.objects.front().bits; // get_clocks -of_objects
         // Positional arguments: <delay_value> <port_pin_list> (the number is skipped).
+        bool portsGiven = false;
         for (const auto& pv : a.positional) {
             if (!pv.hasObjects && toNumber(pv.text))
                 continue;
+            portsGiven = true;
             auto objs = objectsOf(pv, cmd, "set_input_delay");
             for (const auto& o : objs) {
                 d.portNames.push_back(o.name);
@@ -1461,7 +1638,8 @@ private:
             }
         }
         if (d.bits.empty()) {
-            diag("CON-PARSE", Severity::Warning, "set_input_delay: no port given", cmd.line);
+            if (!portsGiven) // ports that match nothing are reported by their query
+                diag("CON-PARSE", Severity::Warning, "set_input_delay: no port given", cmd.line);
             return {};
         }
         out_.inputDelays.push_back(std::move(d));
@@ -1479,7 +1657,7 @@ private:
         // we do not use cause no queries (and no warnings)
         enum class Side : std::uint8_t { None, Clocks, Cells };
         Side from = Side::None, to = Side::None;
-        bool datapathOnly = false, quiet = false;
+        bool datapathOnly = false, quiet = false, quartusQuery = false;
         for (std::size_t i = 1; i < cmd.words.size(); ++i) {
             const std::string& w = cmd.words[i].raw;
             if (w == "-through" || w == "-hold" || w == "-rise_from" || w == "-fall_from" || w == "-rise_to" ||
@@ -1498,15 +1676,19 @@ private:
                 return false;
             v.erase(0, v.find_first_not_of(" \t["));
             Side side = Side::None;
+            if (cmd.words[i + 1].raw == "*")
+                continue; // everything: as if the side were not given
+            if (v.starts_with("get_registers") || v.starts_with("get_keepers") || v.starts_with("get_nodes"))
+                quartusQuery = true;
             if (v.starts_with('$')) {
                 // a variable holding the result of an earlier query
                 std::string var = v.substr(1);
                 if (var.size() >= 2 && var.front() == '{' && var.back() == '}')
                     var = var.substr(1, var.size() - 2);
-                auto it = vars_.find(var);
-                if (it == vars_.end() || !it->second.hasObjects || it->second.objects.empty())
+                const Value* held = findVar(var);
+                if (!held || !held->hasObjects || held->objects.empty())
                     return false;
-                const auto& objs = it->second.objects;
+                const auto& objs = held->objects;
                 if (std::ranges::all_of(objs, [](const Object& o) { return o.kind == ObjectKind::Clock; }))
                     side = Side::Clocks;
                 else if (std::ranges::none_of(objs, [](const Object& o) {
@@ -1518,13 +1700,16 @@ private:
             }
             else if (v.starts_with("get_clocks") || v.starts_with("all_clocks"))
                 side = Side::Clocks;
-            else if (v.starts_with("get_cells") || v.starts_with("get_pins") || v.starts_with("get_ports"))
+            else if (v.starts_with("get_cells") || v.starts_with("get_pins") || v.starts_with("get_ports") ||
+                     v.starts_with("get_registers") || v.starts_with("get_keepers") || v.starts_with("get_nodes"))
                 side = Side::Cells;
             else
                 return false;
             (w == "-from" ? from : to) = side;
         }
-        if (name == "set_max_delay" && !datapathOnly)
+        // Quartus has no -datapath_only: there a max delay between registers
+        // of unrelated clocks is the way crossings are constrained
+        if (name == "set_max_delay" && !datapathOnly && !quartusQuery)
             return false;
         if (from == Side::Cells || to == Side::Cells) {
             quiet_ = quiet;
@@ -1596,7 +1781,14 @@ private:
         e.command = name == "set_false_path" ? name : name + " -datapath_only";
         e.loc = {file_, cmd.line, 0};
         bool fromNamed = false, toNamed = false; // registers, pins or ports named on the side
-        const bool hasFrom = a.opts.contains("-from"), hasTo = a.opts.contains("-to");
+        // "-from *" / "-to *": everything, as if the side were not given
+        auto given = [&](const char* opt) {
+            const auto it = a.opts.find(opt);
+            return it != a.opts.end() && !std::ranges::all_of(it->second, [](const Value& v) {
+                return !v.hasObjects && v.text == "*";
+            });
+        };
+        const bool hasFrom = given("-from"), hasTo = given("-to");
         for (const auto& v : a.opts["-from"])
             for (const auto& o : v.objects) {
                 if (o.kind == ObjectKind::Clock) {
@@ -1645,7 +1837,10 @@ private:
         const bool fromEmpty = hasFrom && e.from.empty() && e.fromClocks.empty() && e.fromClockBits.empty();
         const bool toEmpty = hasTo && e.to.empty() && e.toClocks.empty() && e.toClockBits.empty();
         if ((fromNamed && e.from.empty()) || (toNamed && e.to.empty()) || fromEmpty || toEmpty || (!hasFrom && !hasTo)) {
-            diag("CON-UNMATCHED", Severity::Warning,
+            // a query that matched nothing has reported that already
+            const auto& side = a.opts[fromEmpty || (fromNamed && e.from.empty()) ? "-from" : "-to"];
+            const bool reported = !side.empty() && std::ranges::all_of(side, [](const Value& v) { return v.hasObjects; });
+            diag("CON-UNMATCHED", reported ? Severity::Info : Severity::Warning,
                  name + ": " + (fromEmpty || (fromNamed && e.from.empty()) ? "-from" : "-to") +
                      " matches no register, pin or port; the exception is not used",
                  cmd.line);
@@ -1949,10 +2144,10 @@ private:
                     name = std::string(s_.substr(i_ + 1, j - i_ - 1));
                     i_ = j;
                 }
-                auto it = in_.vars_.find(name);
-                if (it == in_.vars_.end())
+                const Value* var = in_.findVar(name);
+                if (!var)
                     throw ExprError("can't read \"" + name + "\": no such variable");
-                return exprValue(it->second.text);
+                return exprValue(var->text);
             }
             if (c == '[') {
                 const std::string str(s_);
@@ -2193,8 +2388,10 @@ private:
                 items.push_back(Value{std::move(t), {}, false});
         for (std::size_t k = 0; k < items.size(); k += names.size()) {
             for (std::size_t n = 0; n < names.size(); ++n)
-                vars_[names[n]] = k + n < items.size() ? items[k + n] : Value{};
+                varRef(names[n]) = k + n < items.size() ? items[k + n] : Value{};
             runBody(cmd.words[3], cmd.line);
+            if (ctl_ == Ctl::Return)
+                break; // leaves the enclosing procedure
             if (ctl_ == Ctl::Break) {
                 ctl_ = Ctl::None;
                 break;
@@ -2225,6 +2422,8 @@ private:
             if (!c || !*c)
                 break;
             runBody(body, cmd.line);
+            if (ctl_ == Ctl::Return)
+                break;
             if (ctl_ == Ctl::Break) {
                 ctl_ = Ctl::None;
                 break;
@@ -2267,7 +2466,7 @@ private:
             return Value{splitList(v.text)[static_cast<std::size_t>(k)], {}, false};
         }
         const std::string var = subst(w[1], cmd.line).text;
-        Value& cur = vars_[var];
+        Value& cur = varRef(var);
         if (name == "incr") {
             long long by = 1;
             if (w.size() > 2)
@@ -2638,6 +2837,8 @@ private:
             }
             else {
                 r = resolver_.cells(pat, hier, nocase);
+                if (r.empty() && pat.find('|') != std::string::npos)
+                    r = resolver_.quartus(pat, QuartusKind::Cells, nocase); // a Quartus name held in a variable
             }
             if (!filter.empty() && !applyFilter(r, filter, false, regexp, "get_cells", cmd))
                 return objectsValue({});
@@ -2650,22 +2851,349 @@ private:
         return objectsValue(std::move(result));
     }
 
+    // ------------------------------------------------------------------
+    // proc / return / global / source
+    // ------------------------------------------------------------------
+
+    struct Proc {
+        std::vector<std::pair<std::string, std::optional<std::string>>> params; ///< name, default
+        std::string body;
+        std::uint32_t line = 0;
+        std::string file;
+    };
+
+    static constexpr std::size_t kMaxCallDepth = 64;
+
+    /// proc name params body
+    Value procCmd(const Command& cmd) {
+        if (cmd.words.size() != 4) {
+            diag("CON-PARSE", Severity::Error, "proc: expected 'proc name params body'", cmd.line);
+            return {};
+        }
+        Proc p;
+        const std::string name = subst(cmd.words[1], cmd.line).text;
+        for (const auto& param : splitList(wordText(cmd.words[2], cmd.line))) {
+            const auto parts = splitList(param);
+            if (parts.empty())
+                continue;
+            p.params.emplace_back(parts[0], parts.size() > 1 ? std::optional<std::string>(parts[1]) : std::nullopt);
+        }
+        p.body = wordText(cmd.words[3], cmd.line);
+        p.line = cmd.words[3].line ? cmd.words[3].line : cmd.line;
+        p.file = file_;
+        procs_[name] = std::move(p);
+        return {};
+    }
+
+    /// Calls a procedure: arguments bound in a new frame, the body run in the
+    /// file that defined it; the value is that of `return` or of the last command.
+    Value callProc(const Command& cmd, const std::string& name, const Proc& p) {
+        if (frames_.size() > kMaxCallDepth) {
+            diag("CON-PARSE", Severity::Error, name + ": too many nested procedure calls", cmd.line);
+            return {};
+        }
+        std::vector<Value> args;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i)
+            args.push_back(subst(cmd.words[i], cmd.line));
+        Frame frame;
+        std::size_t k = 0;
+        for (std::size_t i = 0; i < p.params.size(); ++i) {
+            const auto& [pname, def] = p.params[i];
+            if (pname == "args" && i + 1 == p.params.size()) {
+                Value rest;
+                for (; k < args.size(); ++k) {
+                    if (!rest.text.empty())
+                        rest.text += ' ';
+                    rest.text += args[k].text;
+                    if (args[k].hasObjects) {
+                        rest.objects.insert(rest.objects.end(), args[k].objects.begin(), args[k].objects.end());
+                        rest.hasObjects = true;
+                    }
+                }
+                frame.vars["args"] = std::move(rest);
+                continue;
+            }
+            if (k < args.size())
+                frame.vars[pname] = args[k++];
+            else if (def)
+                frame.vars[pname] = Value{*def, {}, false};
+            else {
+                diag("CON-PARSE", Severity::Error, "wrong # args: " + name + " needs '" + pname + "'", cmd.line);
+                return {};
+            }
+        }
+        if (k < args.size()) {
+            diag("CON-PARSE", Severity::Error,
+                 "wrong # args: " + name + " takes " + std::to_string(p.params.size()) + " argument(s)", cmd.line);
+            return {};
+        }
+        frames_.push_back(std::move(frame));
+        const std::string caller = file_;
+        file_ = p.file;
+        Value result = runScript(p.body, p.line);
+        file_ = caller;
+        frames_.pop_back();
+        if (ctl_ == Ctl::Return)
+            result = std::move(returnValue_);
+        ctl_ = Ctl::None; // break/continue do not leave a procedure
+        return result;
+    }
+
+    Value returnCmd(const Command& cmd) {
+        // return ?-code c? ?value?
+        returnValue_ = {};
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+            if (cmd.words[i].kind == Word::Kind::Bare && cmd.words[i].raw == "-code" && i + 1 < cmd.words.size()) {
+                ++i;
+                continue;
+            }
+            returnValue_ = subst(cmd.words[i], cmd.line);
+        }
+        ctl_ = Ctl::Return;
+        return returnValue_;
+    }
+
+    Value globalCmd(const Command& cmd) {
+        if (frames_.size() > 1)
+            for (std::size_t i = 1; i < cmd.words.size(); ++i)
+                frames_.back().globals.insert(subst(cmd.words[i], cmd.line).text);
+        return {};
+    }
+
+    static constexpr std::size_t kMaxSourceDepth = 16;
+
+    /// source ?-encoding name? file: relative paths are searched in the
+    /// directory of the current file, then in SdcOptions::sourceDirs.
+    Value sourceCmd(const Command& cmd) {
+        std::string name;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+            if (cmd.words[i].kind == Word::Kind::Bare && cmd.words[i].raw == "-encoding") {
+                ++i;
+                continue;
+            }
+            name = subst(cmd.words[i], cmd.line).text;
+        }
+        if (name.empty()) {
+            diag("CON-PARSE", Severity::Error, "source: no file given", cmd.line);
+            return {};
+        }
+        if (sourceDepth_ >= kMaxSourceDepth) {
+            diag("CON-PARSE", Severity::Error, "source: files source each other too deeply", cmd.line);
+            return {};
+        }
+        const std::filesystem::path rel = fromUtf8(name);
+        std::vector<std::filesystem::path> candidates;
+        if (rel.is_absolute())
+            candidates.push_back(rel);
+        else {
+            candidates.push_back(fromUtf8(file_).parent_path() / rel);
+            for (const auto& d : options_.sourceDirs)
+                candidates.push_back(d / rel);
+        }
+        std::error_code ec;
+        for (const auto& c : candidates) {
+            if (!std::filesystem::is_regular_file(c, ec))
+                continue;
+            std::ifstream in(c, std::ios::binary);
+            if (!in)
+                continue;
+            std::stringstream text;
+            text << in.rdbuf();
+            const auto path = std::filesystem::weakly_canonical(c, ec);
+            out_.files.push_back(ec ? c : path);
+            const std::string caller = file_;
+            file_ = toUtf8(ec ? c : path);
+            ++sourceDepth_;
+            Value v = runScript(text.str(), 1);
+            --sourceDepth_;
+            file_ = caller;
+            if (ctl_ == Ctl::Return) {
+                v = std::move(returnValue_);
+                ctl_ = Ctl::None; // `return` at file level ends the sourced file
+            }
+            return v;
+        }
+        std::string searched;
+        for (const auto& c : candidates)
+            searched += (searched.empty() ? "" : ", ") + toUtf8(c.lexically_normal());
+        diag("CON-OPEN", Severity::Warning,
+             "source: cannot find '" + name + "' (searched " + searched +
+                 "); add the directory the scripts are run from to the project's tclSourceDirs",
+             cmd.line);
+        return {};
+    }
+
+    // ------------------------------------------------------------------
+    // Quartus collections
+    // ------------------------------------------------------------------
+
+    /// get_cells / get_pins written with Quartus names: a pattern containing
+    /// '|' (never part of a Vivado name; -regexp patterns and filters excluded)
+    static bool quartusNames(const Command& cmd) {
+        bool skipNext = false;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+            const auto& w = cmd.words[i];
+            if (skipNext) {
+                skipNext = false;
+                continue;
+            }
+            if (w.kind == Word::Kind::Bare && w.raw.starts_with('-')) {
+                if (w.raw == "-regexp")
+                    return false;
+                skipNext = w.raw == "-filter" || w.raw.starts_with("-of");
+                continue;
+            }
+            if (w.raw.find('|') != std::string::npos)
+                return true;
+        }
+        return false;
+    }
+
+    /// get_registers / get_keepers / get_nodes / get_cells|get_pins with
+    /// Quartus names ('|' separated).
+    Value quartusQuery(const Command& cmd, const std::string& name) {
+        Args a = parseArgs(cmd, name,
+                           {{"-nowarn", false}, {"-nocase", false}, {"-no_duplicates", false}, {"-compatibility_mode", false},
+                            {"-hierarchical", false}, {"-quiet", false}});
+        const bool nowarn = a.flags.contains("-nowarn") || a.flags.contains("-quiet");
+        const bool nocase = a.flags.contains("-nocase");
+        QuartusKind kind = name == "get_registers" ? QuartusKind::Registers
+                           : name == "get_keepers" ? QuartusKind::Keepers
+                           : name == "get_nodes"   ? QuartusKind::Nodes
+                           : name == "get_pins"    ? QuartusKind::Pins
+                                                   : QuartusKind::Cells;
+        std::vector<std::string> patterns;
+        for (const auto& pv : a.positional) {
+            if (pv.hasObjects)
+                for (const auto& o : pv.objects)
+                    patterns.push_back(o.name);
+            else
+                for (auto& p : splitList(pv.text))
+                    patterns.push_back(std::move(p));
+        }
+        if (patterns.empty())
+            patterns.emplace_back("*");
+        std::vector<Object> result;
+        for (const auto& pat : patterns) {
+            auto r = resolver_.quartus(pat, kind, nocase);
+            if (r.empty() && !nowarn)
+                unmatched(name, pat, cmd.line);
+            for (auto& o : r)
+                if (std::ranges::find(result, o.name, &Object::name) == result.end())
+                    result.push_back(std::move(o));
+        }
+        return objectsValue(std::move(result));
+    }
+
+    /// foreach_in_collection var collection body
+    Value foreachInCollection(const Command& cmd) {
+        if (cmd.words.size() != 4) {
+            diag("CON-PARSE", Severity::Error, "foreach_in_collection: expected 'var collection body'", cmd.line);
+            return {};
+        }
+        const std::string var = subst(cmd.words[1], cmd.line).text;
+        const Value coll = subst(cmd.words[2], cmd.line);
+        if (!coll.hasObjects) {
+            diag("CON-PARSE", Severity::Warning, "foreach_in_collection: '" + coll.text + "' is not a collection", cmd.line);
+            return {};
+        }
+        for (const auto& o : coll.objects) {
+            varRef(var) = Value{o.name, {o}, true};
+            runBody(cmd.words[3], cmd.line);
+            if (ctl_ == Ctl::Break) {
+                ctl_ = Ctl::None;
+                break;
+            }
+            if (ctl_ == Ctl::Continue)
+                ctl_ = Ctl::None;
+            if (ctl_ == Ctl::Return)
+                break;
+        }
+        return {};
+    }
+
+    /// get_collection_size, get_node_info/get_object_info -name,
+    /// query_collection, add_to_collection
+    Value collectionCmd(const Command& cmd, const std::string& name) {
+        if (name == "get_collection_size") {
+            if (cmd.words.size() != 2) {
+                diag("CON-PARSE", Severity::Error, "get_collection_size: expected one collection", cmd.line);
+                return {};
+            }
+            const Value v = subst(cmd.words[1], cmd.line);
+            return Value{std::to_string(v.hasObjects ? v.objects.size() : splitList(v.text).size()), {}, false};
+        }
+        if (name == "get_node_info" || name == "get_object_info") {
+            Args a = parseArgs(cmd, name, {{"-name", false}, {"-type", false}});
+            if (!a.flags.contains("-name") || a.positional.size() != 1) {
+                diag("CON-UNSUPPORTED-COMMAND", Severity::Warning, name + ": only '-name <object>' is supported", cmd.line);
+                return {};
+            }
+            const auto& v = a.positional[0];
+            return Value{v.hasObjects && !v.objects.empty() ? v.objects.front().name : v.text, {}, false};
+        }
+        if (name == "query_collection") {
+            Args a = parseArgs(cmd, name, {{"-all", false}, {"-list_format", false}, {"-report_format", false}, {"-limit", true}});
+            std::string text;
+            for (const auto& v : a.positional)
+                for (const auto& o : v.objects)
+                    text += (text.empty() ? "" : " ") + o.name;
+            return Value{text, {}, false};
+        }
+        // add_to_collection a b
+        Value out;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+            Value v = subst(cmd.words[i], cmd.line);
+            for (auto& o : v.objects)
+                if (std::ranges::find(out.objects, o.name, &Object::name) == out.objects.end())
+                    out.objects.push_back(std::move(o));
+        }
+        return objectsValue(std::move(out.objects));
+    }
+
+    /// An object query that matched nothing. Quartus's reserved JTAG ports
+    /// (altera_reserved_*) exist only after fitting: noted, not warned.
+    void unmatched(const std::string& ctx, const std::string& pattern, std::uint32_t line) {
+        if (pattern.starts_with("altera_reserved_"))
+            diag("CON-UNMATCHED", Severity::Info,
+                 ctx + ": '" + pattern + "' is a Quartus reserved JTAG port added during fitting, not part of the RTL",
+                 line);
+        else
+            diag("CON-UNMATCHED", Severity::Warning, ctx + ": nothing matches '" + pattern + "'", line);
+    }
+
     Value exec(const Command& cmd) {
         const Value head = subst(cmd.words[0], cmd.line);
         const std::string& name = head.text;
         if (name == "set") {
             if (cmd.words.size() == 3) {
                 Value v = subst(cmd.words[2], cmd.line);
-                vars_[subst(cmd.words[1], cmd.line).text] = v;
+                varRef(subst(cmd.words[1], cmd.line).text) = v;
                 return v;
             }
             if (cmd.words.size() == 2) {
-                auto it = vars_.find(subst(cmd.words[1], cmd.line).text);
-                return it == vars_.end() ? Value{} : it->second;
+                const Value* var = findVar(subst(cmd.words[1], cmd.line).text);
+                return var ? *var : Value{};
             }
             diag("CON-PARSE", Severity::Error, "set: wrong number of arguments", cmd.line);
             return {};
         }
+        if (name == "proc")
+            return procCmd(cmd);
+        if (name == "return")
+            return returnCmd(cmd);
+        if (name == "global")
+            return globalCmd(cmd);
+        if (name == "source")
+            return sourceCmd(cmd);
+        if (name == "get_registers" || name == "get_keepers" || name == "get_nodes" ||
+            ((name == "get_cells" || name == "get_pins") && quartusNames(cmd)))
+            return quartusQuery(cmd, name);
+        if (name == "foreach_in_collection")
+            return foreachInCollection(cmd);
+        if (name == "get_collection_size" || name == "get_node_info" || name == "get_object_info" ||
+            name == "query_collection" || name == "add_to_collection")
+            return collectionCmd(cmd, name);
         if (name == "create_clock")
             return createClock(cmd);
         if (name == "create_generated_clock")
@@ -2716,7 +3244,11 @@ private:
             diag("CON-UNSUPPORTED-COMMAND", Severity::Warning, name + " is not supported; it returns nothing", cmd.line);
             return objectsValue({});
         }
-        if (name == "proc" || name == "source" || name == "switch" || name == "eval") {
+        if (auto p = procs_.find(name); p != procs_.end()) {
+            const Proc proc = p->second; // the body may redefine the procedure
+            return callProc(cmd, name, proc);
+        }
+        if (name == "switch" || name == "eval" || name == "upvar" || name == "uplevel" || name == "namespace") {
             diag("CON-UNSUPPORTED-COMMAND", Severity::Warning,
                  "Tcl command '" + name + "' is not supported; the command was skipped", cmd.line);
             return {};
@@ -2733,39 +3265,76 @@ private:
         return {};
     }
 
-    std::string file_;
+    std::string file_; ///< the file being run (diagnostics; base of relative `source` paths)
     IObjectResolver& resolver_;
     ConstraintSet& out_;
     DiagnosticSink& sink_;
-    std::unordered_map<std::string, Value> vars_;
+    /// Tcl variable frames: the global frame and one per procedure call
+    struct Frame {
+        std::unordered_map<std::string, Value> vars;
+        std::set<std::string, std::less<>> globals; ///< names linked to the global frame (`global`)
+    };
+    std::vector<Frame> frames_ = std::vector<Frame>(1);
+
+    std::unordered_map<std::string, Value>& frameOf(const std::string& name) {
+        Frame& f = frames_.back();
+        return frames_.size() > 1 && f.globals.contains(name) ? frames_.front().vars : f.vars;
+    }
+    const Value* findVar(const std::string& name) {
+        auto& vars = frameOf(name);
+        auto it = vars.find(name);
+        return it == vars.end() ? nullptr : &it->second;
+    }
+    Value& varRef(const std::string& name) { return frameOf(name)[name]; }
     std::map<std::string, int> ignored_;
-    enum class Ctl : std::uint8_t { None, Break, Continue };
+    enum class Ctl : std::uint8_t { None, Break, Continue, Return };
     Ctl ctl_ = Ctl::None;
+    Value returnValue_;                        ///< value of the pending `return`
+    std::unordered_map<std::string, Proc> procs_;
+    std::size_t sourceDepth_ = 0;
+    SdcOptions options_;
     bool quiet_ = false; ///< evaluating a command given -quiet
     std::unordered_map<std::string, std::regex> regexCache_; ///< -regexp filters
 };
 
 } // namespace
 
-void parseSdc(std::string_view text, const std::string& fileName, IObjectResolver& resolver, ConstraintSet& out,
-              DiagnosticSink& sink) {
-    Interp interp(fileName, resolver, out, sink);
-    interp.runScript(text, 1);
-    interp.reportIgnored();
-}
+struct SdcReader::Impl {
+    Interp interp;
+    ConstraintSet& out;
+    DiagnosticSink& sink;
+    Impl(IObjectResolver& resolver, ConstraintSet& o, DiagnosticSink& s, SdcOptions options)
+        : interp(resolver, o, s, std::move(options)), out(o), sink(s) {}
+};
 
-bool readSdcFile(const std::filesystem::path& file, IObjectResolver& resolver, ConstraintSet& out,
-                 DiagnosticSink& sink) {
+SdcReader::SdcReader(IObjectResolver& resolver, ConstraintSet& out, DiagnosticSink& sink, SdcOptions options)
+    : impl_(std::make_unique<Impl>(resolver, out, sink, std::move(options))) {}
+
+SdcReader::~SdcReader() = default;
+
+void SdcReader::parse(std::string_view text, const std::string& fileName) { impl_->interp.runFile(text, fileName); }
+
+bool SdcReader::readFile(const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary);
     if (!in) {
-        sink.report({"CON-OPEN", Severity::Error, "cannot open constraint file", {toUtf8(file), 0, 0}, {}});
+        impl_->sink.report({"CON-OPEN", Severity::Error, "cannot open constraint file", {toUtf8(file), 0, 0}, {}});
         return false;
     }
     std::stringstream text;
     text << in.rdbuf();
-    out.files.push_back(file);
-    parseSdc(text.str(), toUtf8(file), resolver, out, sink);
+    impl_->out.files.push_back(file);
+    parse(text.str(), toUtf8(file));
     return true;
+}
+
+void parseSdc(std::string_view text, const std::string& fileName, IObjectResolver& resolver, ConstraintSet& out,
+              DiagnosticSink& sink) {
+    SdcReader(resolver, out, sink).parse(text, fileName);
+}
+
+bool readSdcFile(const std::filesystem::path& file, IObjectResolver& resolver, ConstraintSet& out,
+                 DiagnosticSink& sink) {
+    return SdcReader(resolver, out, sink).readFile(file);
 }
 
 } // namespace opencdc::constraints

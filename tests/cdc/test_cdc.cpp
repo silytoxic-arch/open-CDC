@@ -743,3 +743,42 @@ TEST_CASE("Path exceptions: reset source hunted through the netlist, reset pins 
     CHECK(quiet.countCode("CON-UNSUPPORTED-OPTION") == 2);
     CHECK(quiet.countSeverity("CON-UNSUPPORTED-OPTION", Severity::Warning) == 1);
 }
+
+TEST_CASE("Quartus SDC: procedures over instances, max delays between registers, '-from *'", "[cdc][constraints]") {
+    // the style of verilog-ethernet's syn/quartus/*.sdc
+    constexpr const char* v = "module sync2(input clk, input d, output q);\n"
+                              "  reg s1_reg, s2_reg;\n"
+                              "  always @(posedge clk) begin s1_reg <= d; s2_reg <= s1_reg; end\n"
+                              "  assign q = s2_reg;\n"
+                              "endmodule\n"
+                              "module top(input clk_a, input clk_b, input d, input e, output q0, output q1);\n"
+                              "  reg a_reg, b_reg;\n"
+                              "  always @(posedge clk_a) begin a_reg <= d; b_reg <= e; end\n"
+                              "  sync2 u_s0 (.clk(clk_b), .d(a_reg), .q(q0));\n"
+                              "  sync2 u_s1 (.clk(clk_b), .d(b_reg), .q(q1));\n"
+                              "endmodule\n";
+    const std::string clocks = "create_clock -period \"10.000 ns\" -name {clk_a} [get_ports {clk_a}]\n"
+                               "create_clock -period 7 -name {clk_b} [get_ports {clk_b}]\n"
+                               "derive_pll_clocks\n";
+    auto r = analyze(v, clocks + "proc constrain_sync2_inst { inst src } {\n"
+                                 "    puts \"Inserting timing constraints for sync2 instance $inst\"\n"
+                                 "    if {[get_collection_size [get_registers -nowarn \"$inst|s1_reg\"]]} {\n"
+                                 "        set_max_delay -from [get_registers \"$src\"] -to [get_registers \"$inst|s1_reg\"] 8.000\n"
+                                 "    }\n"
+                                 "}\n"
+                                 "constrain_sync2_inst \"u_s0\" \"a_reg\"\n"
+                                 "set_false_path -from * -to [get_registers \"u_s1|s1_reg\"]\n");
+    CHECK(r.countCode("CON-UNKNOWN-COMMAND") == 0);
+    CHECK(r.countCode("CON-UNMATCHED") == 0);
+    CHECK(r.countCode("CON-PARSE") == 0);
+    const auto& p0 = r.path("top.a_reg", "top.u_s0.s1_reg");
+    CHECK(p0.relation == clock::ClockRelation::Asynchronous);
+    CHECK(std::ranges::any_of(p0.notes, [](const std::string& n) { return n.find("set_max_delay") != std::string::npos; }));
+    CHECK(r.path("top.b_reg", "top.u_s1.s1_reg").relation == clock::ClockRelation::Asynchronous);
+    // negative: a Vivado-style max delay without -datapath_only still constrains nothing
+    auto viv = analyze(v, clocks + "set_max_delay -from [get_cells a_reg_reg] -to [get_cells u_s0/s1_reg_reg] 8.0\n");
+    CHECK(viv.path("top.a_reg", "top.u_s0.s1_reg").relation == clock::ClockRelation::Unknown);
+    // negative: "-from * -to *" names nothing in particular: no exception
+    auto all = analyze(v, clocks + "set_false_path -from * -to *\n");
+    CHECK(all.path("top.a_reg", "top.u_s0.s1_reg").relation == clock::ClockRelation::Unknown);
+}

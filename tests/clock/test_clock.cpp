@@ -396,3 +396,25 @@ TEST_CASE("Clock-level false paths and datapath-only max delays declare asynchro
                                               "set_false_path -from [get_pins qa_reg/C] -to [get_pins qb_reg/D]\n");
     CHECK(plain.rel("clk_a", "clk_b") == ClockRelation::Unknown);
 }
+
+TEST_CASE("A single clock group is asynchronous to all other clocks (Quartus-style SDC)", "[clock][constraints]") {
+    const char* design = "module top(input clk_a, input clk_b, input clk_c, input d, output reg q1, output reg q2, output reg q3);\n"
+                         "  always @(posedge clk_a) q1 <= d;\n"
+                         "  always @(posedge clk_b) q2 <= q1;\n"
+                         "  always @(posedge clk_c) q3 <= q2;\n"
+                         "endmodule\n";
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n"
+                               "create_clock -name clk_c -period 5 [get_ports clk_c]\n";
+    auto r = analyze(design, clocks + "set_clock_groups -asynchronous -group [get_clocks {clk_a}]\n");
+    CHECK(r.rel("clk_a", "clk_b") == ClockRelation::Asynchronous);
+    CHECK(r.rel("clk_a", "clk_c") == ClockRelation::Asynchronous);
+    CHECK(r.rel("clk_b", "clk_c") == ClockRelation::Unknown); // both outside the group: not related by it
+    CHECK(r.countCode("CON-GROUP-SINGLE") == 1);
+    CHECK(std::ranges::none_of(r.diags, [](const Diagnostic& d) { return d.code == "CON-GROUP-SINGLE" && d.severity != Severity::Info; }));
+    // one group per clock, as the verilog-ethernet Intel examples write it
+    auto each = analyze(design, clocks + "set_clock_groups -asynchronous -group [get_clocks {clk_a}]\n"
+                                         "set_clock_groups -asynchronous -group [get_clocks {clk_b}]\n"
+                                         "set_clock_groups -asynchronous -group [get_clocks {clk_c}]\n");
+    CHECK(each.rel("clk_b", "clk_c") == ClockRelation::Asynchronous);
+}

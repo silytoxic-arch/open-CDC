@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <tuple>
 #include <unordered_map>
 #include <optional>
@@ -26,6 +27,16 @@ struct Object {
     std::int32_t item = -1;          ///< cells / pins: resolver table index (register, instance or port)
     bool instance = false;           ///< cells: a hierarchical instance (no bits)
     std::string pin{};               ///< flip-flop pins: C, D, Q, CE, CLR, PRE, R, S (bits: the signal on the pin)
+};
+
+/// Quartus collections (names with '|' as hierarchy separator, registers
+/// named after their HDL signal).
+enum class QuartusKind : std::uint8_t {
+    Registers, ///< get_registers
+    Keepers,   ///< get_keepers: registers and ports
+    Nodes,     ///< get_nodes: registers and ports
+    Cells,     ///< get_cells: registers and instances
+    Pins,      ///< get_pins: instance ports, register pins (clk d q ena clrn prn sclr)
 };
 
 /// Resolves object patterns against a design. Patterns use Tcl glob syntax
@@ -72,6 +83,12 @@ public:
     virtual std::vector<Object> netPins(const Object& /*net*/) { return {}; }
     /// The cell of a pin (flip-flop or instance).
     virtual std::vector<Object> pinCells(const Object& /*pin*/) { return {}; }
+    /// Quartus-style query: '*' also matches across '|'. A pin path that
+    /// continues inside an instance whose internals are not modelled (an IP's
+    /// "pll|auto_generated|pll1|clk[0]") resolves to that instance's port.
+    virtual std::vector<Object> quartus(std::string_view /*pattern*/, QuartusKind /*kind*/, bool /*nocase*/) {
+        return {};
+    }
     /// Pin properties: NAME, REF_PIN_NAME, DIRECTION, IS_LEAF, IS_CLOCK,
     /// IS_ENABLE, IS_PRESET, IS_CLEAR, IS_SET, IS_RESET.
     virtual bool pinPropertyKnown(std::string_view /*prop*/) { return false; }
@@ -98,6 +115,7 @@ public:
     std::vector<Object> pinNets(const Object& pin) override;
     std::vector<Object> netPins(const Object& net) override;
     std::vector<Object> pinCells(const Object& pin) override;
+    std::vector<Object> quartus(std::string_view pattern, QuartusKind kind, bool nocase) override;
     bool pinPropertyKnown(std::string_view prop) override;
     std::optional<std::string> pinProperty(const Object& pin, std::string_view prop) override;
     std::vector<Object> nets(std::string_view pattern, bool hierarchical, bool nocase) override;
@@ -144,6 +162,11 @@ private:
     std::vector<CellInfo> instInfo_;      ///< parallel to insts_
     std::set<std::string, std::less<>> attrNames_; ///< upper-case attribute names on registers/instances
     bool loadsBuilt_ = false;
+    bool quartusBuilt_ = false;
+    std::vector<Named> qregs_;  ///< regs_ with Quartus names ("u|sig", "u|sig[3]"), same order
+    std::vector<Named> qpins_;  ///< pins_ with Quartus names, same order
+    std::vector<std::string> qinsts_; ///< insts_ with Quartus names
+    void buildQuartus();
     /// driver of a bit -> flip-flop load pins on it: (register, pin name, Q bit of that flip-flop)
     std::map<std::tuple<int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>,
              std::vector<std::tuple<std::size_t, std::string, graph::BitRef>>>
@@ -242,13 +265,43 @@ struct ConstraintSet {
     std::vector<std::filesystem::path> files;
 };
 
-/// Interprets SDC/XDC text (a Tcl subset) and appends to `out`.
-/// Diagnostics: CON-PARSE, CON-UNKNOWN-OPTION, CON-UNSUPPORTED-OPTION,
-/// CON-UNMATCHED, CON-IGNORED, CON-DUPLICATE-CLOCK.
+struct SdcOptions {
+    /// Directories searched for relative `source` paths after the directory
+    /// of the file that runs `source` (e.g. the directory Quartus or Vivado
+    /// runs the scripts from).
+    std::vector<std::filesystem::path> sourceDirs;
+};
+
+/// Reads the constraint files of one analysis into one ConstraintSet. All
+/// files share one Tcl interpreter, as in Vivado and Quartus: variables and
+/// procedures defined in one file are visible in the files read after it.
+/// Diagnostics: CON-PARSE, CON-OPEN, CON-UNKNOWN-OPTION, CON-UNSUPPORTED-OPTION,
+/// CON-UNSUPPORTED-COMMAND, CON-UNKNOWN-COMMAND, CON-UNMATCHED, CON-IGNORED,
+/// CON-DUPLICATE-CLOCK.
+class SdcReader {
+public:
+    SdcReader(IObjectResolver& resolver, ConstraintSet& out, DiagnosticSink& sink, SdcOptions options = {});
+    SdcReader(const SdcReader&) = delete;
+    SdcReader& operator=(const SdcReader&) = delete;
+    ~SdcReader();
+
+    /// Interprets SDC/XDC text (a Tcl subset) named `fileName` (a path when
+    /// it runs `source` with relative paths).
+    void parse(std::string_view text, const std::string& fileName);
+    /// Reads and interprets a file. Returns false if it cannot be read.
+    bool readFile(const std::filesystem::path& file);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+/// One file with its own interpreter (see SdcReader).
 void parseSdc(std::string_view text, const std::string& fileName, IObjectResolver& resolver, ConstraintSet& out,
               DiagnosticSink& sink);
 
-/// Reads a file and calls parseSdc. Returns false if the file cannot be read.
+/// Reads one file with its own interpreter (see SdcReader). Returns false if
+/// the file cannot be read.
 bool readSdcFile(const std::filesystem::path& file, IObjectResolver& resolver, ConstraintSet& out,
                  DiagnosticSink& sink);
 

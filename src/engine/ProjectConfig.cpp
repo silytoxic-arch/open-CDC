@@ -159,6 +159,8 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
         return projectError("PRJ-SCHEMA", err);
     if (auto err = readPathArray(root, "waivers", baseDir, cfg.waivers, false); !err.empty())
         return projectError("PRJ-SCHEMA", err);
+    if (auto err = readPathArray(root, "tclSourceDirs", baseDir, cfg.tclSourceDirs, false); !err.empty())
+        return projectError("PRJ-SCHEMA", err);
     if (auto err = readPathArray(root, "vivadoClockReports", baseDir, cfg.vivadoClockReports, false); !err.empty())
         return projectError("PRJ-SCHEMA", err);
 
@@ -324,6 +326,7 @@ std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path&
     paths("constraints", cfg.constraints);
     paths("waivers", cfg.waivers);
     paths("vivadoClockReports", cfg.vivadoClockReports);
+    paths("tclSourceDirs", cfg.tclSourceDirs);
     const AnalysisOptions defaults;
     if (cfg.options.unknownClockRelation != defaults.unknownClockRelation ||
         cfg.options.minSyncStages != defaults.minSyncStages ||
