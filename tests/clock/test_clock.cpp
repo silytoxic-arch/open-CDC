@@ -380,3 +380,19 @@ TEST_CASE("set_clock_groups with get_clocks -of_objects", "[clock][constraints]"
     auto p = analyze(design, std::string(clocks) + "set_input_delay -clock clk_a 1 [get_ports -of_objects [get_nets d]]\n");
     CHECK(p.countCode("CON-UNSUPPORTED-OPTION") == 1);
 }
+
+TEST_CASE("Clock-level false paths and datapath-only max delays declare asynchronous pairs", "[clock][constraints]") {
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    auto fp = analyze(kTwoClocks, clocks + "set_false_path -from [get_clocks clk_a] -to [get_clocks clk_b]\n");
+    CHECK(fp.rel("clk_a", "clk_b") == ClockRelation::Asynchronous);
+    CHECK(fp.model->reason(fp.id("clk_a"), fp.id("clk_b")).find("set_false_path -from clk_a -to clk_b") !=
+          std::string::npos);
+    auto md = analyze(kTwoClocks, clocks + "set_max_delay -datapath_only -from [get_clocks -of_objects [get_ports clk_b]] "
+                                           "-to [get_clocks clk_a] 5.0\n");
+    CHECK(md.rel("clk_a", "clk_b") == ClockRelation::Asynchronous);
+    // negative: a max delay that is not datapath-only, and register-level exceptions, relate nothing
+    auto plain = analyze(kTwoClocks, clocks + "set_max_delay -from [get_clocks clk_a] -to [get_clocks clk_b] 5.0\n"
+                                              "set_false_path -from [get_pins qa_reg/C] -to [get_pins qb_reg/D]\n");
+    CHECK(plain.rel("clk_a", "clk_b") == ClockRelation::Unknown);
+}

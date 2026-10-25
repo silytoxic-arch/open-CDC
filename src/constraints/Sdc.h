@@ -107,6 +107,18 @@ struct ClockGroups {
     SourceLocation loc;
 };
 
+/// set_false_path / set_max_delay -datapath_only between clocks
+/// (-from [get_clocks a] -to [get_clocks b]): the crossings from a to b are
+/// handled as asynchronous by the designer.
+struct ClockException {
+    std::string command;                  ///< "set_false_path" / "set_max_delay -datapath_only"
+    std::vector<std::string> from;        ///< clock name patterns
+    std::vector<std::string> to;
+    std::vector<graph::BitRef> fromBits;  ///< get_clocks -of_objects
+    std::vector<graph::BitRef> toBits;
+    SourceLocation loc;
+};
+
 /// set_input_delay -clock <clk> <ports>: assigns input ports to a clock
 /// domain for CDC analysis (delay values are not used).
 struct InputDelay {
@@ -123,6 +135,7 @@ struct ConstraintSet {
     std::vector<ClockDef> clocks;
     std::vector<ClockGroups> groups;
     std::vector<InputDelay> inputDelays;
+    std::vector<ClockException> clockExceptions;
     std::map<std::string, int> ignoredCommands; ///< command -> occurrences (reported, not applied)
     std::vector<std::filesystem::path> files;
 };

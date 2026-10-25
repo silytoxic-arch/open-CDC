@@ -995,6 +995,60 @@ private:
         return {};
     }
 
+    /// set_false_path / set_max_delay -datapath_only with only clocks in
+    /// -from and -to; anything else is a path-level exception (not used).
+    bool clockException(const Command& cmd, const std::string& name) {
+        // look at the words before evaluating anything: only clock queries
+        // in -from and -to make a clock exception (cell/pin queries of
+        // path-level exceptions are not evaluated)
+        bool from = false, to = false;
+        for (std::size_t i = 1; i + 1 < cmd.words.size(); ++i) {
+            const std::string& w = cmd.words[i].raw;
+            if (w != "-from" && w != "-to")
+                continue;
+            std::string v = cmd.words[i + 1].raw;
+            v.erase(0, v.find_first_not_of(" \t["));
+            if (!v.starts_with("get_clocks") && !v.starts_with("all_clocks"))
+                return false;
+            (w == "-from" ? from : to) = true;
+        }
+        if (!from || !to)
+            return false;
+        Args a = parseArgs(cmd, name,
+                           {{"-from", true}, {"-to", true}, {"-through", true}, {"-datapath_only", false},
+                            {"-setup", false}, {"-hold", false}, {"-rise", false}, {"-fall", false},
+                            {"-reset_path", false}, {"-quiet", false}, {"-comment", true}, {"-ignore_clock_latency", false},
+                            {"-rise_from", true}, {"-fall_from", true}, {"-rise_to", true}, {"-fall_to", true}});
+        if (name == "set_max_delay" && !a.flags.contains("-datapath_only"))
+            return false;
+        if (!a.opts.contains("-from") || !a.opts.contains("-to") || a.opts.contains("-through") ||
+            a.flags.contains("-hold"))
+            return false;
+        ClockException e;
+        e.command = name == "set_false_path" ? name : name + " -datapath_only";
+        e.loc = {file_, cmd.line, 0};
+        auto collect = [&](const std::vector<Value>& vs, std::vector<std::string>& names,
+                           std::vector<BitRef>& bits) {
+            for (const auto& v : vs) {
+                if (!v.hasObjects)
+                    return false; // plain names could be cells: not a clock exception
+                for (const auto& o : v.objects) {
+                    if (o.kind != ObjectKind::Clock)
+                        return false;
+                    if (o.bits.empty())
+                        names.push_back(o.name);
+                    else
+                        bits.insert(bits.end(), o.bits.begin(), o.bits.end());
+                }
+            }
+            return true;
+        };
+        if (!collect(a.opts["-from"], e.from, e.fromBits) || !collect(a.opts["-to"], e.to, e.toBits))
+            return false;
+        out_.clockExceptions.push_back(std::move(e));
+        return true;
+    }
+
     Value setClockGroups(const Command& cmd) {
         Args a = parseArgs(cmd, "set_clock_groups",
                            {{"-name", true}, {"-group", true}, {"-asynchronous", false}, {"-logically_exclusive", false},
@@ -1094,6 +1148,10 @@ private:
             diag("CON-UNSUPPORTED-COMMAND", Severity::Warning,
                  "Tcl command '" + name + "' is not supported; the command was skipped", cmd.line);
             return {};
+        }
+        if (name == "set_false_path" || name == "set_max_delay") {
+            if (clockException(cmd, name))
+                return {};
         }
         if (isTimingOrMiscCommand(name)) {
             ++ignored_[name];

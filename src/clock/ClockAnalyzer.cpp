@@ -764,6 +764,21 @@ private:
     /// get_clocks -of_objects in set_clock_groups: the clocks on the named
     /// nets/pins/ports, per constraint and group
     void resolveGroupObjects() {
+        // clock exceptions with get_clocks -of_objects
+        exceptionClocks_.assign(cons_.clockExceptions.size(), {});
+        auto clocksOn = [&](const std::vector<BitRef>& bits, std::vector<ClockId>& out) {
+            for (const auto& b : bits) {
+                if (const auto it = memo_.find(b); it != memo_.end())
+                    for (const auto& [c, inv] : it->second.sources)
+                        out.push_back(c);
+                else if (const auto sc = sourceClocks_.find(b); sc != sourceClocks_.end())
+                    out.insert(out.end(), sc->second.begin(), sc->second.end());
+            }
+        };
+        for (std::size_t k = 0; k < cons_.clockExceptions.size(); ++k) {
+            clocksOn(cons_.clockExceptions[k].fromBits, exceptionClocks_[k].first);
+            clocksOn(cons_.clockExceptions[k].toBits, exceptionClocks_[k].second);
+        }
         // set_input_delay -clock [get_clocks -of_objects ...]
         model_->inputDelayClocks.assign(cons_.inputDelays.size(), std::nullopt);
         for (std::size_t i = 0; i < cons_.inputDelays.size(); ++i) {
@@ -808,6 +823,32 @@ private:
                             groupObjectClocks_[g][k].push_back(c);
                 }
         }
+    }
+
+    /// set_false_path / set_max_delay -datapath_only from one clock to the
+    /// other (either direction): the designer handles the pair as asynchronous.
+    std::optional<std::string> exceptionBetween(ClockId a, ClockId b) const {
+        const auto& m = *model_;
+        for (std::size_t k = 0; k < cons_.clockExceptions.size(); ++k) {
+            const auto& e = cons_.clockExceptions[k];
+            auto member = [&](ClockId c, const std::vector<std::string>& names, const std::vector<ClockId>& byBits) {
+                return std::ranges::any_of(names, [&](const std::string& p) {
+                           return constraints::globMatch(p, m.clocks[c.index()].name);
+                       }) ||
+                       std::ranges::find(byBits, c) != byBits.end();
+            };
+            const auto& fb = exceptionClocks_[k].first;
+            const auto& tb = exceptionClocks_[k].second;
+            const bool ab = member(a, e.from, fb) && member(b, e.to, tb);
+            const bool ba = member(b, e.from, fb) && member(a, e.to, tb);
+            if (ab || ba) {
+                const auto& f = m.clocks[(ab ? a : b).index()].name;
+                const auto& t = m.clocks[(ab ? b : a).index()].name;
+                return e.command + " -from " + f + " -to " + t + " (" + toString(e.loc) +
+                       "): crossings in this direction are declared asynchronous";
+            }
+        }
+        return std::nullopt;
     }
 
     std::vector<ClockId> ancestors(ClockId c) const {
@@ -926,6 +967,10 @@ private:
                             s += " " + c.sourceName;
                         return s + ")";
                     };
+                    if (const auto why = exceptionBetween(a, b)) {
+                        m.setRelation(a, b, ClockRelation::Asynchronous, *why);
+                        continue;
+                    }
                     m.setRelation(a, b, ClockRelation::Unknown,
                                   "independent sources " + describe(m.clocks[ancA.back().index()]) + " and " +
                                       describe(m.clocks[ancB.back().index()]) +
@@ -968,7 +1013,8 @@ private:
     const constraints::ConstraintSet& cons_;
     DiagnosticSink& sink_;
     std::shared_ptr<ClockModel> model_;
-    std::vector<std::vector<std::vector<ClockId>>> groupObjectClocks_; ///< constraint -> group -> clocks (-of_objects)
+    std::vector<std::vector<std::vector<ClockId>>> groupObjectClocks_;
+    std::vector<std::pair<std::vector<ClockId>, std::vector<ClockId>>> exceptionClocks_; ///< per clock exception ///< constraint -> group -> clocks (-of_objects)
 
     std::unordered_map<BitRef, std::vector<ClockId>, BitRefHash> sourceClocks_;
     std::unordered_map<BitRef, ClockId, BitRefHash> primary_;
