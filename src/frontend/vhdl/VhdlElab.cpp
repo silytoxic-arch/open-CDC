@@ -795,6 +795,63 @@ void Elaborator::elaborateInstance(const Stmt& s, Scope& scope) {
         ci.name = instName;
         ci.definition = unitText.empty() ? "?" : unitText;
         ci.loc = srcLoc(s.loc);
+        // A declared component without an entity (vendor IP): its outputs drive
+        // the actuals as black-box outputs (a clock output becomes a clock of
+        // its own; data outputs have no clock domain); its inputs read their
+        // actuals (they keep the logic in front of the IP alive).
+        if (component && body) {
+            std::vector<std::pair<std::string, Mode>> cports; // key, mode
+            for (const auto& p : component->ports)
+                for (const auto& n : p.names)
+                    cports.emplace_back(n.key, p.mode);
+            std::size_t pos = 0;
+            for (const auto& a : s.portMap) {
+                std::optional<std::pair<std::string, Mode>> formal;
+                if (a.formal) {
+                    if (a.formal->kind == ExprKind::Simple)
+                        if (auto it = std::ranges::find(cports, a.formal->ident.key,
+                                                        &std::pair<std::string, Mode>::first);
+                            it != cports.end())
+                            formal = *it;
+                }
+                else if (pos < cports.size()) {
+                    formal = cports[pos];
+                }
+                ++pos;
+                if (!formal || !a.actual || a.actual->kind == ExprKind::Open)
+                    continue;
+                if (formal->second == Mode::In) {
+                    // names only: literals are constants (and have no type to evaluate them with)
+                    const auto k = a.actual->kind;
+                    if (k != ExprKind::Simple && k != ExprKind::Selected && k != ExprKind::Call)
+                        continue;
+                    SVal v = eval(*a.actual, pctx, nullptr);
+                    if (!v.valid())
+                        continue;
+                    ir::PortBinding pb;
+                    pb.port = formal->first;
+                    pb.dir = ir::PortDir::In;
+                    pb.actual = bitsOf(v, a.actual->loc);
+                    if (!pb.actual.empty())
+                        ci.ports.push_back(std::move(pb));
+                    continue;
+                }
+                if (formal->second != Mode::Out && formal->second != Mode::Buffer)
+                    continue;
+                std::vector<Target> tg;
+                if (!targets(*a.actual, pctx, tg) || tg.size() != 1 || tg.front().dynamic || tg.front().object < 0)
+                    continue;
+                const Target& t = tg.front();
+                const ir::SigSpec& storage = object(t.object).storage;
+                if (t.offset + t.width > storage.width() || t.width == 0)
+                    continue;
+                ir::PortBinding pb;
+                pb.port = formal->first;
+                pb.dir = ir::PortDir::Out;
+                pb.actual = storage.extract(t.offset, t.width);
+                ci.ports.push_back(std::move(pb));
+            }
+        }
         body->body.children.push_back(std::move(ci));
         if (design_)
             design_->unsupported.push_back({"IR-UNRESOLVED-INSTANCE", body->body.name,

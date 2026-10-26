@@ -236,3 +236,46 @@ TEST_CASE("Mixed: a top that names nothing suggests the closest units", "[vhdl][
     REQUIRE(f != far.diags.end());
     CHECK(f->notes.empty());
 }
+
+TEST_CASE("Mixed: vendor library clause after a comment that says 'library'", "[vhdl][mixed]") {
+    // Digilent: "-- Uncomment the following library declaration if instantiating\n-- any Xilinx primitives ..."
+    auto r = run({{"t.vhd", "library ieee; use ieee.std_logic_1164.all;\n"
+                            "-- Uncomment the following library declaration if instantiating\n"
+                            "-- any Xilinx primitives in this code.\n"
+                            "library UNISIM;\nuse UNISIM.VComponents.all;\n"
+                            "entity t is port (i : in std_logic; o : out std_logic); end;\n"
+                            "architecture rtl of t is begin\n"
+                            "  b : BUFG port map (I => i, O => o);\n"
+                            "end;\n"}},
+                 "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-UNDECLARED") == 0);
+}
+
+TEST_CASE("Mixed: outputs of a declared component without an entity are black-box outputs", "[vhdl][mixed]") {
+    // Digilent Ram2Ddr: the MIG 'ddr' component drives ui_clk; rstn feeds its sys_rst
+    auto r = run({{"t.vhd", "library ieee; use ieee.std_logic_1164.all;\n"
+                            "entity t is port (clk, rst, d : in std_logic; q : out std_logic); end;\n"
+                            "architecture rtl of t is\n"
+                            "  component ddr port (sys_clk_i, sys_rst : in std_logic; ui_clk : out std_logic;\n"
+                            "    app_rdy : out std_logic); end component;\n"
+                            "  signal rstn, ui_clk, rdy, r1 : std_logic;\n"
+                            "begin\n"
+                            "  process (clk) begin if rising_edge(clk) then rstn <= not rst; end if; end process;\n"
+                            "  u : ddr port map (sys_clk_i => clk, sys_rst => rstn, ui_clk => ui_clk, app_rdy => rdy);\n"
+                            "  process (ui_clk) begin if rising_edge(ui_clk) then r1 <= rdy and d; end if; end process;\n"
+                            "  q <= r1;\n"
+                            "end;\n"}},
+                 "t");
+    REQUIRE(r.design);
+    CHECK(r.count("IR-UNRESOLVED-INSTANCE") == 1);
+    // rstn is read by the black box: kept; r1 is clocked by the black box's ui_clk
+    CHECK(r.has("reg rstn"));
+    CHECK(r.has("reg r1"));
+    const auto& top = r.design->body(r.design->instance(r.design->tops.front()).body);
+    const auto it = std::ranges::find(top.children, std::string("u"), &ir::ChildInstance::name);
+    REQUIRE(it != top.children.end());
+    CHECK(std::ranges::count_if(it->ports, [](const ir::PortBinding& p) { return p.dir == ir::PortDir::Out; }) == 2);
+    CHECK(std::ranges::count_if(it->ports, [](const ir::PortBinding& p) { return p.dir == ir::PortDir::In; }) == 2);
+}

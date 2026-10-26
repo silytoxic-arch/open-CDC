@@ -1,5 +1,7 @@
 #include "clock/ClockModel.h"
 
+#include "constraints/Sdc.h"
+
 #include <algorithm>
 
 namespace opencdc::clock {
@@ -56,6 +58,9 @@ std::optional<ClockId> ClockModel::find(std::string_view name) const {
     for (std::size_t i = 0; i < clocks.size(); ++i)
         if (clocks[i].name == name)
             return ClockId{static_cast<std::uint32_t>(i)};
+    for (std::size_t i = 0; i < clocks.size(); ++i)
+        if (std::ranges::find(clocks[i].aliases, name) != clocks[i].aliases.end())
+            return ClockId{static_cast<std::uint32_t>(i)};
     return std::nullopt;
 }
 
@@ -77,6 +82,12 @@ std::size_t ClockModel::resolvedRegisters() const {
 
 std::size_t ClockModel::unresolvedRegisters() const {
     return registers.size() - resolvedRegisters();
+}
+
+bool clockMatches(std::string_view pattern, const Clock& c) {
+    if (constraints::globMatch(pattern, c.name))
+        return true;
+    return std::ranges::any_of(c.aliases, [&](const std::string& a) { return constraints::globMatch(pattern, a); });
 }
 
 } // namespace opencdc::clock

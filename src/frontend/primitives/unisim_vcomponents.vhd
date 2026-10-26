@@ -173,6 +173,12 @@ package vcomponents is
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component IDELAYCTRL port (REFCLK : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
+  component XADC port (DCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component SYSMONE1 port (DCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component SYSMONE4 port (DCLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
   component RAMB18E1 port (CLKARDCLK : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component RAMB36E1 port (CLKARDCLK : in std_ulogic); end component;

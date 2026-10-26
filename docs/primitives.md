@@ -39,6 +39,7 @@ Sources:
 | `ODDR`, `ODDRE1` | Two rising-edge registers that both reach `Q` | |
 | `IDELAYE2`, `IDELAYE3`, `ODELAYE2`, `ODELAYE3` | Data path is a wire; tap counter `CNTVALUEOUT` in the control clock (`C` / `CLK`); in `FIXED` mode there is no counter (`CNTVALUEOUT` is constant) | |
 | `IDELAYCTRL` | `RDY` has no clock domain | |
+| `XADC`, `SYSMONE1`, `SYSMONE4` | DRP (`DO`, `DRDY`) and status outputs (`ALM`, `OT`, `BUSY`, `CHANNEL`, `EOC`, `EOS`, `MUXADDR`) are registers of `DCLK`; `JTAG*` outputs have no clock domain | |
 | `ISERDESE2`, `ISERDESE3` | Serial data shifted on `CLK`, parallel word registered on `CLKDIV` | `CLK` and `CLKDIV` come from one source, so they are not a crossing. The `ISERDESE3` FIFO is a hard synchronizer: the word is given in the `CLKDIV` domain. `NETWORKING`/`BITSLIP` timing is approximate. |
 | `OSERDESE2`, `OSERDESE3` | Word registered on `CLKDIV`, shifted out on `CLK` | Tristate byte control is approximate |
 | `RAMB18E1`, `RAMB36E1`, `RAMB18E2`, `RAMB36E2` | Port A in `CLKARDCLK`, port B in `CLKBWRCLK`; each port writes its own array and both ports read both arrays | Data written by one port and read by the other is a crossing. A port whose write enable is tied off writes nothing. Cascade and ECC pins are ignored; ECC outputs are 0. |

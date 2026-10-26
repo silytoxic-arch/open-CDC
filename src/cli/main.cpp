@@ -134,6 +134,8 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
         for (std::size_t i = 0; i < cm.clocks.size(); ++i) {
             const auto& c = cm.clocks[i];
             os << "  " << c.name << "  [" << clock::toString(c.kind) << "]";
+            for (const auto& a : c.aliases)
+                os << " alias=" << a;
             if (!c.sourceName.empty() && c.sourceName != c.name)
                 os << " source=" << c.sourceName;
             if (c.master.valid())

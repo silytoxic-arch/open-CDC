@@ -159,6 +159,29 @@ void writeIfChanged(const std::filesystem::path& path, const std::string& text) 
         std::filesystem::remove(tmp, ec);
 }
 
+/// VHDL text without "--" comments (library clauses are looked for in it).
+std::string withoutVhdlComments(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    bool inString = false;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c == '\n')
+            inString = false;
+        if (c == '"')
+            inString = !inString;
+        if (!inString && c == '-' && i + 1 < text.size() && text[i + 1] == '-') {
+            while (i < text.size() && text[i] != '\n')
+                ++i;
+            if (i < text.size())
+                out += '\n';
+            continue;
+        }
+        out += c;
+    }
+    return out;
+}
+
 struct Request {
     std::string module;
     std::vector<ir::InstanceParam> params;
@@ -267,7 +290,7 @@ public:
                 std::ifstream in(f, std::ios::binary);
                 std::ostringstream ss;
                 ss << in.rdbuf();
-                const std::string text = lower(ss.str());
+                const std::string text = lower(withoutVhdlComments(ss.str()));
                 for (auto it = std::sregex_iterator(text.begin(), text.end(), libRe); it != std::sregex_iterator(); ++it) {
                     std::stringstream names((*it)[2].str());
                     std::string n;
@@ -881,7 +904,7 @@ private:
             std::ifstream in(f, std::ios::binary);
             std::ostringstream ss;
             ss << in.rdbuf();
-            const std::string text = ss.str();
+            const std::string text = withoutVhdlComments(ss.str());
             if (std::regex_search(text, libRe))
                 return true;
         }

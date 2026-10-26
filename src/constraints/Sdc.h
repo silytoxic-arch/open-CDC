@@ -73,6 +73,9 @@ public:
     }
     /// Clock bits of the flip-flops of a cell (empty for instances).
     virtual std::vector<graph::BitRef> cellClocks(const Object& /*cell*/) { return {}; }
+    /// "instance (definition)" of a black-box instance (a module or IP the
+    /// design does not define) whose path the pattern starts with.
+    virtual std::optional<std::string> blackBoxContaining(std::string_view /*pattern*/) { return std::nullopt; }
 
     // Netlist traversal (get_pins/get_nets/get_cells -of_objects)
     /// Pins of a cell: flip-flop pins, or the ports of an instance.
@@ -103,6 +106,7 @@ public:
 class DesignObjectResolver final : public IObjectResolver {
 public:
     explicit DesignObjectResolver(const graph::DesignView& view);
+    std::optional<std::string> blackBoxContaining(std::string_view pattern) override;
 
     std::vector<Object> ports(std::string_view pattern, bool nocase) override;
     std::vector<Object> pins(std::string_view pattern, bool hierarchical, bool nocase) override;

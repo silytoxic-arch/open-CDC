@@ -158,6 +158,22 @@ std::vector<std::string> instancePrefixes(const ir::Design& d) {
 
 } // namespace
 
+std::optional<std::string> DesignObjectResolver::blackBoxContaining(std::string_view pattern) {
+    const auto& d = view_.design();
+    const auto prefix = instancePrefixes(d);
+    for (std::size_t i = 0; i < d.instances.size(); ++i) {
+        const auto& body = d.body(d.instances[i].body);
+        for (const auto& c : body.children) {
+            if (c.body.valid())
+                continue;
+            const std::string path = prefix[i] + c.name + "/";
+            if (pattern.starts_with(path) || pattern.starts_with("/" + path))
+                return prefix[i] + c.name + " (" + c.definition + ")";
+        }
+    }
+    return std::nullopt;
+}
+
 void DesignObjectResolver::buildNames() {
     if (namesBuilt_)
         return;
@@ -3250,6 +3266,9 @@ private:
             diag("CON-UNMATCHED", Severity::Info,
                  ctx + ": '" + pattern + "' is a Quartus reserved JTAG port added during fitting, not part of the RTL",
                  line);
+        else if (const auto bb = resolver_.blackBoxContaining(pattern))
+            diag("CON-UNMATCHED", Severity::Info,
+                 ctx + ": " + shown + " is inside the black box '" + *bb + "', whose contents are not modelled", line);
         else if (debugCore)
             diag("CON-UNMATCHED", Severity::Info,
                  ctx + ": " + shown +

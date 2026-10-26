@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <set>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -940,6 +941,508 @@ Result<XciModel> debugCore(const XciInfo& info, bool vio) {
     return out;
 }
 
+
+// ---------------------------------------------------------------------------
+// Clocking Wizard: an MMCME2_ADV or PLLE2_ADV with the multiply/divide values
+// Vivado computed (the clock analysis derives the output clocks from them)
+// ---------------------------------------------------------------------------
+
+std::string text(const std::map<std::string, std::string>& m, const std::string& key, std::string def) {
+    auto it = m.find(key);
+    return it == m.end() || it->second.empty() ? def : it->second;
+}
+
+/// A real parameter as a Verilog real literal ("11.875", "6" -> "6.0").
+std::string realLit(const std::map<std::string, std::string>& m, const std::string& key, double def) {
+    double v = def;
+    if (auto it = m.find(key); it != m.end())
+        try {
+            v = std::stod(it->second);
+        }
+        catch (...) {
+        }
+    std::ostringstream s;
+    s.precision(10);
+    s << v;
+    std::string r = s.str();
+    if (r.find_first_of(".eE") == std::string::npos)
+        r += ".0";
+    return r;
+}
+
+Result<XciModel> clockingWizard(const XciInfo& info) {
+    const auto& m = info.model;
+    const auto& u = info.user;
+    const bool pll = lower(text(m, "C_PRIMITIVE", text(u, "PRIMITIVE", "MMCM"))) == "pll";
+    const std::string prim = pll ? "PLLE2_ADV" : "MMCME2_ADV";
+    const std::string src = lower(text(m, "C_PRIM_SOURCE", text(u, "PRIM_SOURCE", "Single_ended_clock_capable_pin")));
+    const bool diff = src.find("differential") != std::string::npos;
+    const std::string in1 = text(m, "C_PRIMARY_PORT", text(u, "PRIMARY_PORT", "clk_in1"));
+    const bool switchover = num(m, "C_USE_INCLK_SWITCHOVER", num(u, "USE_INCLK_SWITCHOVER", 0)) != 0;
+    const std::string in2 = text(m, "C_SECONDARY_PORT", text(u, "SECONDARY_PORT", "clk_in2"));
+    const bool useReset = num(m, "C_USE_RESET", num(u, "USE_RESET", 1)) != 0;
+    const std::string resetPort = text(m, "C_RESET_PORT", text(u, "RESET_PORT", "reset"));
+    const bool resetLow = lower(text(u, "RESET_TYPE", text(m, "C_RESET_TYPE", "ACTIVE_HIGH"))) == "active_low";
+    const bool useLocked = num(m, "C_USE_LOCKED", num(u, "USE_LOCKED", 1)) != 0;
+    const std::string lockedPort = text(m, "C_LOCKED_PORT", text(u, "LOCKED_PORT", "locked"));
+    const bool powerDown = num(m, "C_USE_POWER_DOWN", num(u, "USE_POWER_DOWN", 0)) != 0;
+    const std::string fbSource = lower(text(m, "C_FEEDBACK_SOURCE", text(u, "FEEDBACK_SOURCE", "FDBK_AUTO")));
+    const bool extFeedback = fbSource != "fdbk_auto";
+    const std::string fbIn = text(m, "C_CLKFB_IN_PORT", "clkfb_in");
+    const std::string fbOut = text(m, "C_CLKFB_OUT_PORT", "clkfb_out");
+    const unsigned maxOut = pll ? 6 : 7;
+
+    struct Out {
+        unsigned n;        ///< 1-based clk_outN
+        std::string port;
+        bool buffered;
+    };
+    std::vector<Out> outs;
+    for (unsigned n = 1; n <= maxOut; ++n) {
+        const std::string k = std::to_string(n);
+        const bool used = n == 1 || num(m, "C_CLKOUT" + k + "_USED", num(u, "CLKOUT" + k + "_USED", 0)) != 0;
+        if (!used)
+            continue;
+        const std::string drives = lower(text(m, "C_CLKOUT" + k + "_DRIVES", text(u, "CLKOUT" + k + "_DRIVES", "BUFG")));
+        outs.push_back({n, text(m, "C_CLK_OUT" + k + "_PORT", text(u, "CLK_OUT" + k + "_PORT", "clk_out" + k)),
+                        drives.starts_with("bufg")});
+    }
+
+    // ports: the JSON boundary as it is, otherwise from the configuration
+    struct P {
+        std::string name;
+        bool output;
+        unsigned width;
+        bool isVec;
+    };
+    std::vector<P> ports;
+    if (!info.ports.empty()) {
+        for (const auto& b : info.ports)
+            ports.push_back({b.name, b.output,
+                             b.range ? static_cast<unsigned>(std::llabs(b.range->first - b.range->second) + 1) : 1U,
+                             b.range.has_value()});
+    }
+    else {
+        for (const auto& o : outs)
+            ports.push_back({o.port, true, 1, false});
+        if (useReset)
+            ports.push_back({resetPort, false, 1, false});
+        if (powerDown)
+            ports.push_back({"power_down", false, 1, false});
+        if (switchover)
+            ports.push_back({"clk_in_sel", false, 1, false});
+        if (useLocked)
+            ports.push_back({lockedPort, true, 1, false});
+        if (extFeedback) {
+            ports.push_back({fbIn, false, 1, false});
+            ports.push_back({fbOut, true, 1, false});
+        }
+        if (diff) {
+            ports.push_back({in1 + "_p", false, 1, false});
+            ports.push_back({in1 + "_n", false, 1, false});
+        }
+        else {
+            ports.push_back({in1, false, 1, false});
+        }
+        if (switchover) {
+            if (diff) {
+                ports.push_back({in2 + "_p", false, 1, false});
+                ports.push_back({in2 + "_n", false, 1, false});
+            }
+            else {
+                ports.push_back({in2, false, 1, false});
+            }
+        }
+    }
+    auto hasPort = [&](const std::string& n) {
+        return std::ranges::any_of(ports, [&](const P& p) { return p.name == n; });
+    };
+
+    std::ostringstream v;
+    v << "// Generated by OpenCDC from a Vivado IP configuration (.xci): a CDC model, not a functional model.\n"
+      << "module " << info.instance << " (\n";
+    for (std::size_t i = 0; i < ports.size(); ++i)
+        v << "  " << (ports[i].output ? "output wire " : "input  wire ")
+          << (ports[i].isVec ? vec(ports[i].width) + " " : std::string()) << ports[i].name
+          << (i + 1 < ports.size() ? ",\n" : "\n");
+    v << ");\n";
+    // input clocks
+    auto inputClock = [&](const std::string& base, const std::string& wire) {
+        if (hasPort(base + "_p") && hasPort(base + "_n"))
+            v << "  IBUFDS oc_ibuf_" << wire << " (.I(" << base << "_p), .IB(" << base << "_n), .O(" << wire << "));\n";
+        else if (hasPort(base))
+            v << "  assign " << wire << " = " << base << ";\n";
+        else
+            v << "  assign " << wire << " = 1'b0;\n";
+    };
+    v << "  wire oc_clkin1, oc_clkin2, oc_clkfb_o, oc_clkfb_i;\n";
+    inputClock(in1, "oc_clkin1");
+    if (switchover)
+        inputClock(in2, "oc_clkin2");
+    else
+        v << "  assign oc_clkin2 = 1'b0;\n";
+    // feedback: internal, or through the user's ports
+    if (extFeedback && hasPort(fbIn) && hasPort(fbOut))
+        v << "  assign " << fbOut << " = oc_clkfb_o;\n  assign oc_clkfb_i = " << fbIn << ";\n";
+    else
+        v << "  assign oc_clkfb_i = oc_clkfb_o;\n";
+    const std::string rst = useReset && hasPort(resetPort) ? (resetLow ? "~" + resetPort : resetPort) : "1'b0";
+
+    // the multiply / divide values Vivado chose for the requested frequencies
+    const double inFreq = [&] {
+        try {
+            return std::stod(text(m, "C_PRIM_IN_FREQ", text(u, "PRIM_IN_FREQ", "100")));
+        }
+        catch (...) {
+            return 100.0;
+        }
+    }();
+    std::ostringstream params;
+    if (pll) {
+        params << ".CLKIN1_PERIOD(" << realLit(m, "C_PLL_CLKIN1_PERIOD", 1000.0 / inFreq) << "), .DIVCLK_DIVIDE("
+               << num(m, "C_PLL_DIVCLK_DIVIDE", 1) << "), .CLKFBOUT_MULT(" << num(m, "C_PLL_CLKFBOUT_MULT", 1) << ")";
+        for (const auto& o : outs)
+            params << ", .CLKOUT" << o.n - 1 << "_DIVIDE("
+                   << num(m, "C_PLL_CLKOUT" + std::to_string(o.n - 1) + "_DIVIDE", 1) << ")";
+    }
+    else {
+        params << ".CLKIN1_PERIOD(" << realLit(m, "C_MMCM_CLKIN1_PERIOD", 1000.0 / inFreq) << "), .DIVCLK_DIVIDE("
+               << num(m, "C_MMCM_DIVCLK_DIVIDE", 1) << "), .CLKFBOUT_MULT_F("
+               << realLit(m, "C_MMCM_CLKFBOUT_MULT_F", 1.0) << ")";
+        for (const auto& o : outs) {
+            if (o.n == 1)
+                params << ", .CLKOUT0_DIVIDE_F(" << realLit(m, "C_MMCM_CLKOUT0_DIVIDE_F", 1.0) << ")";
+            else
+                params << ", .CLKOUT" << o.n - 1 << "_DIVIDE("
+                       << num(m, "C_MMCM_CLKOUT" + std::to_string(o.n - 1) + "_DIVIDE", 1) << ")";
+        }
+    }
+    // the nets on the output pins carry Vivado's clock names (clk_out1_clk_wiz_0)
+    auto outNet = [&](const Out& o) { return o.port + "_" + info.instance; };
+    for (const auto& o : outs)
+        v << "  wire " << outNet(o) << ";\n";
+    v << "  wire oc_locked;\n"
+      << "  " << prim << " #(" << params.str() << ")\n    oc_" << (pll ? "pll" : "mmcm") << " (.CLKIN1(oc_clkin1), .CLKIN2(oc_clkin2), .CLKINSEL("
+      << (switchover && hasPort("clk_in_sel") ? "clk_in_sel" : "1'b1") << "), .CLKFBIN(oc_clkfb_i), .CLKFBOUT(oc_clkfb_o), .RST(" << rst
+      << "), .PWRDWN(" << (powerDown && hasPort("power_down") ? "power_down" : "1'b0") << "), .LOCKED(oc_locked)";
+    for (const auto& o : outs)
+        v << ", .CLKOUT" << o.n - 1 << "(" << outNet(o) << ")";
+    v << ");\n";
+    std::vector<std::string> zero;
+    for (const auto& p : ports) {
+        if (!p.output)
+            continue;
+        if (p.name == fbOut && extFeedback)
+            continue;
+        if (p.name == lockedPort) {
+            v << "  assign " << p.name << " = oc_locked;\n";
+            continue;
+        }
+        auto o = std::ranges::find(outs, p.name, &Out::port);
+        if (o != outs.end()) {
+            if (o->buffered)
+                v << "  BUFG oc_bufg" << o->n - 1 << " (.I(" << outNet(*o) << "), .O(" << p.name << "));\n";
+            else
+                v << "  assign " << p.name << " = " << outNet(*o) << ";\n";
+            continue;
+        }
+        v << "  assign " << p.name << " = " << (p.isVec ? std::to_string(p.width) + "'b0" : "1'b0") << ";\n";
+        zero.push_back(p.name);
+    }
+    v << "endmodule\n";
+
+    XciModel out;
+    out.module = info.instance;
+    out.ip = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    out.verilog = v.str();
+    std::string freqs;
+    for (const auto& o : outs) {
+        const std::string f = text(m, "C_CLKOUT" + std::to_string(o.n) + "_OUT_FREQ", "?");
+        freqs += (freqs.empty() ? "" : ", ") + o.port + " " + f + " MHz";
+    }
+    out.summary = (pll ? std::string("PLL") : std::string("MMCM")) + ", input " + text(m, "C_PRIM_IN_FREQ", "?") +
+                  " MHz" + (diff ? " (differential)" : "") + "; " + freqs;
+    if (!zero.empty()) {
+        std::string list;
+        for (const auto& z : zero)
+            list += (list.empty() ? "" : ", ") + z;
+        out.notes.push_back("outputs without a model, driven with 0: " + list);
+    }
+    if (num(m, "C_USE_DYN_RECONFIG", 0) != 0)
+        out.notes.push_back("dynamic reconfiguration is not modelled: the output clocks keep the configured frequencies");
+    return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// Block Memory Generator (native interface): memories written on the clock
+// of their write port and read through registers on the clock of the read
+// port; data written on one port and read on the other crosses domains.
+// ---------------------------------------------------------------------------
+
+struct SimplePort {
+    std::string name;
+    bool output;
+    unsigned width;
+    bool isVec;
+};
+
+std::vector<SimplePort> boundaryPorts(const XciInfo& info) {
+    std::vector<SimplePort> ports;
+    for (const auto& b : info.ports)
+        ports.push_back({b.name, b.output,
+                         b.range ? static_cast<unsigned>(std::llabs(b.range->first - b.range->second) + 1) : 1U,
+                         b.range.has_value()});
+    return ports;
+}
+
+void emitHeader(std::ostringstream& v, const std::string& module, const std::vector<SimplePort>& ports) {
+    v << "// Generated by OpenCDC from a Vivado IP configuration (.xci): a CDC model, not a functional model.\n"
+      << "module " << module << " (\n";
+    for (std::size_t i = 0; i < ports.size(); ++i)
+        v << "  " << (ports[i].output ? "output wire " : "input  wire ")
+          << (ports[i].isVec ? vec(ports[i].width) + " " : std::string()) << ports[i].name
+          << (i + 1 < ports.size() ? ",\n" : "\n");
+    v << ");\n";
+}
+
+Result<XciModel> blockMemory(const XciInfo& info) {
+    const auto& m = info.model;
+    if (num(m, "C_INTERFACE_TYPE", 0) != 0)
+        return unsupported("IP '" + info.instance + "': Block Memory Generator with an AXI4 interface is not modelled",
+                           {"use the IP's generated HDL, or set the project option unknownModules to blackbox"});
+    const long long type = num(m, "C_MEM_TYPE", 0); // 0 SP RAM, 1 SDP RAM, 2 TDP RAM, 3 SP ROM, 4 DP ROM
+    const bool rom = type == 3 || type == 4;
+    const bool hasB = type == 1 || type == 2 || type == 4;
+    const bool writeB = type == 2;
+    const bool readA = type != 1;
+    const unsigned wa = static_cast<unsigned>(num(m, "C_WRITE_WIDTH_A", 32));
+    const unsigned ra = static_cast<unsigned>(num(m, "C_READ_WIDTH_A", wa));
+    const unsigned wb = static_cast<unsigned>(num(m, "C_WRITE_WIDTH_B", wa));
+    const unsigned rb = static_cast<unsigned>(num(m, "C_READ_WIDTH_B", wa));
+    const unsigned mw = std::max({wa, ra, hasB ? wb : 1U, hasB ? rb : 1U, 1U});
+    const long long latencyA = 1 + num(m, "C_HAS_MEM_OUTPUT_REGS_A", 0) + num(m, "C_HAS_MUX_OUTPUT_REGS_A", 0);
+    const long long latencyB = 1 + num(m, "C_HAS_MEM_OUTPUT_REGS_B", 0) + num(m, "C_HAS_MUX_OUTPUT_REGS_B", 0);
+
+    std::vector<SimplePort> ports;
+    if (!info.ports.empty()) {
+        ports = boundaryPorts(info);
+    }
+    else {
+        auto add = [&](std::string n, bool out, unsigned w, bool isVec) { ports.push_back({std::move(n), out, w, isVec}); };
+        add("clka", false, 1, false);
+        if (num(m, "C_HAS_RSTA", 0))
+            add("rsta", false, 1, false);
+        if (num(m, "C_HAS_ENA", 0))
+            add("ena", false, 1, false);
+        if (num(m, "C_HAS_REGCEA", 0))
+            add("regcea", false, 1, false);
+        if (!rom)
+            add("wea", false, static_cast<unsigned>(num(m, "C_WEA_WIDTH", 1)), true);
+        add("addra", false, static_cast<unsigned>(num(m, "C_ADDRA_WIDTH", 10)), true);
+        if (!rom)
+            add("dina", false, wa, true);
+        if (readA)
+            add("douta", true, ra, true);
+        if (hasB) {
+            add("clkb", false, 1, false);
+            if (num(m, "C_HAS_RSTB", 0))
+                add("rstb", false, 1, false);
+            if (num(m, "C_HAS_ENB", 0))
+                add("enb", false, 1, false);
+            if (num(m, "C_HAS_REGCEB", 0))
+                add("regceb", false, 1, false);
+            if (writeB)
+                add("web", false, static_cast<unsigned>(num(m, "C_WEB_WIDTH", 1)), true);
+            add("addrb", false, static_cast<unsigned>(num(m, "C_ADDRB_WIDTH", 10)), true);
+            if (writeB)
+                add("dinb", false, wb, true);
+            add("doutb", true, rb, true);
+        }
+        if (num(m, "C_HAS_INJECTERR", 0)) {
+            add("injectsbiterr", false, 1, false);
+            add("injectdbiterr", false, 1, false);
+        }
+        if (num(m, "C_USE_ECC", 0) || num(m, "C_USE_SOFTECC", 0)) {
+            add("sbiterr", true, 1, false);
+            add("dbiterr", true, 1, false);
+            add("rdaddrecc", true, static_cast<unsigned>(num(m, "C_ADDRB_WIDTH", 10)), true);
+        }
+        if (num(m, "C_EN_SLEEP_PIN", 0))
+            add("sleep", false, 1, false);
+        if (num(m, "C_EN_SAFETY_CKT", 0)) {
+            add("rsta_busy", true, 1, false);
+            if (hasB)
+                add("rstb_busy", true, 1, false);
+        }
+    }
+    auto find = [&](const std::string& n) -> const SimplePort* {
+        auto it = std::ranges::find(ports, n, &SimplePort::name);
+        return it == ports.end() ? nullptr : &*it;
+    };
+    std::ostringstream v;
+    emitHeader(v, info.instance, ports);
+    constexpr unsigned kModelAddrBits = 8; // contents do not matter for CDC: 256 entries
+    v << "  reg [" << mw - 1 << ":0] oc_mem_a [0:" << (1U << kModelAddrBits) - 1 << "];\n"
+      << "  reg [" << mw - 1 << ":0] oc_mem_b [0:" << (1U << kModelAddrBits) - 1 << "];\n";
+    auto addr = [&](const char* port) -> std::string {
+        const SimplePort* p = find(port);
+        if (!p)
+            return std::to_string(kModelAddrBits) + "'d0";
+        const unsigned w = std::min(p->width, kModelAddrBits);
+        const std::string a = p->isVec ? std::string(port) + "[" + std::to_string(w - 1) + ":0]" : std::string(port);
+        return w < kModelAddrBits ? "{" + std::to_string(kModelAddrBits - w) + "'d0, " + a + "}" : a;
+    };
+    auto data = [&](const char* port) -> std::string {
+        const SimplePort* p = find(port);
+        if (!p)
+            return std::to_string(mw) + "'d0";
+        return p->width < mw ? "{" + std::to_string(mw - p->width) + "'d0, " + std::string(port) + "}" : std::string(port);
+    };
+    auto en = [&](const char* port) { return find(port) ? std::string(port) : std::string("1'b1"); };
+    auto we = [&](const char* port) { return find(port) ? "(|" + std::string(port) + ")" : std::string("1'b0"); };
+    const std::string clka = find("clka") ? "clka" : "1'b0";
+    const std::string clkb = find("clkb") ? "clkb" : clka;
+    // writes: each port into its own memory (written on its own clock)
+    if (!rom) {
+        v << "  always @(posedge " << clka << ") if (" << en("ena") << " && " << we("wea") << ") oc_mem_a[" << addr("addra")
+          << "] <= " << data("dina") << ";\n";
+        if (find("web"))
+            v << "  always @(posedge " << clkb << ") if (" << en("enb") << " && " << we("web") << ") oc_mem_b["
+              << addr("addrb") << "] <= " << data("dinb") << ";\n";
+    }
+    // reads: a register on the read port's clock, then the output registers
+    auto readPort = [&](const char* side, const std::string& clk, const char* enPort, const char* addrPort,
+                        const char* rstPort, const char* regcePort, long long latency, const char* out) {
+        const SimplePort* o = find(out);
+        if (!o)
+            return;
+        const std::string pfx = std::string("oc_") + side;
+        for (long long k = 1; k <= latency; ++k)
+            v << "  reg [" << mw - 1 << ":0] " << pfx << k << " = 0;\n";
+        const std::string word = rom ? std::to_string(mw) + "'d0"
+                                     : "oc_mem_a[" + addr(addrPort) + "] ^ oc_mem_b[" + addr(addrPort) + "]";
+        v << "  always @(posedge " << clk << ") if (" << en(enPort) << ") " << pfx << "1 <= " << word << ";\n";
+        for (long long k = 2; k <= latency; ++k) {
+            v << "  always @(posedge " << clk << ")";
+            if (find(rstPort))
+                v << " if (" << rstPort << ") " << pfx << k << " <= 0; else";
+            v << " if (" << en(regcePort) << ") " << pfx << k << " <= " << pfx << k - 1 << ";\n";
+        }
+        v << "  assign " << out << " = " << pfx << latency << "[" << o->width - 1 << ":0];\n";
+    };
+    readPort("a", clka, "ena", "addra", "rsta", "regcea", latencyA, "douta");
+    readPort("b", clkb, "enb", "addrb", "rstb", "regceb", latencyB, "doutb");
+    std::vector<std::string> zero;
+    for (const auto& p : ports) {
+        if (!p.output || p.name == "douta" || p.name == "doutb")
+            continue;
+        v << "  assign " << p.name << " = " << (p.isVec ? std::to_string(p.width) + "'b0" : "1'b0") << ";\n";
+        zero.push_back(p.name);
+    }
+    v << "endmodule\n";
+    XciModel out;
+    out.module = info.instance;
+    out.ip = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    out.verilog = v.str();
+    static const char* kTypes[] = {"single-port RAM", "simple dual-port RAM", "true dual-port RAM", "single-port ROM",
+                                   "dual-port ROM"};
+    out.summary = std::string(type >= 0 && type <= 4 ? kTypes[type] : "memory") + ", " +
+                  std::to_string(num(m, "C_WRITE_DEPTH_A", 0)) + " x " + std::to_string(wa) +
+                  (hasB ? (num(m, "C_COMMON_CLK", 0) ? ", common clock" : ", clka/clkb") : std::string()) +
+                  ", read latency " + std::to_string(latencyA);
+    if (!zero.empty()) {
+        std::string list;
+        for (const auto& z : zero)
+            list += (list.empty() ? "" : ", ") + z;
+        out.notes.push_back("outputs without a model, driven with 0: " + list);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// One-clock datapath IP (CORDIC, floating point, divider, multiplier, adder,
+// DDS, FIR, complex multiplier, shift RAM, counter): every output is a
+// register of the IP's clock that depends on every input (conservative).
+// ---------------------------------------------------------------------------
+
+Result<XciModel> oneClockIp(const XciInfo& info) {
+    const auto& m = info.model;
+    std::vector<SimplePort> ports;
+    if (!info.ports.empty()) {
+        ports = boundaryPorts(info);
+    }
+    else if (info.name == "cordic") {
+        auto add = [&](std::string n, bool out, unsigned w, bool isVec) { ports.push_back({std::move(n), out, w, isVec}); };
+        add("aclk", false, 1, false);
+        if (num(m, "C_HAS_ACLKEN", 0))
+            add("aclken", false, 1, false);
+        if (num(m, "C_HAS_ARESETN", 0))
+            add("aresetn", false, 1, false);
+        for (const char* ch : {"phase", "cartesian"}) {
+            const std::string up = std::string(ch) == "phase" ? "PHASE" : "CARTESIAN";
+            if (!num(m, "C_HAS_S_AXIS_" + up, 0))
+                continue;
+            add(std::string("s_axis_") + ch + "_tvalid", false, 1, false);
+            if (num(m, "C_THROTTLE_SCHEME", 3) != 3 && num(m, "C_THROTTLE_SCHEME", 3) != 4)
+                add(std::string("s_axis_") + ch + "_tready", true, 1, false);
+            if (num(m, "C_HAS_S_AXIS_" + up + "_TUSER", 0))
+                add(std::string("s_axis_") + ch + "_tuser", false,
+                    static_cast<unsigned>(num(m, "C_S_AXIS_" + up + "_TUSER_WIDTH", 1)), true);
+            if (num(m, "C_HAS_S_AXIS_" + up + "_TLAST", 0))
+                add(std::string("s_axis_") + ch + "_tlast", false, 1, false);
+            add(std::string("s_axis_") + ch + "_tdata", false,
+                static_cast<unsigned>(num(m, "C_S_AXIS_" + up + "_TDATA_WIDTH", 32)), true);
+        }
+        add("m_axis_dout_tvalid", true, 1, false);
+        if (num(m, "C_THROTTLE_SCHEME", 3) == 1 || num(m, "C_THROTTLE_SCHEME", 3) == 2)
+            add("m_axis_dout_tready", false, 1, false);
+        if (num(m, "C_HAS_S_AXIS_PHASE_TUSER", 0) || num(m, "C_HAS_S_AXIS_CARTESIAN_TUSER", 0))
+            add("m_axis_dout_tuser", true, static_cast<unsigned>(num(m, "C_M_AXIS_DOUT_TUSER_WIDTH", 1)), true);
+        if (num(m, "C_HAS_S_AXIS_PHASE_TLAST", 0) || num(m, "C_HAS_S_AXIS_CARTESIAN_TLAST", 0))
+            add("m_axis_dout_tlast", true, 1, false);
+        add("m_axis_dout_tdata", true, static_cast<unsigned>(num(m, "C_M_AXIS_DOUT_TDATA_WIDTH", 16)), true);
+    }
+    else {
+        return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
+                               info.version + "): its ports are only modelled from a JSON .xci (Vivado 2020.2+)",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    }
+    // the clock: aclk / clk / CLK
+    const SimplePort* clk = nullptr;
+    for (const char* c : {"aclk", "clk", "CLK", "ACLK", "clka"})
+        if (auto it = std::ranges::find(ports, std::string(c), &SimplePort::name); it != ports.end() && !it->output) {
+            clk = &*it;
+            break;
+        }
+    if (!clk)
+        return unsupported("IP '" + info.instance + "': no clock port (aclk/clk) found",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    std::ostringstream v;
+    emitHeader(v, info.instance, ports);
+    std::string inputs;
+    for (const auto& p : ports)
+        if (!p.output && p.name != clk->name)
+            inputs += (inputs.empty() ? "" : ", ") + p.name;
+    v << "  wire oc_mix = " << (inputs.empty() ? std::string("1'b0") : "^{" + inputs + "}") << ";\n";
+    for (const auto& p : ports) {
+        if (!p.output)
+            continue;
+        v << "  reg [" << p.width - 1 << ":0] oc_" << p.name << " = 0;\n"
+          << "  always @(posedge " << clk->name << ") oc_" << p.name << " <= {" << p.width << "{oc_mix}};\n"
+          << "  assign " << p.name << " = oc_" << p.name << ";\n";
+    }
+    v << "endmodule\n";
+    XciModel out;
+    out.module = info.instance;
+    out.ip = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    out.verilog = v.str();
+    out.summary = "one-clock datapath on '" + clk->name + "': every output is registered and depends on every input";
+    return out;
+}
+
 } // namespace
 
 bool isXciFile(const std::filesystem::path& file) {
@@ -957,6 +1460,16 @@ Result<XciModel> modelFromXciText(std::string_view text) {
         return fifoGenerator(info);
     if (info.name == "axis_data_fifo")
         return axisDataFifo(info);
+    if (info.name == "clk_wiz")
+        return clockingWizard(info);
+    if (info.name == "blk_mem_gen")
+        return blockMemory(info);
+    static const std::set<std::string> kOneClock = {"cordic",      "floating_point", "div_gen",  "mult_gen",
+                                                    "c_addsub",    "dds_compiler",   "fir_compiler", "cmpy",
+                                                    "c_shift_ram", "c_counter_binary", "xbip_dsp48_macro",
+                                                    "c_accum",     "cic_compiler"};
+    if (kOneClock.contains(info.name))
+        return oneClockIp(info);
     if (info.name == "ila" || info.name == "vio")
         return debugCore(info, info.name == "vio");
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +

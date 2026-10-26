@@ -106,6 +106,13 @@ void ClockView::setResult(const engine::AnalysisResult& result) {
         const auto& c = cm.clocks[i];
         auto* item = new QTreeWidgetItem(tree_);
         item->setText(0, qs(c.name));
+        if (!c.aliases.empty()) {
+            QStringList names;
+            for (const auto& a : c.aliases)
+                names << qs(a);
+            item->setToolTip(0, tr("Also matched by constraints as: %1").arg(names.join(QStringLiteral(", "))));
+            item->setText(0, item->text(0) + QStringLiteral("  (") + names.join(QStringLiteral(", ")) + QStringLiteral(")"));
+        }
         item->setText(1, qs(std::string(clock::toString(c.kind))));
         item->setText(2, qs(c.sourceName));
         const bool known = c.periodNs && *c.periodNs > 0;

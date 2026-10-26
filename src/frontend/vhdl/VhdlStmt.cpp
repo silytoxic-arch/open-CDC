@@ -1206,6 +1206,58 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
 }
 
 void Elaborator::lowerConcurrentAssign(const Stmt& s, Scope& scope) {
+    // x <= v when rising_edge(clk) [and en] [else unaffected]; (VHDL-93 register):
+    // the equivalent clocked process  if rising_edge(clk) [and en] then x <= v; end if;
+    if (s.form == Stmt::Form::Conditional && !s.alts.empty() && s.alts[0].cond && !s.alts[0].unaffected &&
+        (s.alts.size() == 1 || (s.alts.size() == 2 && !s.alts[1].cond && s.alts[1].unaffected))) {
+        ProcState probeSt;
+        probeSt.alive = one();
+        probeSt.returned = zero();
+        Ctx probe;
+        probe.scope = &scope;
+        probe.st = &probeSt;
+        const Expr* rest = nullptr;
+        if (clockEdge(*s.alts[0].cond, probe, &rest)) {
+            // non-owning views of the AST, released below
+            Stmt proc;
+            proc.kind = StmtKind::Process;
+            proc.loc = s.loc;
+            proc.label = s.label;
+            auto ifs = std::make_unique<Stmt>();
+            ifs->kind = StmtKind::If;
+            ifs->loc = s.loc;
+            IfBranch br;
+            br.loc = s.alts[0].loc;
+            br.cond.reset(s.alts[0].cond.get());
+            auto asg = std::make_unique<Stmt>();
+            asg->kind = StmtKind::SignalAssign;
+            asg->loc = s.loc;
+            asg->form = Stmt::Form::Simple;
+            asg->target.reset(s.target.get());
+            AssignAlt a;
+            a.loc = s.alts[0].loc;
+            for (const auto& w : s.alts[0].wave) {
+                WaveElem we;
+                we.value.reset(w.value.get());
+                we.after.reset(w.after.get());
+                a.wave.push_back(std::move(we));
+            }
+            asg->alts.push_back(std::move(a));
+            br.body.push_back(std::move(asg));
+            ifs->branches.push_back(std::move(br));
+            proc.body.push_back(std::move(ifs));
+            lowerProcess(proc, scope);
+            Stmt& i = *proc.body.front();
+            Stmt& as = *i.branches.front().body.front();
+            for (auto& w : as.alts.front().wave) {
+                (void)w.value.release();
+                (void)w.after.release();
+            }
+            (void)as.target.release();
+            (void)i.branches.front().cond.release();
+            return;
+        }
+    }
     // A concurrent assignment is a process sensitive to everything it reads.
     ProcState st;
     st.alive = one();

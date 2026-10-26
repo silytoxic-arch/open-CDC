@@ -361,7 +361,7 @@ private:
             auto clocksNamed = [&](const std::vector<std::string>& patterns, std::vector<clock::ClockId>& out) {
                 for (std::size_t c = 0; c < st_.clocks.clocks.size(); ++c)
                     if (std::ranges::any_of(patterns, [&](const std::string& p) {
-                            return constraints::globMatch(p, st_.clocks.clocks[c].name);
+                            return clock::clockMatches(p, st_.clocks.clocks[c]);
                         }))
                         out.push_back(clock::ClockId{static_cast<std::uint32_t>(c)});
             };

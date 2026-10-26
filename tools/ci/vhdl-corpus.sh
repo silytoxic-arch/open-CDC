@@ -14,7 +14,10 @@
 #    domains), and two Digilent IP cores that use Vivado IP from their .xci
 #    configuration (ZmodScopeController: FIFO Generator, MMCM, OSERDES;
 #    MIPI CSI-2 receiver: AXI-Stream FIFOs and ILA debug cores), plus each
-#    FIFO .xci of the Digilent library on its own; the CDC summaries must match.
+#    FIFO .xci of the Digilent library on its own, and two Digilent board
+#    demos with their Vivado IP (Cmod A7 GPIO: Clocking Wizard; Nexys A7 out-of-
+#    box demo: Clocking Wizard, block ROM, CORDIC, XADC, the DDR2 controller as a
+#    black box); the CDC summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -37,6 +40,8 @@ fetch osvvm      https://github.com/OSVVM/OSVVM          716d751566b4fb6479f69c3
 fetch surf       https://github.com/slaclab/surf         f0b5e3a7b5ab191be1cb5f4453e418299181c9d8
 fetch microwatt  https://github.com/antonblanchard/microwatt f341bed306a9a7281bf65200df8cc1f0a002617d
 fetch vivado-library https://github.com/Digilent/vivado-library 0362ce72d39eebc400fdabacff706ee7fa8ad564
+fetch cmod-a7-gpio https://github.com/Digilent/Cmod-A7-35T-GPIO 793bb5f4fbf4218389922627eda009fcea75440c
+fetch nexys-a7-oob https://github.com/Digilent/Nexys-A7-100T-OOB ad719f27d37dea4a7af3224657f41f7c909b66d2
 
 # ---- 1. parser -------------------------------------------------------------
 REJECT=(
@@ -46,7 +51,7 @@ REJECT=(
     microwatt/litedram/gen-src/no-init-mem.vhdl   # architecture without 'begin' (not legal VHDL)
 )
 fail=0
-for repo in open-logic neorv32 PoC osvvm surf microwatt vivado-library; do
+for repo in open-logic neorv32 PoC osvvm surf microwatt vivado-library cmod-a7-gpio nexys-a7-oob; do
     mapfile -d '' files < <(find "$repo" \( -name '*.vhd' -o -name '*.vhdl' \) -print0 | sort -z)
     ok=()
     for f in "${files[@]}"; do
@@ -244,6 +249,20 @@ for k, path in enumerate(sorted(fifos)):
     json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": name, "sources": [path]},
               open(os.path.join(work, "dl_fifo_%02d.ocdc.json" % k), "w"), indent=1)
 open(os.path.join(work, "dl_fifo_count.txt"), "w").write(str(len(fifos)))
+# Digilent board demos with their Vivado IP
+cm = os.path.join(work, "cmod-a7-gpio/src")
+json.dump({"format": "opencdc-project", "version": 1, "name": "cmod_a7_gpio", "top": "GPIO_demo",
+           "sources": [os.path.join(cm, "hdl", f) for f in ["debouncer.vhd", "RGB_controller.vhd", "UART_TX_CTRL.vhd",
+                                                            "GPIO.vhd"]] + [os.path.join(cm, "ip/clk_wiz_0/clk_wiz_0.xci")],
+           "constraints": [os.path.join(cm, "constraints/CmodA7_Master.xdc")]},
+          open(os.path.join(work, "cmod_a7_gpio.ocdc.json"), "w"), indent=1)
+nx = os.path.join(work, "nexys-a7-oob/src")
+json.dump({"format": "opencdc-project", "version": 1, "name": "nexys_a7_oob", "top": "Nexys4DdrUserDemo",
+           "sources": sorted(glob.glob(os.path.join(nx, "hdl/*.vhd"))) +
+                      [os.path.join(nx, "ip", n, n + ".xci") for n in ["ClkGen", "BRAM_1", "Square_Root", "ddr"]],
+           "constraints": [os.path.join(nx, "constraints/Nexys-A7-100T-Master.xdc")],
+           "options": {"unknownModules": "blackbox"}},
+          open(os.path.join(work, "nexys_a7_oob.ocdc.json"), "w"), indent=1)
 EOF
 
 check() { # project expected-regex
@@ -272,6 +291,8 @@ check microwatt_arty_jtag.ocdc.json   "hits: CDC-004 x1, CDC-005 x3, CDC-006 x2.
 check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodies, 7[0-9][0-9] registers.*0 latches.*Summary : 0 error"
 check zmod_scope.ocdc.json  "Clocks  : 6 \\(170/170 registers resolved\\).*async-fifo x1, handshake x1, reset-sync x6, two-flop x8.*IP 'ZmodADC_SynchonizationFIFO' \\(xilinx.com:ip:fifo_generator:13.2\\) modelled.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 21 crossing path\\(s\\), 18 synchronized"
 check mipi_csi2_rx.ocdc.json "Clocks  : 3 \\(94/94 registers resolved\\).*async-fifo x1, reset-sync x3, two-flop x5.*IP 'cdc_fifo'.*AXI-Stream.*IP 'line_buffer'.*IP 'ila_rxclk'.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 12 crossing path\\(s\\), 11 synchronized, 1 unsynchronized"
+check cmod_a7_gpio.ocdc.json "Clocks  : 2 \\(37/37 registers resolved\\).*alias=clk_out1_clk_wiz_0.*\\(100 MHz\\).*IP 'clk_wiz_0' \\(xilinx.com:ip:clk_wiz:6.0\\) modelled.*MMCM, input 12 MHz.*Summary : 0 error\\(s\\), 0 warning"
+check nexys_a7_oob.ocdc.json "Clocks  : 4 \\(362/362 registers resolved\\).*IP 'ClkGen'.*IP 'BRAM_1'.*single-port ROM.*IP 'Square_Root'.*cordic.*FE-XCI-UNSUPPORTED.*mig_7series.*BUFG, MMCME2_ADV, XADC.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 5 crossing path\\(s\\), 3 synchronized, 2 unsynchronized"
 # each FIFO .xci alone: modelled; with independent clocks an asynchronous FIFO
 n=$(cat dl_fifo_count.txt)
 [ "$n" = 13 ] || { echo "::error::expected 13 FIFO .xci files in vivado-library, found $n"; fail=1; }

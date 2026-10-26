@@ -227,6 +227,19 @@ private:
             std::string v = pin->value;
             std::erase(v, '"');
             c.name = c.name.substr(0, c.name.size() - net.name.size()) + v;
+            // Vivado's name: the net on the output pin in the instantiating module
+            const auto& d0 = view_.design();
+            const auto& node = d0.instance(d.bit.inst);
+            if (node.parent.valid()) {
+                const auto& pb = d0.body(d0.instance(node.parent).body);
+                if (node.childIndex < pb.children.size())
+                    for (const auto& pbind : pb.children[node.childIndex].ports)
+                        if (pbind.port == v && pbind.actual.chunks().size() == 1 && !pbind.actual.chunks()[0].isConst()) {
+                            const std::string& local = pb.net(pbind.actual.chunks()[0].net).name;
+                            if (!local.empty())
+                                c.aliases.push_back(local);
+                        }
+            }
         }
         const ClockId id = addClock(std::move(c));
         divider_.emplace(d.bit, id); // before tracing the master: breaks self-clocking loops
@@ -729,7 +742,7 @@ private:
             for (std::size_t k = 0; k < g.groups.size(); ++k) {
                 for (const auto& p : g.groups[k])
                     for (std::size_t c = 0; c < n; ++c)
-                        if (constraints::globMatch(p, m.clocks[c].name) &&
+                        if (clockMatches(p, m.clocks[c]) &&
                             std::ranges::find(members[k], c) == members[k].end())
                             members[k].push_back(c);
                 if (gi < groupObjectClocks_.size() && k < groupObjectClocks_[gi].size())
@@ -842,7 +855,7 @@ private:
             const auto& e = cons_.clockExceptions[k];
             auto member = [&](ClockId c, const std::vector<std::string>& names, const std::vector<ClockId>& byBits) {
                 return std::ranges::any_of(names, [&](const std::string& p) {
-                           return constraints::globMatch(p, m.clocks[c.index()].name);
+                           return clockMatches(p, m.clocks[c.index()]);
                        }) ||
                        std::ranges::find(byBits, c) != byBits.end();
             };
@@ -895,7 +908,7 @@ private:
                 for (const auto& p : patterns) {
                     bool any = false;
                     for (std::size_t c = 0; c < n; ++c)
-                        if (constraints::globMatch(p, m.clocks[c].name)) {
+                        if (clockMatches(p, m.clocks[c])) {
                             mem[c] = true;
                             any = true;
                         }

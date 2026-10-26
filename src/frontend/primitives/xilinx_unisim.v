@@ -2018,3 +2018,81 @@ module IBUFDS_GTE4 #(parameter REFCLK_EN_TX_PATH = 1'b0, parameter [1:0] REFCLK_
     assign ODIV2 = I; // HROW divider not modelled
 endmodule
 
+// ---------------------------------------------------------------- system monitor
+// XADC / SYSMON: the DRP (DO, DRDY) and the status outputs are synchronous to
+// DCLK; the JTAG status outputs have no clock domain. Conversion results are
+// not modelled (DO depends on the DRP request).
+module XADC (output [7:0] ALM, output BUSY, output [4:0] CHANNEL, output [15:0] DO, output DRDY, output EOC,
+             output EOS, output JTAGBUSY, output JTAGLOCKED, output JTAGMODIFIED, output [4:0] MUXADDR, output OT,
+             input CONVST, input CONVSTCLK, input [6:0] DADDR, input DCLK, input DEN, input [15:0] DI, input DWE,
+             input RESET, input [15:0] VAUXN, input [15:0] VAUXP, input VN, input VP);
+    reg [15:0] do_q = 16'd0;
+    reg drdy_q = 1'b0, eoc_q = 1'b0;
+    always @(posedge DCLK) begin
+        drdy_q <= DEN;
+        if (DEN) do_q <= {DADDR, DI[8:0]};
+        eoc_q <= ~eoc_q;
+    end
+    assign DO = do_q;
+    assign DRDY = drdy_q;
+    assign EOC = eoc_q;
+    assign EOS = eoc_q;
+    assign BUSY = eoc_q;
+    assign CHANNEL = {5{eoc_q}};
+    assign MUXADDR = {5{eoc_q}};
+    assign ALM = {8{eoc_q}};
+    assign OT = eoc_q;
+    opencdc_async_source u_jbusy (JTAGBUSY);
+    opencdc_async_source u_jlocked (JTAGLOCKED);
+    opencdc_async_source u_jmod (JTAGMODIFIED);
+endmodule
+
+module SYSMONE1 (output [15:0] ALM, output BUSY, output [5:0] CHANNEL, output [15:0] DO, output DRDY, output EOC,
+                 output EOS, output JTAGBUSY, output JTAGLOCKED, output JTAGMODIFIED, output [4:0] MUXADDR, output OT,
+                 input CONVST, input CONVSTCLK, input [7:0] DADDR, input DCLK, input DEN, input [15:0] DI, input DWE,
+                 input RESET, input [15:0] VAUXN, input [15:0] VAUXP, input VN, input VP);
+    reg [15:0] do_q = 16'd0;
+    reg drdy_q = 1'b0, eoc_q = 1'b0;
+    always @(posedge DCLK) begin
+        drdy_q <= DEN;
+        if (DEN) do_q <= {DADDR, DI[7:0]};
+        eoc_q <= ~eoc_q;
+    end
+    assign DO = do_q;
+    assign DRDY = drdy_q;
+    assign EOC = eoc_q;
+    assign EOS = eoc_q;
+    assign BUSY = eoc_q;
+    assign CHANNEL = {6{eoc_q}};
+    assign MUXADDR = {5{eoc_q}};
+    assign ALM = {16{eoc_q}};
+    assign OT = eoc_q;
+    opencdc_async_source u_jbusy (JTAGBUSY);
+    opencdc_async_source u_jlocked (JTAGLOCKED);
+    opencdc_async_source u_jmod (JTAGMODIFIED);
+endmodule
+
+module SYSMONE4 (output [15:0] ALM, output BUSY, output [5:0] CHANNEL, output [15:0] DO, output DRDY, output EOC,
+                 output EOS, output JTAGBUSY, output JTAGLOCKED, output JTAGMODIFIED, output [4:0] MUXADDR, output OT,
+                 input CONVST, input CONVSTCLK, input [7:0] DADDR, input DCLK, input DEN, input [15:0] DI, input DWE,
+                 input RESET, input [15:0] VAUXN, input [15:0] VAUXP, input VN, input VP);
+    reg [15:0] do_q = 16'd0;
+    reg drdy_q = 1'b0, eoc_q = 1'b0;
+    always @(posedge DCLK) begin
+        drdy_q <= DEN;
+        if (DEN) do_q <= {DADDR, DI[7:0]};
+        eoc_q <= ~eoc_q;
+    end
+    assign DO = do_q;
+    assign DRDY = drdy_q;
+    assign EOC = eoc_q;
+    assign EOS = eoc_q;
+    assign BUSY = eoc_q;
+    assign CHANNEL = {6{eoc_q}};
+    assign MUXADDR = {5{eoc_q}};
+    assign ALM = {16{eoc_q}};
+    assign OT = eoc_q;
+    opencdc_async_source u_jbusy (JTAGBUSY);
+    opencdc_async_source u_jlocked (JTAGLOCKED);
+    opencdc_async_source u_jmod (JTAGMODIFIED);
+endmodule

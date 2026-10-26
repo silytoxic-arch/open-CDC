@@ -956,3 +956,23 @@ TEST_CASE("VHDL: 'use lib.pkg;' makes the package name visible for expanded name
     auto bad = elaborate({{"dbg.vhd", pkg, ""}, {"t.vhd", noUse, ""}}, "t");
     CHECK(bad.count("VHDL-UNDECLARED") >= 1);
 }
+
+TEST_CASE("VHDL: 'x <= v when rising_edge(clk);' is a register", "[vhdl][elab]") {
+    // Digilent Ps2Interface: ps2_clk_s <= ps2_clk_clean when rising_edge(clk);
+    auto r = elaborate(lib("entity t is port (clk, en, d : in std_logic; q, q2, l : out std_logic); end;\n"
+                           "architecture rtl of t is\n"
+                           "  signal s, s2 : std_logic;\n"
+                           "begin\n"
+                           "  s <= d when rising_edge(clk);\n"
+                           "  s2 <= d when rising_edge(clk) and en = '1' else unaffected;\n"
+                           "  q <= s; q2 <= s2;\n"
+                           "  l <= d when en = '1';\n" // negative: no edge, a latch as before
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-EDGE") == 0);
+    CHECK(r.has("reg s <= d @(posedge clk)"));
+    CHECK(r.has("reg s2 <= d @(posedge clk) en("));
+    CHECK(r.count("IR-LATCH-INFERRED") == 1); // only 'l'
+}

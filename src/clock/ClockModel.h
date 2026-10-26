@@ -41,8 +41,14 @@ struct Clock {
     std::size_t posedgeRegisters = 0;  ///< registers clocked on the rising edge of this clock
     std::size_t negedgeRegisters = 0;
     std::size_t gatedRegisters = 0;    ///< of which reached through clock gating
+    /// Other names constraints may use: Vivado names an MMCM/PLL output clock
+    /// after the net on the output pin ("clk_out1_clk_wiz_0").
+    std::vector<std::string> aliases;
     [[nodiscard]] std::size_t registers() const noexcept { return posedgeRegisters + negedgeRegisters; }
 };
+
+/// The clock's name or one of its aliases matches the glob pattern.
+[[nodiscard]] bool clockMatches(std::string_view pattern, const Clock& c);
 
 enum class ClockRelation : std::uint8_t {
     Same,         ///< the same clock

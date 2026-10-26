@@ -282,14 +282,14 @@ TEST_CASE("XCI: AXI4-Stream Data FIFO and AXI-Stream FIFO Generator ports", "[fr
 
 TEST_CASE("XCI: an IP without a model stays an unknown module", "[frontend][xci]") {
     const std::string clkWiz = "{\"schema\": \"xilinx.com:schema:json_instance:1.0\", \"ip_inst\": {\"xci_name\": "
-                               "\"fifo_8X4K\", \"component_reference\": \"xilinx.com:ip:clk_wiz:6.0\"}}";
+                               "\"fifo_8X4K\", \"component_reference\": \"xilinx.com:ip:mig_7series:4.1\"}}";
     test::TempDir dir;
     auto cfg = project(dir, fifoTop("fifo_8X4K"), {dir.write("fifo_8X4K.xci", clkWiz)});
     auto r = run(cfg);
     const auto* w = find(*r, "FE-XCI-UNSUPPORTED");
     REQUIRE(w);
     CHECK(w->severity == Severity::Warning);
-    CHECK(w->message.find("clk_wiz") != std::string::npos);
+    CHECK(w->message.find("mig_7series") != std::string::npos);
     CHECK_FALSE(r->cdc);
     CHECK(count(*r, "FE-UNKNOWN-MODULE") + count(*r, "FE-SLANG-UnknownModule") == 1);
     // with black boxes, the rest of the design is analyzed
@@ -367,4 +367,227 @@ TEST_CASE("XCI: ILA and VIO debug cores", "[frontend][xci]") {
     CHECK(std::ranges::any_of(r->diagnostics, [](const Diagnostic& d) {
         return d.code == "CON-UNMATCHED" && d.message.find("debug core") != std::string::npos;
     }));
+}
+
+namespace {
+
+std::string spirit(const std::string& inst, const std::string& ip, const std::string& version,
+                   const std::vector<std::pair<std::string, std::string>>& model,
+                   const std::vector<std::pair<std::string, std::string>>& user = {}) {
+    std::string s = "<spirit:design xmlns:spirit=\"http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009\">\n"
+                    "<spirit:instanceName>" + inst + "</spirit:instanceName>\n"
+                    "<spirit:componentRef spirit:vendor=\"xilinx.com\" spirit:library=\"ip\" spirit:name=\"" + ip +
+                    "\" spirit:version=\"" + version + "\"/>\n";
+    for (const auto& [k, v] : model)
+        s += "<spirit:configurableElementValue spirit:referenceId=\"MODELPARAM_VALUE." + k + "\">" + v +
+             "</spirit:configurableElementValue>\n";
+    for (const auto& [k, v] : user)
+        s += "<spirit:configurableElementValue spirit:referenceId=\"PARAM_VALUE." + k + "\">" + v +
+             "</spirit:configurableElementValue>\n";
+    return s + "</spirit:design>\n";
+}
+
+// Digilent Nexys-A7 OOB ClkGen: 100 MHz in, 107.955 MHz and 197.917 MHz out
+std::vector<std::pair<std::string, std::string>> clkGenParams() {
+    return {{"C_PRIMITIVE", "MMCM"}, {"C_PRIMARY_PORT", "clk_100MHz_i"}, {"C_PRIM_IN_FREQ", "100.000"},
+            {"C_PRIM_SOURCE", "Single_ended_clock_capable_pin"}, {"C_CLK_OUT1_PORT", "clk_100MHz_o"},
+            {"C_CLK_OUT2_PORT", "clk_200MHz_o"}, {"C_CLKOUT2_USED", "1"}, {"C_CLKOUT3_USED", "0"},
+            {"C_CLKOUT1_DRIVES", "BUFG"}, {"C_CLKOUT2_DRIVES", "BUFG"}, {"C_CLKOUT1_OUT_FREQ", "107.955"},
+            {"C_CLKOUT2_OUT_FREQ", "197.917"}, {"C_USE_RESET", "1"}, {"C_RESET_PORT", "reset_i"},
+            {"C_USE_LOCKED", "1"}, {"C_LOCKED_PORT", "locked_o"}, {"C_FEEDBACK_SOURCE", "FDBK_AUTO"},
+            {"C_MMCM_CLKFBOUT_MULT_F", "11.875"}, {"C_MMCM_CLKIN1_PERIOD", "10.000"},
+            {"C_MMCM_CLKOUT0_DIVIDE_F", "11.000"}, {"C_MMCM_CLKOUT1_DIVIDE", "6"}, {"C_MMCM_DIVCLK_DIVIDE", "1"}};
+}
+
+} // namespace
+
+TEST_CASE("XCI: Clocking Wizard outputs are clocks derived from its input", "[frontend][xci][clk_wiz]") {
+    auto m = frontend::modelFromXciText(spirit("ClkGen", "clk_wiz", "6.0", clkGenParams(), {{"RESET_TYPE", "ACTIVE_HIGH"}}));
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p : {"input  wire clk_100MHz_i", "input  wire reset_i", "output wire clk_100MHz_o",
+                          "output wire clk_200MHz_o", "output wire locked_o", "MMCME2_ADV", ".CLKFBOUT_MULT_F(11.875)",
+                          ".CLKOUT0_DIVIDE_F(11.0)", ".CLKOUT1_DIVIDE(6)", ".RST(reset_i)", "wire clk_100MHz_o_ClkGen"})
+        CHECK(v.find(p) != std::string::npos);
+    CHECK(v.find("clk_out3") == std::string::npos); // negative: unused outputs
+    CHECK(m.value().summary.find("clk_100MHz_o 107.955 MHz") != std::string::npos);
+
+    // end to end: the output clocks, Vivado's names usable in constraints
+    test::TempDir dir;
+    engine::ProjectConfig cfg;
+    cfg.name = "clkwiz";
+    cfg.top = "top";
+    cfg.sources = {dir.write("top.v", "module top(input clk, input rst, input d, output reg q);\n"
+                                      "  wire a, b, l;\n"
+                                      "  ClkGen u (.clk_100MHz_i(clk), .reset_i(rst), .clk_100MHz_o(a), .clk_200MHz_o(b),"
+                                      " .locked_o(l));\n"
+                                      "  reg x; always @(posedge a) x <= d; always @(posedge b) q <= x;\n"
+                                      "endmodule\n"),
+                   dir.write("ClkGen.xci", spirit("ClkGen", "clk_wiz", "6.0", clkGenParams()))};
+    cfg.sourceLibraries = {"", ""};
+    cfg.constraints = {dir.write("c.xdc", "create_clock -name sys -period 10 [get_ports clk]\n")};
+    auto r = run(cfg);
+    REQUIRE(r->clocks);
+    const auto* c0 = &r->clocks->clocks[0];
+    std::size_t found = 0;
+    for (const auto& c : r->clocks->clocks) {
+        if (std::ranges::find(c.aliases, std::string("clk_100MHz_o_ClkGen")) != c.aliases.end()) {
+            REQUIRE(c.periodNs);
+            CHECK((*c.periodNs > 9.26 && *c.periodNs < 9.27)); // 107.955 MHz
+            ++found;
+        }
+        if (std::ranges::find(c.aliases, std::string("clk_200MHz_o_ClkGen")) != c.aliases.end()) {
+            REQUIRE(c.periodNs);
+            CHECK((*c.periodNs > 5.05 && *c.periodNs < 5.06)); // 197.917 MHz
+            ++found;
+        }
+    }
+    (void)c0;
+    CHECK(found == 2);
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.paths == 0); // outputs of one MMCM are synchronous
+
+    // Vivado's clock names in set_clock_groups
+    engine::ProjectConfig grouped = cfg;
+    grouped.constraints = {dir.write("g.xdc", "create_clock -name sys -period 10 [get_ports clk]\n"
+                                              "set_clock_groups -asynchronous -group clk_100MHz_o_ClkGen "
+                                              "-group clk_200MHz_o_ClkGen\n")};
+    auto g = run(grouped);
+    REQUIRE(g->cdc);
+    CHECK(g->cdc->stats.paths == 1);
+    CHECK(std::ranges::none_of(g->diagnostics, [](const Diagnostic& d) { return d.code == "CON-UNMATCHED"; }));
+    // negative: a name that is no clock
+    engine::ProjectConfig wrong = cfg;
+    wrong.constraints = {dir.write("w.xdc", "create_clock -name sys -period 10 [get_ports clk]\n"
+                                            "set_clock_groups -asynchronous -group clk_out1_ClkGen -group sys\n")};
+    auto w = run(wrong);
+    CHECK(std::ranges::any_of(w->diagnostics, [](const Diagnostic& d) {
+        return d.code == "CON-UNMATCHED" && d.message.find("clk_out1_ClkGen") != std::string::npos;
+    }));
+}
+
+TEST_CASE("XCI: Clocking Wizard with a PLL, a differential input and an active-low reset", "[frontend][xci][clk_wiz]") {
+    auto m = frontend::modelFromXciText(spirit("pll0", "clk_wiz", "6.0",
+                                               {{"C_PRIMITIVE", "PLL"}, {"C_PRIMARY_PORT", "clk_in1"},
+                                                {"C_PRIM_IN_FREQ", "200"},
+                                                {"C_PRIM_SOURCE", "Differential_clock_capable_pin"},
+                                                {"C_CLK_OUT1_PORT", "clk_out1"}, {"C_USE_RESET", "1"},
+                                                {"C_RESET_PORT", "resetn"}, {"C_USE_LOCKED", "0"},
+                                                {"C_PLL_CLKFBOUT_MULT", "5"}, {"C_PLL_DIVCLK_DIVIDE", "1"},
+                                                {"C_PLL_CLKOUT0_DIVIDE", "8"}, {"C_CLKOUT1_DRIVES", "No_buffer"}},
+                                               {{"RESET_TYPE", "ACTIVE_LOW"}}));
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p : {"input  wire clk_in1_p", "input  wire clk_in1_n", "IBUFDS", "PLLE2_ADV", ".CLKFBOUT_MULT(5)",
+                          ".CLKOUT0_DIVIDE(8)", ".RST(~resetn)", ".CLKIN1_PERIOD(5.0)"})
+        CHECK(v.find(p) != std::string::npos);
+    CHECK(v.find("output wire locked") == std::string::npos); // negative: no locked port
+    CHECK(v.find("BUFG") == std::string::npos);   // no output buffer
+}
+
+TEST_CASE("XCI: Block Memory Generator ports by memory type; two clocks cross", "[frontend][xci][blk_mem_gen]") {
+    // true dual-port RAM, clka / clkb, output register on port B
+    auto tdp = [](const std::string& inst, const std::string& type) {
+        return spirit(inst, "blk_mem_gen", "8.4",
+                      {{"C_MEM_TYPE", type}, {"C_INTERFACE_TYPE", "0"}, {"C_WRITE_WIDTH_A", "16"},
+                       {"C_READ_WIDTH_A", "16"}, {"C_WRITE_WIDTH_B", "16"}, {"C_READ_WIDTH_B", "16"},
+                       {"C_WRITE_DEPTH_A", "1024"}, {"C_ADDRA_WIDTH", "10"}, {"C_ADDRB_WIDTH", "10"},
+                       {"C_WEA_WIDTH", "1"}, {"C_WEB_WIDTH", "1"}, {"C_HAS_ENA", "1"}, {"C_HAS_ENB", "1"},
+                       {"C_HAS_MEM_OUTPUT_REGS_B", "1"}});
+    };
+    auto m = frontend::modelFromXciText(tdp("ram", "2"));
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p : {"input  wire clka", "input  wire clkb", "input  wire [0:0] wea", "input  wire [0:0] web",
+                          "input  wire [15:0] dina", "input  wire [15:0] dinb", "output wire [15:0] douta",
+                          "output wire [15:0] doutb", "assign doutb = oc_b2[15:0];"})
+        CHECK(v.find(p) != std::string::npos);
+    CHECK(m.value().summary.find("true dual-port RAM") != std::string::npos);
+    // single-port ROM: no write port, no port B
+    auto rom = frontend::modelFromXciText(tdp("rom", "3"));
+    REQUIRE(rom);
+    for (const char* p : {"wea", "dina", "clkb", "doutb"})
+        CHECK(rom.value().verilog.find(p) == std::string::npos);
+
+    // end to end: written on clk_a, read on clk_b: a crossing through the memory
+    test::TempDir dir;
+    auto cfg = project(dir,
+                       "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+                       "           output reg [11:0] level);\n"
+                       "  reg [15:0] wd; always @(posedge clk_a) wd <= {d, d};\n"
+                       "  wire [15:0] ra, rb;\n"
+                       "  ram u (.clka(clk_a), .ena(1'b1), .wea(we), .addra(10'd0), .dina(wd), .douta(ra),\n"
+                       "         .clkb(clk_b), .enb(re), .web(1'b0), .addrb(10'd0), .dinb(16'd0), .doutb(rb));\n"
+                       "  always @(posedge clk_b) q <= rb[7:0];\n"
+                       "endmodule\n",
+                       {dir.write("ram.xci", tdp("ram", "2"))});
+    auto r = run(cfg);
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.unsynchronized >= 1);
+    // negative: the same memory as a ROM read on clk_b has nothing to cross
+    test::TempDir d2;
+    auto rcfg = project(d2,
+                        "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+                        "           output reg [11:0] level);\n"
+                        "  wire [15:0] ra;\n"
+                        "  rom u (.clka(clk_b), .ena(re), .addra(10'd0), .douta(ra));\n"
+                        "  always @(posedge clk_b) q <= ra[7:0];\n"
+                        "endmodule\n",
+                        {d2.write("rom.xci", tdp("rom", "3"))});
+    auto rr = run(rcfg);
+    REQUIRE(rr->cdc);
+    CHECK(rr->cdc->stats.paths == 0);
+}
+
+TEST_CASE("XCI: one-clock datapath IP (CORDIC) and XADC", "[frontend][xci]") {
+    // Digilent Nexys-A7 OOB Square_Root
+    const std::string sq = spirit("Square_Root", "cordic", "6.0",
+                                  {{"C_HAS_ACLK", "1"}, {"C_HAS_ACLKEN", "0"}, {"C_HAS_ARESETN", "0"},
+                                   {"C_HAS_S_AXIS_CARTESIAN", "1"}, {"C_HAS_S_AXIS_PHASE", "0"},
+                                   {"C_S_AXIS_CARTESIAN_TDATA_WIDTH", "32"}, {"C_M_AXIS_DOUT_TDATA_WIDTH", "16"},
+                                   {"C_THROTTLE_SCHEME", "3"}});
+    auto m = frontend::modelFromXciText(sq);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p : {"input  wire aclk", "input  wire s_axis_cartesian_tvalid",
+                          "input  wire [31:0] s_axis_cartesian_tdata", "output wire m_axis_dout_tvalid",
+                          "output wire [15:0] m_axis_dout_tdata"})
+        CHECK(v.find(p) != std::string::npos);
+    CHECK(v.find("tready") == std::string::npos); // throttle scheme 3: no tready
+
+    test::TempDir dir;
+    auto cfg = project(dir,
+                       "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+                       "           output reg [11:0] level);\n"
+                       "  reg [31:0] x; always @(posedge clk_a) x <= {4{d}};\n"
+                       "  wire v; wire [15:0] y;\n"
+                       "  Square_Root u (.aclk(clk_a), .s_axis_cartesian_tvalid(we), .s_axis_cartesian_tdata(x),\n"
+                       "                 .m_axis_dout_tvalid(v), .m_axis_dout_tdata(y));\n"
+                       "  always @(posedge clk_a) q <= y[7:0];\n"
+                       "  wire [15:0] xdo; wire xrdy;\n"
+                       "  XADC u_xadc (.DCLK(clk_b), .DEN(re), .DADDR(7'd0), .DI(16'd0), .DWE(1'b0), .RESET(1'b0),\n"
+                       "               .DO(xdo), .DRDY(xrdy));\n"
+                       "  always @(posedge clk_b) level <= xdo[11:0];\n"
+                       "endmodule\n",
+                       {dir.write("Square_Root.xci", sq)});
+    auto r = run(cfg);
+    REQUIRE(r->cdc);
+    // negative: the CORDIC output read on its own clock, the XADC result on DCLK: nothing crosses
+    CHECK(r->cdc->stats.paths == 0);
+    CHECK(std::ranges::any_of(r->diagnostics, [](const Diagnostic& d) {
+        return d.code == "FE-PRIMITIVES" && d.message.find("XADC") != std::string::npos;
+    }));
+    // positive: the CORDIC output read on another clock crosses
+    test::TempDir d2;
+    std::string top = "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+                      "           output reg [11:0] level);\n"
+                      "  reg [31:0] x; always @(posedge clk_a) x <= {4{d}};\n"
+                      "  wire v; wire [15:0] y;\n"
+                      "  Square_Root u (.aclk(clk_a), .s_axis_cartesian_tvalid(we), .s_axis_cartesian_tdata(x),\n"
+                      "                 .m_axis_dout_tvalid(v), .m_axis_dout_tdata(y));\n"
+                      "  always @(posedge clk_b) q <= y[7:0];\n"
+                      "endmodule\n";
+    auto r2 = run(project(d2, top, {d2.write("Square_Root.xci", sq)}));
+    REQUIRE(r2->cdc);
+    CHECK(r2->cdc->stats.unsynchronized >= 1);
 }

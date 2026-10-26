@@ -212,7 +212,8 @@ json clocksJson(const clock::ClockModel& m, const constraints::ConstraintSet* co
                   {"definedAt", locationJson(c.definedAt)},
                   {"posedgeRegisters", c.posedgeRegisters},
                   {"negedgeRegisters", c.negedgeRegisters},
-                  {"gatedRegisters", c.gatedRegisters}};
+                  {"gatedRegisters", c.gatedRegisters},
+                  {"aliases", c.aliases}};
         list.push_back(std::move(e));
     }
     j["clocks"] = std::move(list);
