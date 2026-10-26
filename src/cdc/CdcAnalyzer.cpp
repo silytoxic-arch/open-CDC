@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <functional>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -85,6 +86,7 @@ public:
         assignDomains();
         detail::findResetSynchronizers(st_);
         findCrossings();
+        reportSourceSynchronous();
         buildChains();
         classify();
         detail::classifyResetPaths(st_);
@@ -158,6 +160,8 @@ private:
         for (const auto& a : s) {
             for (const auto& b : d) {
                 const ClockRelation rel = st_.clocks.relation(a.clock, b.clock);
+                if (rel == ClockRelation::Unknown && sourceSynchronous(a.clock, b.clock))
+                    continue; // timed by STA through set_input_delay: not a crossing
                 int rank = 0;
                 if (rel == ClockRelation::Asynchronous)
                     rank = 2;
@@ -170,6 +174,38 @@ private:
             }
         }
         return best;
+    }
+
+    /// An input timed against a virtual clock (set_input_delay -clock V,
+    /// V without a source) and captured by a clock of the same period: the
+    /// source-synchronous interface idiom (RGMII, ADC/DAC buses). STA times
+    /// V -> capture as a synchronous path, so it is not a clock domain
+    /// crossing. Only for pairs no constraint relates (relation unknown).
+    bool sourceSynchronous(clock::ClockId virt, clock::ClockId capture) const {
+        const auto& v = st_.clocks.clock(virt);
+        const auto& c = st_.clocks.clock(capture);
+        if (v.kind != clock::ClockKind::Constraint || v.source.valid() || !c.source.valid() || !v.periodNs ||
+            !c.periodNs)
+            return false;
+        if (std::abs(*v.periodNs - *c.periodNs) > 1e-6 * std::max(1.0, *c.periodNs))
+            return false;
+        sourceSyncPairs_.emplace(virt.value, capture.value);
+        return true;
+    }
+
+    void reportSourceSynchronous() {
+        for (const auto& [v, c] : sourceSyncPairs_) {
+            const auto& vc = st_.clocks.clock(clock::ClockId{v});
+            const auto& cc = st_.clocks.clock(clock::ClockId{c});
+            char period[32];
+            std::snprintf(period, sizeof period, "%g", *cc.periodNs);
+            st_.sink.report({"CDC-SOURCE-SYNC", Severity::Info,
+                             "inputs timed against virtual clock '" + vc.name + "' (set_input_delay) are captured by '" +
+                                 cc.name + "' with the same period (" + period +
+                                 " ns): treated as a source-synchronous interface timed by STA, not as a crossing; "
+                                 "relate or separate the clocks with set_clock_groups to override",
+                             vc.definedAt, {}});
+        }
     }
 
     // ------------------------------------------------------------------
@@ -907,6 +943,7 @@ private:
         std::string why;
     };
     std::vector<Exception> exceptions_;
+    mutable std::set<std::pair<std::uint32_t, std::uint32_t>> sourceSyncPairs_; ///< (virtual, capture) clocks
     bool exceptionsBuilt_ = false;
 };
 

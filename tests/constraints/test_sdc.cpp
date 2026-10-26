@@ -604,3 +604,29 @@ TEST_CASE("Quartus collections: '|' names, registers by signal name, keepers, co
                    r);
     CHECK(q.countCode("CON-UNMATCHED") == 2);
 }
+
+TEST_CASE("Vivado names leave unnamed generate blocks out (genblk)", "[constraints]") {
+    auto b = test::buildDesign("module leaf(input clk, input d, output reg q);\n"
+                               "  always @(posedge clk) q <= d;\n"
+                               "endmodule\n"
+                               "module top(input clk, input [1:0] d, output [1:0] q);\n"
+                               "  genvar n;\n"
+                               "  generate if (1) begin\n"
+                               "    for (n = 0; n < 2; n = n + 1) begin : g\n"
+                               "      if (1) begin\n"
+                               "        leaf u (.clk(clk), .d(d[n]), .q(q[n]));\n"
+                               "      end\n"
+                               "    end\n"
+                               "  end endgenerate\n"
+                               "endmodule\n",
+                               "top");
+    graph::DesignView view(*b.design);
+    DesignObjectResolver r(view);
+    CHECK(r.cells("g[0].u", false, false).size() == 1);                // as Vivado names it
+    CHECK(r.cells("genblk1.g[0].genblk1.u", false, false).size() == 1); // as elaborated
+    CHECK(r.cells("g[*].u/q_reg", false, false).size() == 2);
+    CHECK(r.cellsRegexp("g\\[1\\]\\.u/q_reg", false, false).size() == 1);
+    // negative: a wrong level still matches nothing
+    CHECK(r.cells("g[0]", false, false).empty());
+    CHECK(r.cells("u", false, false).empty());
+}

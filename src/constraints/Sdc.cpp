@@ -112,6 +112,30 @@ DesignObjectResolver::DesignObjectResolver(const graph::DesignView& view) : view
 
 namespace {
 
+/// Vivado leaves unnamed generate blocks out of names ("oddr[0].oddr_inst"
+/// for "genblk1.oddr[0].genblk1.oddr_inst"): the name without them, or empty
+/// when there are none.
+std::string withoutGenblk(std::string_view name) {
+    if (name.find("genblk") == std::string_view::npos)
+        return {};
+    std::string out;
+    std::size_t i = 0;
+    while (i < name.size()) {
+        const bool atStart = i == 0 || name[i - 1] == '.' || name[i - 1] == '/' || name[i - 1] == '|';
+        if (atStart && name.substr(i).starts_with("genblk")) {
+            std::size_t j = i + 6;
+            while (j < name.size() && std::isdigit(static_cast<unsigned char>(name[j])))
+                ++j;
+            if (j > i + 6 && j < name.size() && name[j] == '.') {
+                i = j + 1;
+                continue;
+            }
+        }
+        out += name[i++];
+    }
+    return out;
+}
+
 std::string upper(std::string_view s) {
     std::string out(s);
     for (auto& c : out)
@@ -242,12 +266,17 @@ std::vector<Object> DesignObjectResolver::match(const std::vector<Named>& items,
                                                 std::string_view pattern, bool hierarchical, bool nocase) const {
     std::vector<Object> out;
     const auto split = splitIndex(pattern);
+    std::string stripped;
     auto candidates = [&](const std::string& name) {
         std::vector<std::string_view> c{name};
+        stripped = withoutGenblk(name);
+        if (!stripped.empty())
+            c.push_back(stripped);
         if (hierarchical)
-            for (std::size_t i = 0; i < name.size(); ++i)
-                if (name[i] == '/')
-                    c.push_back(std::string_view(name).substr(i + 1));
+            for (const std::string_view n : std::vector<std::string_view>(c))
+                for (std::size_t i = 0; i < n.size(); ++i)
+                    if (n[i] == '/')
+                        c.push_back(n.substr(i + 1));
         return c;
     };
     for (const auto& it : items) {
@@ -373,10 +402,16 @@ std::vector<Object> DesignObjectResolver::cells(std::string_view pattern, bool h
     if (!hierarchical)
         std::erase_if(out, [&](const Object& o) { return levels(regs_[static_cast<std::size_t>(o.item)].name) != levels(pattern); });
     for (std::size_t i = 0; i < insts_.size(); ++i) {
+        bool hit = false;
+        const std::string alias = withoutGenblk(insts_[i]);
+        for (const std::string& name : {insts_[i], alias}) {
+            if (name.empty() || hit)
+                continue;
+            hit = globMatch(pattern, name, nocase) && (hierarchical || levels(name) == levels(pattern));
+            for (std::size_t k = 0; !hit && hierarchical && k < name.size(); ++k)
+                hit = name[k] == '/' && globMatch(pattern, std::string_view(name).substr(k + 1), nocase);
+        }
         const std::string& name = insts_[i];
-        bool hit = globMatch(pattern, name, nocase) && (hierarchical || levels(name) == levels(pattern));
-        for (std::size_t k = 0; !hit && hierarchical && k < name.size(); ++k)
-            hit = name[k] == '/' && globMatch(pattern, std::string_view(name).substr(k + 1), nocase);
         if (hit)
             out.push_back({ObjectKind::Cell, name, {}, static_cast<std::int32_t>(i), true});
     }
@@ -390,7 +425,7 @@ std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bo
     if (nocase)
         flags |= std::regex::icase;
     const std::regex re{std::string(regex), flags};
-    auto hits = [&](const std::string& name) {
+    auto hitsOne = [&](const std::string& name) {
         if (std::regex_match(name, re))
             return true;
         if (hierarchical)
@@ -398,6 +433,12 @@ std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bo
                 if (name[k] == '/' && std::regex_match(name.begin() + static_cast<std::ptrdiff_t>(k) + 1, name.end(), re))
                     return true;
         return false;
+    };
+    auto hits = [&](const std::string& name) {
+        if (hitsOne(name))
+            return true;
+        const std::string alias = withoutGenblk(name);
+        return !alias.empty() && hitsOne(alias);
     };
     std::vector<Object> out;
     for (std::size_t r = 0; r < regs_.size(); ++r) {
@@ -699,10 +740,53 @@ void DesignObjectResolver::buildQuartus() {
     }
     for (const auto& i : insts_)
         qinsts_.push_back(bars(i));
+    // full names: every instance level as "<definition>:<instance>"
+    std::map<std::string, std::string, std::less<>> fullOf; // "a|b" -> "da:a|db:b"
+    std::map<std::string, std::size_t, std::less<>> indexOf;
+    for (std::size_t i = 0; i < qinsts_.size(); ++i)
+        indexOf[qinsts_[i]] = i;
+    std::function<std::string(const std::string&)> fullInst = [&](const std::string& q) -> std::string {
+        if (auto it = fullOf.find(q); it != fullOf.end())
+            return it->second;
+        const auto bar = q.rfind('|');
+        const std::string leaf = bar == std::string::npos ? q : q.substr(bar + 1);
+        std::string parent = bar == std::string::npos ? std::string() : fullInst(q.substr(0, bar));
+        const auto idx = indexOf.find(q);
+        std::string f = (parent.empty() ? std::string() : parent + "|") +
+                        (idx == indexOf.end() ? leaf : instInfo_[idx->second].ref + ":" + leaf);
+        fullOf[q] = f;
+        return f;
+    };
+    for (const auto& q : qinsts_)
+        fullInst(q);
+    auto full = [&](const std::string& q) {
+        const auto bar = q.rfind('|');
+        if (bar == std::string::npos)
+            return q;
+        const auto it = fullOf.find(std::string_view(q).substr(0, bar));
+        return it == fullOf.end() ? q : it->second + q.substr(bar);
+    };
+    for (const auto& r : qregs_) {
+        Named f = r;
+        f.name = full(r.name);
+        qregsFull_.push_back(std::move(f));
+    }
+    for (const auto& p : qpins_) {
+        Named f = p;
+        f.name = full(p.name);
+        qpinsFull_.push_back(std::move(f));
+    }
+    for (const auto& q : qinsts_)
+        qinstsFull_.push_back(fullOf.contains(q) ? fullOf[q] : q);
 }
 
 std::vector<Object> DesignObjectResolver::quartus(std::string_view pattern, QuartusKind kind, bool nocase) {
     buildQuartus();
+    // "entity:instance" levels in the pattern: match the full names
+    const bool fullNames = pattern.find(':') != std::string_view::npos;
+    const auto& qregs = fullNames ? qregsFull_ : qregs_;
+    const auto& qpins = fullNames ? qpinsFull_ : qpins_;
+    const auto& qinsts = fullNames ? qinstsFull_ : qinsts_;
     std::vector<Object> out;
     auto append = [&](std::vector<Object> r) {
         for (auto& o : r)
@@ -710,17 +794,17 @@ std::vector<Object> DesignObjectResolver::quartus(std::string_view pattern, Quar
     };
     if (kind == QuartusKind::Registers || kind == QuartusKind::Keepers || kind == QuartusKind::Nodes ||
         kind == QuartusKind::Cells)
-        append(match(qregs_, ObjectKind::Cell, pattern, false, nocase));
+        append(match(qregs, ObjectKind::Cell, pattern, false, nocase));
     if (kind == QuartusKind::Keepers || kind == QuartusKind::Nodes)
         append(match(ports_, ObjectKind::Port, pattern, false, nocase));
     if (kind == QuartusKind::Cells)
-        for (std::size_t i = 0; i < qinsts_.size(); ++i)
-            if (globMatch(pattern, qinsts_[i], nocase))
-                out.push_back({ObjectKind::Cell, qinsts_[i], {}, static_cast<std::int32_t>(i), true, {}});
+        for (std::size_t i = 0; i < qinsts.size(); ++i)
+            if (globMatch(pattern, qinsts[i], nocase))
+                out.push_back({ObjectKind::Cell, qinsts[i], {}, static_cast<std::int32_t>(i), true, {}});
     if (kind != QuartusKind::Pins)
         return out;
 
-    append(match(qpins_, ObjectKind::Pin, pattern, false, nocase));
+    append(match(qpins, ObjectKind::Pin, pattern, false, nocase));
     // register pins: <register>|clk d q ena clrn prn sclr
     const auto bar = pattern.rfind('|');
     if (bar != std::string_view::npos) {
@@ -730,7 +814,7 @@ std::vector<Object> DesignObjectResolver::quartus(std::string_view pattern, Quar
         for (const auto& [qp, ours] : pinNames) {
             if (!globMatch(leaf, qp, true))
                 continue;
-            for (const auto& cell : match(qregs_, ObjectKind::Cell, pattern.substr(0, bar), false, nocase))
+            for (const auto& cell : match(qregs, ObjectKind::Cell, pattern.substr(0, bar), false, nocase))
                 for (auto& p : registerPins(static_cast<std::size_t>(cell.item), cell.name, cell.bits))
                     if (p.pin == ours) {
                         p.name = cell.name + "|" + qp;
@@ -757,16 +841,16 @@ std::vector<Object> DesignObjectResolver::quartus(std::string_view pattern, Quar
     std::size_t depth = 0;
     for (std::size_t k = 0; k + 1 < segs.size(); ++k) {
         prefix += (k ? "|" : "") + std::string(segs[k]);
-        const auto it = std::ranges::find(qinsts_, prefix);
-        if (it == qinsts_.end())
+        const auto it = std::ranges::find(qinsts, prefix);
+        if (it == qinsts.end())
             break;
-        deepest = static_cast<std::size_t>(it - qinsts_.begin());
+        deepest = static_cast<std::size_t>(it - qinsts.begin());
         depth = k + 1;
     }
     if (deepest == static_cast<std::size_t>(-1) || depth + 1 >= segs.size())
         return out; // nothing skipped: an ordinary miss
-    std::string port = qinsts_[deepest] + "|" + std::string(segs.back());
-    return match(qpins_, ObjectKind::Pin, port, false, nocase);
+    std::string port = qinsts[deepest] + "|" + std::string(segs.back());
+    return match(qpins, ObjectKind::Pin, port, false, nocase);
 }
 
 bool DesignObjectResolver::pinPropertyKnown(std::string_view prop) {

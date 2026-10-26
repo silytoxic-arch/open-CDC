@@ -166,6 +166,9 @@ private:
     std::vector<Named> qregs_;  ///< regs_ with Quartus names ("u|sig", "u|sig[3]"), same order
     std::vector<Named> qpins_;  ///< pins_ with Quartus names, same order
     std::vector<std::string> qinsts_; ///< insts_ with Quartus names
+    std::vector<Named> qregsFull_;    ///< qregs_ with "entity:instance" levels ("sync2:u_s|s1_reg")
+    std::vector<Named> qpinsFull_;
+    std::vector<std::string> qinstsFull_;
     void buildQuartus();
     /// driver of a bit -> flip-flop load pins on it: (register, pin name, Q bit of that flip-flop)
     std::map<std::tuple<int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>,

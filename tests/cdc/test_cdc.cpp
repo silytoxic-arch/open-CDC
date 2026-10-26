@@ -782,3 +782,31 @@ TEST_CASE("Quartus SDC: procedures over instances, max delays between registers,
     auto all = analyze(v, clocks + "set_false_path -from * -to *\n");
     CHECK(all.path("top.a_reg", "top.u_s0.s1_reg").relation == clock::ClockRelation::Unknown);
 }
+
+TEST_CASE("Source-synchronous inputs: a virtual clock with the capture clock's period is not a crossing", "[cdc][constraints]") {
+    constexpr const char* v = "module top(input rx_clk, input sys_clk, input [3:0] rxd, output reg [3:0] q, output reg [3:0] s);\n"
+                              "  always @(posedge rx_clk) q <= rxd;\n"
+                              "  always @(posedge sys_clk) s <= rxd;\n"
+                              "endmodule\n";
+    const std::string clocks = "create_clock -name rx_clk -period 8 [get_ports rx_clk]\n"
+                               "create_clock -name sys_clk -period 10 [get_ports sys_clk]\n";
+    // RGMII-style: input delays against a virtual copy of the receive clock
+    auto r = analyze(v, clocks + "create_clock -name virt_rx -period 8.000\n"
+                                 "set_input_delay -clock virt_rx -max 1.25 [get_ports {rxd[*]}]\n");
+    CHECK_FALSE(r.hasPath("top.rxd", "top.q"));      // captured by rx_clk: timed by STA
+    CHECK(r.hasPath("top.rxd", "top.s"));            // captured by sys_clk (10 ns): still a crossing
+    CHECK(r.path("top.rxd", "top.s").relation == clock::ClockRelation::Unknown);
+    CHECK(r.countCode("CDC-SOURCE-SYNC") == 1);
+    // negative: a virtual clock with another period
+    auto other = analyze(v, clocks + "create_clock -name virt_rx -period 5\n"
+                                     "set_input_delay -clock virt_rx 1 [get_ports {rxd[*]}]\n");
+    CHECK(other.hasPath("top.rxd", "top.q"));
+    CHECK(other.countCode("CDC-SOURCE-SYNC") == 0);
+    // negative: the designer declared the virtual clock asynchronous
+    auto async = analyze(v, clocks + "create_clock -name virt_rx -period 8\n"
+                                     "set_input_delay -clock virt_rx 1 [get_ports {rxd[*]}]\n"
+                                     "set_clock_groups -asynchronous -group virt_rx -group rx_clk\n");
+    CHECK(async.path("top.rxd", "top.q").relation == clock::ClockRelation::Asynchronous);
+    CHECK(async.countCode("CDC-SOURCE-SYNC") == 0);
+}
+

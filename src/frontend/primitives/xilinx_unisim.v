@@ -360,13 +360,22 @@ module IDELAYE2 #(parameter CINVCTRL_SEL = "FALSE", parameter DELAY_SRC = "IDATA
                   parameter [0:0] IS_DATAIN_INVERTED = 1'b0, parameter [0:0] IS_IDATAIN_INVERTED = 1'b0,
                   parameter PIPE_SEL = "FALSE", parameter real REFCLK_FREQUENCY = 200.0,
                   parameter SIGNAL_PATTERN = "DATA")
-                 (output reg [4:0] CNTVALUEOUT, output DATAOUT, input C, input CE, input CINVCTRL,
+                 (output [4:0] CNTVALUEOUT, output DATAOUT, input C, input CE, input CINVCTRL,
                   input [4:0] CNTVALUEIN, input DATAIN, input IDATAIN, input INC, input LD, input LDPIPEEN,
                   input REGRST);
     assign DATAOUT = DELAY_SRC == "DATAIN" ? DATAIN : IDATAIN;
-    always @(posedge C)
-        if (LD) CNTVALUEOUT <= CNTVALUEIN;
-        else if (CE) CNTVALUEOUT <= INC ? CNTVALUEOUT + 5'd1 : CNTVALUEOUT - 5'd1;
+    // FIXED: no tap counter (CE/INC/LD are ignored, the value is constant)
+    generate
+        if (IDELAY_TYPE == "FIXED") begin : g_fixed
+            assign CNTVALUEOUT = IDELAY_VALUE[4:0];
+        end else begin : g_variable
+            reg [4:0] cnt;
+            always @(posedge C)
+                if (LD) cnt <= CNTVALUEIN;
+                else if (CE) cnt <= INC ? cnt + 5'd1 : cnt - 5'd1;
+            assign CNTVALUEOUT = cnt;
+        end
+    endgenerate
 endmodule
 
 module ODELAYE2 #(parameter CINVCTRL_SEL = "FALSE", parameter DELAY_SRC = "ODATAIN",
@@ -374,12 +383,21 @@ module ODELAYE2 #(parameter CINVCTRL_SEL = "FALSE", parameter DELAY_SRC = "ODATA
                   parameter [0:0] IS_ODATAIN_INVERTED = 1'b0, parameter ODELAY_TYPE = "FIXED",
                   parameter integer ODELAY_VALUE = 0, parameter PIPE_SEL = "FALSE",
                   parameter real REFCLK_FREQUENCY = 200.0, parameter SIGNAL_PATTERN = "DATA")
-                 (output reg [4:0] CNTVALUEOUT, output DATAOUT, input C, input CE, input CINVCTRL, input CLKIN,
+                 (output [4:0] CNTVALUEOUT, output DATAOUT, input C, input CE, input CINVCTRL, input CLKIN,
                   input [4:0] CNTVALUEIN, input INC, input LD, input LDPIPEEN, input ODATAIN, input REGRST);
     assign DATAOUT = ODATAIN;
-    always @(posedge C)
-        if (LD) CNTVALUEOUT <= CNTVALUEIN;
-        else if (CE) CNTVALUEOUT <= INC ? CNTVALUEOUT + 5'd1 : CNTVALUEOUT - 5'd1;
+    // FIXED: no tap counter (CE/INC/LD are ignored, the value is constant)
+    generate
+        if (ODELAY_TYPE == "FIXED") begin : g_fixed
+            assign CNTVALUEOUT = ODELAY_VALUE[4:0];
+        end else begin : g_variable
+            reg [4:0] cnt;
+            always @(posedge C)
+                if (LD) cnt <= CNTVALUEIN;
+                else if (CE) cnt <= INC ? cnt + 5'd1 : cnt - 5'd1;
+            assign CNTVALUEOUT = cnt;
+        end
+    endgenerate
 endmodule
 
 module IDELAYE3 #(parameter CASCADE = "NONE", parameter DELAY_FORMAT = "TIME", parameter DELAY_SRC = "IDATAIN",
@@ -388,14 +406,23 @@ module IDELAYE3 #(parameter CASCADE = "NONE", parameter DELAY_FORMAT = "TIME", p
                   parameter LOOPBACK = "FALSE", parameter real REFCLK_FREQUENCY = 300.0,
                   parameter SIM_DEVICE = "ULTRASCALE", parameter real SIM_VERSION = 2.0,
                   parameter UPDATE_MODE = "ASYNC")
-                 (output CASC_OUT, output reg [8:0] CNTVALUEOUT, output DATAOUT, input CASC_IN,
+                 (output CASC_OUT, output [8:0] CNTVALUEOUT, output DATAOUT, input CASC_IN,
                   input CASC_RETURN, input CE, input CLK, input [8:0] CNTVALUEIN, input DATAIN, input EN_VTC,
                   input IDATAIN, input INC, input LOAD, input RST);
     assign DATAOUT = DELAY_SRC == "DATAIN" ? DATAIN : IDATAIN;
     assign CASC_OUT = DATAOUT;
-    always @(posedge CLK)
-        if (LOAD) CNTVALUEOUT <= CNTVALUEIN;
-        else if (CE) CNTVALUEOUT <= INC ? CNTVALUEOUT + 9'd1 : CNTVALUEOUT - 9'd1;
+    // FIXED: no tap counter (CE/INC/LOAD are ignored, the value is constant)
+    generate
+        if (DELAY_TYPE == "FIXED") begin : g_fixed
+            assign CNTVALUEOUT = 9'd0;
+        end else begin : g_variable
+            reg [8:0] cnt;
+            always @(posedge CLK)
+                if (LOAD) cnt <= CNTVALUEIN;
+                else if (CE) cnt <= INC ? cnt + 9'd1 : cnt - 9'd1;
+            assign CNTVALUEOUT = cnt;
+        end
+    endgenerate
 endmodule
 
 module ODELAYE3 #(parameter CASCADE = "NONE", parameter DELAY_FORMAT = "TIME", parameter DELAY_TYPE = "FIXED",
@@ -403,14 +430,23 @@ module ODELAYE3 #(parameter CASCADE = "NONE", parameter DELAY_FORMAT = "TIME", p
                   parameter [0:0] IS_RST_INVERTED = 1'b0, parameter real REFCLK_FREQUENCY = 300.0,
                   parameter SIM_DEVICE = "ULTRASCALE", parameter real SIM_VERSION = 2.0,
                   parameter UPDATE_MODE = "ASYNC")
-                 (output CASC_OUT, output reg [8:0] CNTVALUEOUT, output DATAOUT, input CASC_IN,
+                 (output CASC_OUT, output [8:0] CNTVALUEOUT, output DATAOUT, input CASC_IN,
                   input CASC_RETURN, input CE, input CLK, input [8:0] CNTVALUEIN, input EN_VTC, input INC,
                   input LOAD, input ODATAIN, input RST);
     assign DATAOUT = ODATAIN;
     assign CASC_OUT = ODATAIN;
-    always @(posedge CLK)
-        if (LOAD) CNTVALUEOUT <= CNTVALUEIN;
-        else if (CE) CNTVALUEOUT <= INC ? CNTVALUEOUT + 9'd1 : CNTVALUEOUT - 9'd1;
+    // FIXED: no tap counter (CE/INC/LOAD are ignored, the value is constant)
+    generate
+        if (DELAY_TYPE == "FIXED") begin : g_fixed
+            assign CNTVALUEOUT = 9'd0;
+        end else begin : g_variable
+            reg [8:0] cnt;
+            always @(posedge CLK)
+                if (LOAD) cnt <= CNTVALUEIN;
+                else if (CE) cnt <= INC ? cnt + 9'd1 : cnt - 9'd1;
+            assign CNTVALUEOUT = cnt;
+        end
+    endgenerate
 endmodule
 
 // RDY rises some time after REFCLK runs and RST is released: no clock domain.

@@ -214,7 +214,7 @@ TEST_CASE("Primitives: Intel dcfifo and altera_std_synchronizer", "[primitives]"
                        "endmodule\n",
                        "top");
     REQUIRE(run->r->cdc);
-    const auto* p = run->path("top.sr", "top.u.din_s");
+    const auto* p = run->path("top.sr", "top.u.din_s1");
     REQUIRE(p);
     CHECK(p->syncType == SyncType::TwoFlop);
     const auto* f = run->path("top.f.mem", "top.f.q_ff");
@@ -1069,4 +1069,89 @@ TEST_CASE("Unconnected ports are reported once per instance", "[primitives][unco
             CHECK(d.message.find("1 port(s)") == 0);
         }
     }
+}
+
+TEST_CASE("Intel synchronizer cells with Intel's own SDC idioms (entity:instance names)", "[primitives][constraints]") {
+    constexpr const char* v = "module top(input clk_a, input clk_b, input rst, input s, output so, output ro);\n"
+                              "  reg sr;\n"
+                              "  always @(posedge clk_a) sr <= s;\n"
+                              "  altera_std_synchronizer #(.depth(3)) u_sync (.clk(clk_b), .reset_n(1'b1), .din(sr), .dout(so));\n"
+                              "  altera_reset_synchronizer #(.ASYNC_RESET(1), .DEPTH(2)) u_rst (.reset_in(rst), .clk(clk_b), .reset_out(ro));\n"
+                              "endmodule\n";
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    auto run = analyze("t.v", v, "top",
+                       clocks + "set_false_path -to [get_keepers {*altera_std_synchronizer:*|din_s1}]\n"
+                                "set_false_path -to [get_registers {altera_reset_synchronizer:*|altera_reset_synchronizer_int_chain[*]}]\n");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("CON-UNMATCHED") == 0);
+    const auto* p = run->path("top.sr", "top.u_sync.din_s1");
+    REQUIRE(p);
+    CHECK(p->syncType == SyncType::ThreeFlop);
+    CHECK(p->relation == clock::ClockRelation::Asynchronous);
+    CHECK(std::ranges::any_of(p->notes, [](const std::string& n) { return n.find("set_false_path") != std::string::npos; }));
+    const auto* rs = run->path("top.rst", "top.u_rst.altera_reset_synchronizer_int_chain");
+    REQUIRE(rs);
+    CHECK(rs->syncType == SyncType::ResetSync);
+    // negative: another entity name matches nothing
+    auto none = analyze("t.v", v, "top", clocks + "set_false_path -to [get_keepers {*altera_dcfifo_synchronizer:*|din_s1}]\n");
+    CHECK(none->count("CON-UNMATCHED") >= 1);
+    const auto* q = none->path("top.sr", "top.u_sync.din_s1");
+    REQUIRE(q);
+    CHECK(q->relation == clock::ClockRelation::Unknown);
+}
+
+TEST_CASE("Primitives: a user module whose name differs only in case does not hide the model", "[primitives]") {
+    // verilog-ethernet: module 'iddr' wraps Xilinx 'IDDR' (Verilog names are case-sensitive)
+    auto run = analyze("t.v",
+                       "module iddr(input clk_b, input d, output q1, output q2);\n"
+                       "  IDDR #(.DDR_CLK_EDGE(\"SAME_EDGE_PIPELINED\")) iddr_inst (.Q1(q1), .Q2(q2), .C(clk_b), .CE(1'b1),\n"
+                       "       .D(d), .R(1'b0), .S(1'b0));\n"
+                       "endmodule\n"
+                       "module top(input clk_a, input clk_b, input d, output q1, output q2);\n"
+                       "  reg a; always @(posedge clk_a) a <= d;\n"
+                       "  iddr u (.clk_b(clk_b), .d(a), .q1(q1), .q2(q2));\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("FE-UNRESOLVED-INSTANCE") == 0);
+    CHECK(std::ranges::any_of(run->r->diagnostics, [](const Diagnostic& d) {
+        return d.code == "FE-PRIMITIVES" && d.message.find("IDDR") != std::string::npos;
+    }));
+    CHECK_FALSE(run->r->cdc->paths.empty()); // a crosses into the IDDR model's registers
+    // negative: a user module named exactly like the primitive replaces it
+    auto own = analyze("t.v",
+                       "module IDDR(output Q1, output Q2, input C, input CE, input D, input R, input S);\n"
+                       "  assign Q1 = D; assign Q2 = D;\n"
+                       "endmodule\n"
+                       "module top(input clk_a, input clk_b, input d, output q1, output q2);\n"
+                       "  reg a; always @(posedge clk_a) a <= d;\n"
+                       "  IDDR u (.Q1(q1), .Q2(q2), .C(clk_b), .CE(1'b1), .D(a), .R(1'b0), .S(1'b0));\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(own->r->cdc);
+    CHECK(own->r->cdc->paths.empty());
+}
+
+TEST_CASE("Primitives: IDELAYE2 in FIXED mode has no tap counter register", "[primitives]") {
+    // verilog-ethernet NexysVideo: FIXED delays with C tied to 0
+    const std::string fixed = "module top(input clk_a, input clk_b, input d, output q);\n"
+                              "  wire dd;\n"
+                              "  IDELAYE2 #(.IDELAY_TYPE(\"FIXED\")) u (.IDATAIN(d), .DATAOUT(dd), .DATAIN(1'b0), .C(1'b0),\n"
+                              "     .CE(1'b0), .INC(1'b0), .CINVCTRL(1'b0), .CNTVALUEIN(5'd0), .LD(1'b0), .LDPIPEEN(1'b0),\n"
+                              "     .REGRST(1'b0));\n"
+                              "  reg r; always @(posedge clk_b) r <= dd;\n"
+                              "  assign q = r;\n"
+                              "endmodule\n";
+    auto run = analyze("t.v", fixed, "top");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("CLK-CONSTANT") == 0);
+    CHECK(run->r->design->stats().registers == 1);
+    // negative: a variable delay keeps its counter (clocked by C)
+    std::string var = fixed;
+    var.replace(var.find("\"FIXED\""), 7, "\"VAR_LOAD\"");
+    var.replace(var.find(".C(1'b0)"), 8, ".C(clk_a)");
+    auto v = analyze("t.v", var, "top");
+    REQUIRE(v->r->cdc);
+    CHECK(v->r->design->stats().registers == 2);
 }

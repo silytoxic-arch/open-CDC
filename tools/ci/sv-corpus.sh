@@ -141,7 +141,7 @@ check() { # project expected-regex
     fi
 }
 check axi_cdc.ocdc.json "80 registers.*0 unsupported construct.*80/80 registers resolved.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 52 crossing path\(s\), 50 synchronized.*Rules   : 0 error violation"
-check rgmii.ocdc.json "179/179 registers resolved.*async-fifo x2.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 30 crossing path\(s\), 29 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 1 path\(s\) at potential risk, 1 path\(s\) need review"
+check rgmii.ocdc.json "206/206 registers resolved.*async-fifo x2.*built-in models used for vendor primitives: BUFIO, BUFR, IDDR, ODDR.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 30 crossing path\(s\), 29 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 1 path\(s\) at potential risk, 1 path\(s\) need review"
 check arty_eth.ocdc.json "608/608 registers resolved.*Summary : 0 error\(s\), 9 warning\(s\).*CDC     : 27 crossing path\(s\), 27 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 0 path\(s\) at potential risk, 0 path\(s\) need review"
-check de2_115.ocdc.json "Clocks  : 13 \(618/618 registers resolved\).*enet0_tx_clk_125m  \[generated\] source=fpga.ENET0_GTX_CLK master=fpga.altpll_component.clk\[0\].*Summary : 0 error\(s\), 14 warning\(s\).*CDC     : 18 crossing path\(s\), 17 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 2 path\(s\) at potential risk, 2 path\(s\) need review"
+check de2_115.ocdc.json "Clocks  : 13 \(618/618 registers resolved\).*enet0_tx_clk_125m  \[generated\] source=fpga.ENET0_GTX_CLK master=fpga.altpll_component.clk\[0\].*CDC-SOURCE-SYNC.*Summary : 0 error\(s\), 14 warning\(s\).*CDC     : 16 crossing path\(s\), 16 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 2 path\(s\) at potential risk, 0 path\(s\) need review"
 exit $fail

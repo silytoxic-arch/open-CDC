@@ -2,12 +2,27 @@
 
 module altera_std_synchronizer #(parameter depth = 3)
                                 (input clk, input reset_n, input din, output dout);
+    // register names as in Intel's source, which its SDC refers to
+    // (set_false_path -to [get_keepers {*altera_std_synchronizer:*|din_s1}])
     (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
-    reg [depth-1:0] din_s;
+    reg din_s1;
+    (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *)
+    reg [depth-2:0] dreg;
     always @(posedge clk or negedge reset_n)
-        if (!reset_n) din_s <= {depth{1'b0}};
-        else din_s <= {din_s[depth-2:0], din};
-    assign dout = din_s[depth-1];
+        if (!reset_n) din_s1 <= 1'b0;
+        else din_s1 <= din;
+    generate
+        if (depth < 3) begin : g_short
+            always @(posedge clk or negedge reset_n)
+                if (!reset_n) dreg <= {(depth-1){1'b0}};
+                else dreg <= din_s1;
+        end else begin : g_long
+            always @(posedge clk or negedge reset_n)
+                if (!reset_n) dreg <= {(depth-1){1'b0}};
+                else dreg <= {dreg[depth-3:0], din_s1};
+        end
+    endgenerate
+    assign dout = dreg[depth-2];
 endmodule
 
 module altera_std_synchronizer_bundle #(parameter depth = 3, parameter width = 1)
@@ -24,17 +39,28 @@ endmodule
 
 module altera_reset_synchronizer #(parameter ASYNC_RESET = 1, parameter DEPTH = 2)
                                   (input reset_in, input clk, output reset_out);
-    reg [DEPTH-1:0] sync;
+    // structure and register names as in Intel's source: a DEPTH-stage chain
+    // shifting towards bit 0, then one output register
+    (* preserve *) reg [DEPTH-1:0] altera_reset_synchronizer_int_chain;
+    reg altera_reset_synchronizer_int_chain_out;
     generate
         if (ASYNC_RESET) begin : g_async
             always @(posedge clk or posedge reset_in)
-                if (reset_in) sync <= {DEPTH{1'b1}};
-                else sync <= {sync[DEPTH-2:0], 1'b0};
+                if (reset_in) begin
+                    altera_reset_synchronizer_int_chain <= {DEPTH{1'b1}};
+                    altera_reset_synchronizer_int_chain_out <= 1'b1;
+                end else begin
+                    altera_reset_synchronizer_int_chain <= {1'b0, altera_reset_synchronizer_int_chain[DEPTH-1:1]};
+                    altera_reset_synchronizer_int_chain_out <= altera_reset_synchronizer_int_chain[0];
+                end
         end else begin : g_sync
-            always @(posedge clk) sync <= {sync[DEPTH-2:0], reset_in};
+            always @(posedge clk) begin
+                altera_reset_synchronizer_int_chain <= {reset_in, altera_reset_synchronizer_int_chain[DEPTH-1:1]};
+                altera_reset_synchronizer_int_chain_out <= altera_reset_synchronizer_int_chain[0];
+            end
         end
     endgenerate
-    assign reset_out = sync[DEPTH-1];
+    assign reset_out = altera_reset_synchronizer_int_chain_out;
 endmodule
 
 module dcfifo #(parameter add_usedw_msb_bit = "OFF", parameter clocks_are_synchronized = "FALSE",

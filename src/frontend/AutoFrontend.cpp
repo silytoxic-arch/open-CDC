@@ -370,8 +370,11 @@ public:
                         verilogModules_[lower(d.name)] = d.name;
                     }
                 // modelled vendor primitives the user does not define (VHDL entities win for VHDL)
+                // Verilog is case-sensitive: only a module named exactly like the
+                // primitive replaces it (verilog-ethernet's 'iddr' wraps Xilinx 'IDDR')
                 for (const auto& n : prims.names())
-                    if (!verilogModules_.contains(lower(n)) && !vhdlEntities.contains(lower(n)))
+                    if (std::ranges::none_of(verilogDefs_, [&](const auto& d) { return d.name == n; }) &&
+                        !vhdlEntities.contains(lower(n)))
                         primitiveModules_[lower(n)] = n;
                 for (const auto& f : vout.value().summary.parsedFiles)
                     if (toUtf8(f) != wrapperUtf8)
@@ -491,6 +494,14 @@ public:
                                  "mixed-language elaboration did not converge (Verilog <-> VHDL nesting deeper than " +
                                      std::to_string(kMaxRounds) + " levels?)",
                                  {}, {}});
+        // names the diagnostics already talk about (unresolved instances below)
+        std::set<std::string> mentioned;
+        {
+            static const std::regex quoted("'([^']+)'");
+            for (const auto& d : lastDiags)
+                for (std::sregex_iterator it(d.message.begin(), d.message.end(), quoted), end; it != end; ++it)
+                    mentioned.insert(lower((*it)[1].str()));
+        }
         // Unconnected pins of vendor primitives are normal (an MMCM has 20).
         std::set<std::tuple<std::string, std::uint32_t, std::uint32_t>> primitiveSites;
         if (const ir::Design* sites = finalDesign ? finalDesign.get() : lastDesign.get())
@@ -569,6 +580,22 @@ public:
                 list += (list.empty() ? "" : ", ") + m;
             sink_.report({"FE-PRIMITIVES", Severity::Info,
                           "built-in models used for vendor primitives: " + list, {}, {}});
+        }
+        // Every instance left without a body is reported (never silently a black box)
+        if (finalDesign) {
+            std::set<std::pair<std::string, std::string>> seen; // definition, location
+            for (const auto& b : finalDesign->bodies)
+                for (const auto& c : b.children) {
+                    if (c.body.valid() || c.definition == "?" || lower(c.definition) == "opencdc_async_source" ||
+                        mentioned.contains(lower(c.definition)))
+                        continue;
+                    if (!seen.emplace(c.definition, toString(c.loc)).second)
+                        continue;
+                    sink_.report({"FE-UNRESOLVED-INSTANCE", Severity::Warning,
+                                  "instance '" + c.name + "' of '" + c.definition +
+                                      "' has neither a definition nor a built-in model; it is analyzed as a black box",
+                                  c.loc, {}});
+                }
         }
         cleanup();
 
