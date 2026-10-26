@@ -2,6 +2,7 @@
 // library, elaborate the top entity, build the Design IR.
 
 #include "core/PathUtil.h"
+#include "core/TextEncoding.h"
 #include "frontend/Frontend.h"
 #include "frontend/vhdl/VhdlElab.h"
 #include "frontend/vhdl/VhdlParser.h"
@@ -33,16 +34,18 @@ Result<bool> loadSources(const std::vector<std::filesystem::path>& paths, const 
         std::error_code ec;
         if (!std::filesystem::exists(p, ec))
             return Diagnostic{"FE-FILE-NOT-FOUND", Severity::Error, "source file not found: " + toUtf8(p), {}, {}};
-        std::ifstream in(p, std::ios::binary);
-        if (!in)
+        auto decoded = readSourceText(p);
+        if (!decoded)
             return Diagnostic{"FE-FILE-READ", Severity::Error, "cannot read '" + toUtf8(p) + "'", {}, {}};
-        std::ostringstream ss;
-        ss << in.rdbuf();
         SourceFileEntry e;
         auto abs = std::filesystem::absolute(p, ec);
         e.path = toUtf8(ec ? p : abs.lexically_normal());
         e.library = i < libraries.size() && !libraries[i].empty() ? lowerCase(libraries[i]) : std::string("work");
-        e.text = ss.str();
+        if (decoded->transcoded())
+            sink.report({"FE-ENCODING", Severity::Info,
+                         "file is not UTF-8: read as " + decoded->encoding + " (and converted to UTF-8)",
+                         {e.path, 0, 0}, {}});
+        e.text = std::move(decoded->utf8);
         files.push_back(std::move(e));
     }
     bool syntaxErrors = false;

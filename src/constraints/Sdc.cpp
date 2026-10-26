@@ -12,6 +12,7 @@
 #include "constraints/Sdc.h"
 
 #include "core/PathUtil.h"
+#include "core/TextEncoding.h"
 
 #include <algorithm>
 #include <cctype>
@@ -3078,17 +3079,15 @@ private:
         for (const auto& c : candidates) {
             if (!std::filesystem::is_regular_file(c, ec))
                 continue;
-            std::ifstream in(c, std::ios::binary);
-            if (!in)
+            auto decoded = readSourceText(c);
+            if (!decoded)
                 continue;
-            std::stringstream text;
-            text << in.rdbuf();
             const auto path = std::filesystem::weakly_canonical(c, ec);
             out_.files.push_back(ec ? c : path);
             const std::string caller = file_;
             file_ = toUtf8(ec ? c : path);
             ++sourceDepth_;
-            Value v = runScript(text.str(), 1);
+            Value v = runScript(decoded->utf8, 1);
             --sourceDepth_;
             file_ = caller;
             if (ctl_ == Ctl::Return) {
@@ -3399,15 +3398,17 @@ SdcReader::~SdcReader() = default;
 void SdcReader::parse(std::string_view text, const std::string& fileName) { impl_->interp.runFile(text, fileName); }
 
 bool SdcReader::readFile(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in) {
+    auto text = readSourceText(file);
+    if (!text) {
         impl_->sink.report({"CON-OPEN", Severity::Error, "cannot open constraint file", {toUtf8(file), 0, 0}, {}});
         return false;
     }
-    std::stringstream text;
-    text << in.rdbuf();
     impl_->out.files.push_back(file);
-    parse(text.str(), toUtf8(file));
+    if (text->transcoded())
+        impl_->sink.report({"CON-ENCODING", Severity::Info,
+                            "file is not UTF-8: read as " + text->encoding + " (and converted to UTF-8)",
+                            {toUtf8(file), 0, 0}, {}});
+    parse(text->utf8, toUtf8(file));
     return true;
 }
 

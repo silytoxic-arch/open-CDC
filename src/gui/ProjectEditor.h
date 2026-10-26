@@ -69,6 +69,7 @@ private:
     QComboBox* unknownClock_;
     QSpinBox* minStages_;
     QSpinBox* reconvDepth_;
+    QComboBox* unknownModules_;
 };
 
 } // namespace opencdc::gui

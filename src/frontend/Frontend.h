@@ -43,6 +43,10 @@ struct FrontendInput {
     /// Overrides of top-level Verilog parameters / VHDL generics: (name, value
     /// written in the source language, e.g. "8" or "\"TRUE\"").
     std::vector<std::pair<std::string, std::string>> topParameters;
+    /// Instances of modules defined nowhere (e.g. vendor IP cores whose HDL is
+    /// not in the sources) are analyzed as black boxes (warning) instead of
+    /// being errors.
+    bool blackBoxUnknownModules = false;
 };
 
 /// A module (or primitive/interface/program) definition found in the sources.

@@ -1,4 +1,5 @@
 #include "gui/MainWindow.h"
+#include "gui/ColumnSizing.h"
 #include "gui/ProjectEditor.h"
 
 #include "core/PathUtil.h"
@@ -249,7 +250,7 @@ QDockWidget* MainWindow::addDock(const QString& title, const QString& objectName
 void MainWindow::createDocks() {
     // Project Explorer: files and modules.
     projectTree_->setHeaderLabels({tr("Item"), tr("Details")});
-    projectTree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    makeResizable(projectTree_->header());
     auto* projectDock = addDock(tr("Project Explorer"), "projectExplorer", projectTree_, Qt::LeftDockWidgetArea);
 
     // Design Hierarchy: elaborated instance tree.
@@ -257,11 +258,10 @@ void MainWindow::createDocks() {
     hierarchyTree_->headerItem()->setToolTip(3, tr("CDC paths whose destination register is in this instance subtree"));
     hierarchyTree_->headerItem()->setToolTip(4, tr("Of those, paths with status violation or potential risk"));
     hierarchyTree_->setContextMenuPolicy(Qt::CustomContextMenu);
-    hierarchyTree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    makeResizable(hierarchyTree_->header());
     auto* hierDock = addDock(tr("Design Hierarchy"), "designHierarchy", hierarchyTree_, Qt::LeftDockWidgetArea);
     tabifyDockWidget(projectDock, hierDock);
     projectDock->raise();
-    hierarchyTree_->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     resizeDocks({projectDock}, {420}, Qt::Horizontal);
 
     connect(projectTree_, &QTreeWidget::itemDoubleClicked, this,
@@ -294,7 +294,8 @@ void MainWindow::createDocks() {
     // Messages: diagnostics with double-click jump to source.
     messageTable_->setColumnCount(4);
     messageTable_->setHorizontalHeaderLabels({tr("Severity"), tr("Code"), tr("Message"), tr("Location")});
-    messageTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    makeResizable(messageTable_->horizontalHeader());
+    messageTable_->horizontalHeader()->setSectionsMovable(false);
     messageTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     messageTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     messageTable_->verticalHeader()->setVisible(false);
@@ -509,6 +510,7 @@ void MainWindow::showProjectInfo() {
             setLocation(item, {toUtf8(c), 1, 1});
         }
     }
+    fitColumns(projectTree_, 400);
 }
 
 void MainWindow::runAnalysis() {
@@ -548,8 +550,7 @@ void MainWindow::populateResult(const engine::AnalysisResult& result) {
     messageTable_->setRowCount(0);
     for (const auto& d : result.diagnostics)
         appendMessage(d);
-    messageTable_->resizeColumnToContents(0);
-    messageTable_->resizeColumnToContents(1);
+    fitColumns(messageTable_, 700);
 
     hierarchyTree_->clear();
     showProjectInfo();
@@ -564,6 +565,7 @@ void MainWindow::populateResult(const engine::AnalysisResult& result) {
         for (const auto& top : e.topInstances)
             addInstance(nullptr, hierarchyTree_, top, counts, cdc);
         hierarchyTree_->expandToDepth(1);
+        fitColumns(hierarchyTree_, 400);
 
         auto* root = projectTree_->topLevelItem(0);
         auto* modules = new QTreeWidgetItem(root, {tr("Modules"), QString::number(e.definitions.size())});

@@ -4,6 +4,7 @@ add_executable(opencdc_tests
     TestUtil.h
     core/test_diagnostic.cpp
     core/test_id_result.cpp
+    core/test_text_encoding.cpp
     ir/test_ir.cpp
     ir_extract/test_ir_extract.cpp
     graph/test_design_view.cpp
@@ -24,6 +25,7 @@ add_executable(opencdc_tests
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_sv_interfaces.cpp
+    frontend/test_encoding.cpp
     vhdl/test_vhdl_parser.cpp
     vhdl/test_vhdl_elab.cpp
     vhdl/test_vhdl_mixed.cpp

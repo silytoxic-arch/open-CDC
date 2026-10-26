@@ -19,6 +19,9 @@
 #include <slang/parsing/Preprocessor.h>
 #include <slang/syntax/SyntaxTree.h>
 #include <slang/text/SourceManager.h>
+#include <slang/util/String.h>
+#include <regex>
+#include "core/TextEncoding.h"
 #include <slang/util/Bag.h>
 #include <slang/util/LanguageVersion.h>
 
@@ -103,6 +106,8 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
                 }
             }
         }
+        if (diag.code == slang::diag::UnknownModule)
+            out.notes.emplace_back(detail::kUnknownModuleHint);
         errors = errors || out.isError();
         for (const auto& note : diag.notes) {
             std::string text = engine.formatMessage(note);
@@ -113,6 +118,48 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
         sink.report(std::move(out));
     }
     return errors;
+}
+
+/// Source files and the files they `include that are not UTF-8 (GBK comments
+/// from Chinese Windows editors, Latin-1, UTF-16) are decoded and handed to
+/// slang as UTF-8 under the path slang caches files by, so slang reads the
+/// decoded text instead of warning about every comment.
+void preloadNonUtf8(const std::vector<std::string>& paths, const std::vector<std::filesystem::path>& includeDirs,
+                    slang::SourceManager& sm, DiagnosticSink& sink) {
+    static const std::regex includeRe(R"re(`include\s*"([^"]+)")re");
+    std::set<std::string> visited;
+    std::vector<std::filesystem::path> work;
+    for (const auto& p : paths)
+        work.push_back(fromUtf8(p));
+    while (!work.empty()) {
+        const std::filesystem::path file = work.back();
+        work.pop_back();
+        std::error_code ec;
+        const auto canonical = std::filesystem::weakly_canonical(file, ec);
+        const std::string key = slang::getU8Str(ec ? file : canonical);
+        if (!visited.insert(key).second)
+            continue;
+        auto text = readSourceText(file);
+        if (!text)
+            continue;
+        if (text->transcoded()) {
+            sm.assignText(key, text->utf8);
+            sink.report({"FE-ENCODING", Severity::Info,
+                         "file is not UTF-8: read as " + text->encoding + " (and converted to UTF-8)",
+                         {key, 0, 0}, {}});
+        }
+        for (std::sregex_iterator it(text->utf8.begin(), text->utf8.end(), includeRe), end; it != end; ++it) {
+            const std::filesystem::path inc = fromUtf8((*it)[1].str());
+            std::vector<std::filesystem::path> candidates{file.parent_path() / inc};
+            for (const auto& d : includeDirs)
+                candidates.push_back(d / inc);
+            for (const auto& c : candidates)
+                if (std::filesystem::is_regular_file(c, ec)) {
+                    work.push_back(c);
+                    break;
+                }
+        }
+    }
 }
 
 class InstanceCollector {
@@ -234,6 +281,9 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     compOptions.defaultTimeScale = slang::TimeScale(
         slang::TimeScaleValue(slang::TimeUnit::Nanoseconds, slang::TimeScaleMagnitude::One),
         slang::TimeScaleValue(slang::TimeUnit::Picoseconds, slang::TimeScaleMagnitude::One));
+    // Vivado and Quartus accept a net used before its declaration (implicit
+    // forward reference, common in vendor IP such as ADI's axi_ad9361)
+    compOptions.flags |= sast::CompilationFlags::AllowUseBeforeDeclare;
     for (const auto& def : input.defines)
         ppOptions.predefines.push_back(def.value ? def.name + "=" + *def.value : def.name);
     for (const auto& dir : input.includeDirs)
@@ -274,6 +324,7 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     options.set(compOptions);
 
     slang::SourceManager sourceManager;
+    preloadNonUtf8(paths, input.includeDirs, sourceManager, sink);
     std::vector<std::string_view> pathViews(paths.begin(), paths.end());
     // All files form one compilation unit (macros flow from earlier files to
     // later ones), matching the behaviour of FPGA vendor tools.
@@ -329,8 +380,10 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     }
     else {
         detail::IrBuilder builder(sourceManager, sink);
-        if (mixed)
+        if (mixed) {
             builder.setForeignDefinitions(mixed->foreignModules, true);
+            builder.setBlackBoxUnknown(mixed->blackBoxUnknown);
+        }
         output.design = builder.build(root);
     }
     return output;

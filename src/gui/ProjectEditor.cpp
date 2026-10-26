@@ -1,4 +1,5 @@
 #include "gui/ProjectEditor.h"
+#include "gui/ColumnSizing.h"
 
 #include "core/PathUtil.h"
 #include "frontend/Frontend.h"
@@ -97,7 +98,8 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
       tclSourceDirs_(nullptr),
       unknownClock_(new QComboBox(this)),
       minStages_(new QSpinBox(this)),
-      reconvDepth_(new QSpinBox(this)) {
+      reconvDepth_(new QSpinBox(this)),
+      unknownModules_(new QComboBox(this)) {
     setWindowTitle(tr("Project Settings"));
     resize(820, 560);
 
@@ -126,6 +128,12 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
     form->addRow(tr("Unknown clock relation:"), unknownClock_);
     form->addRow(tr("Minimum synchronizer stages:"), minStages_);
     form->addRow(tr("Reconvergence depth:"), reconvDepth_);
+    unknownModules_->addItem(tr("Error (stop the analysis)"), false);
+    unknownModules_->addItem(tr("Black box (analyze the rest of the design)"), true);
+    unknownModules_->setCurrentIndex(config.options.blackBoxUnknownModules ? 1 : 0);
+    unknownModules_->setToolTip(tr("Modules defined nowhere, e.g. vendor IP cores whose generated HDL is not in "
+                                   "the sources"));
+    form->addRow(tr("Unknown modules:"), unknownModules_);
     tabs->addTab(general, tr("General"));
 
     // Sources
@@ -136,8 +144,8 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
                i < config.sourceLibraries.size() ? qs(config.sourceLibraries[i]) : QString());
         sources_->item(row, 0)->setFlags(sources_->item(row, 0)->flags() & ~Qt::ItemIsEditable);
     }
-    sources_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    sources_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    makeResizable(sources_->horizontalHeader());
+    fitColumns(sources_, 700);
     auto* addSrc = button(tr("Add..."), this);
     auto* rmSrc = button(tr("Remove"), this);
     auto* upSrc = button(tr("Up"), this);
@@ -375,6 +383,7 @@ engine::ProjectConfig ProjectEditor::config() const {
     c.options.unknownClockRelation = static_cast<engine::UnknownClockPolicy>(unknownClock_->currentData().toInt());
     c.options.minSyncStages = static_cast<std::uint32_t>(minStages_->value());
     c.options.reconvergenceDepth = static_cast<std::uint32_t>(reconvDepth_->value());
+    c.options.blackBoxUnknownModules = unknownModules_->currentData().toBool();
     return c;
 }
 

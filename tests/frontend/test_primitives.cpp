@@ -1155,3 +1155,37 @@ TEST_CASE("Primitives: IDELAYE2 in FIXED mode has no tap counter register", "[pr
     REQUIRE(v->r->cdc);
     CHECK(v->r->design->stats().registers == 2);
 }
+
+TEST_CASE("Primitives: Xilinx UNIMACRO multiplier and dual-clock FIFO", "[primitives]") {
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input [7:0] a, input [7:0] b, output [15:0] p,\n"
+                       "           input [7:0] d, input we, input re, output [7:0] q);\n"
+                       "  MULT_MACRO #(.LATENCY(3), .WIDTH_A(8), .WIDTH_B(8)) m (.P(p), .A(a), .B(b), .CE(1'b1),\n"
+                       "     .CLK(clk_a), .RST(1'b0));\n"
+                       "  FIFO_DUALCLOCK_MACRO #(.DATA_WIDTH(8), .FIFO_SIZE(\"18Kb\")) f (.DI(d), .WRCLK(clk_a), .WREN(we),\n"
+                       "     .RDCLK(clk_b), .RDEN(re), .DO(q), .RST(1'b0));\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("FE-UNRESOLVED-INSTANCE") == 0);
+    const auto* f = run->path("top.f.mem", "top.f.do_ff");
+    REQUIRE(f);
+    CHECK(f->syncType == SyncType::AsyncFifo);
+    // the multiplier is three register stages in clk_a: no crossing of its own
+    CHECK(std::ranges::none_of(run->r->cdc->paths, [](const CdcPath& p) { return p.dstName.starts_with("top.m."); }));
+}
+
+TEST_CASE("Frontend: a net used before its declaration is accepted (as by Vivado and Quartus)", "[primitives]") {
+    // ADI's axi_ad9361_tx uses dac_sync before declaring it
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input d, output reg q);\n"
+                       "  assign early = d;\n"
+                       "  wire early;\n"
+                       "  reg a; always @(posedge clk_a) a <= early;\n"
+                       "  always @(posedge clk_b) q <= a;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("FE-SLANG-UsedBeforeDeclared") == 0);
+    CHECK(run->path("top.a", "top.q") != nullptr);
+}

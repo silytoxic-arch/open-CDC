@@ -1,5 +1,8 @@
 #include "gui/SourceViewer.h"
 
+#include "core/PathUtil.h"
+#include "core/TextEncoding.h"
+
 #include <QFile>
 #include <QFontDatabase>
 #include <QPainter>
@@ -37,16 +40,17 @@ SourceViewer::SourceViewer(QWidget* parent)
 
 bool SourceViewer::showLocation(const QString& file, int line) {
     if (file != currentFile_) {
-        QFile f(file);
-        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            setPlainText(tr("Cannot open %1: %2").arg(file, f.errorString()));
+        // the encoding the analysis read it with (GBK comments, Latin-1, UTF-16)
+        auto decoded = readSourceText(fromUtf8(file.toStdString()));
+        if (!decoded) {
+            setPlainText(tr("Cannot open %1").arg(file));
             currentFile_.clear();
             highlightedLine_ = 0;
             return false;
         }
-        QTextStream in(&f);
-        in.setEncoding(QStringConverter::Utf8);
-        setPlainText(in.readAll());
+        QString text = QString::fromStdString(decoded->utf8);
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        setPlainText(text);
         currentFile_ = file;
         emit fileChanged(file);
     }

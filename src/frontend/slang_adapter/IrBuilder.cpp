@@ -3,6 +3,7 @@
 // Procedural code is in ProcessLowering.cpp.
 
 #include "frontend/slang_adapter/IrBuilder.h"
+#include "frontend/MixedSupport.h"
 
 #include "ir/ConstFold.h"
 #include "ir/Dump.h"
@@ -885,9 +886,18 @@ void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
         }
     }
     else {
-        if (owner_.mixed()) // slang does not report unknown modules in mixed designs
-            owner_.report({"FE-UNKNOWN-MODULE", Severity::Error,
-                           "unknown module '" + ci.definition + "' (neither Verilog nor VHDL)", ci.loc, {}});
+        if (owner_.mixed()) { // slang does not report unknown modules in mixed designs
+            if (owner_.blackBoxUnknown())
+                owner_.report({"FE-BLACKBOX-MODULE", Severity::Warning,
+                               "unknown module '" + ci.definition + "': instance '" + std::string(u.name) +
+                                   "' is analyzed as a black box (its outputs have no clock domain; crossings "
+                                   "through it are not checked)",
+                               ci.loc, {}});
+            else
+                owner_.report({"FE-UNKNOWN-MODULE", Severity::Error,
+                               "unknown module '" + ci.definition + "' (neither Verilog nor VHDL)", ci.loc,
+                               {std::string(kUnknownModuleHint)}});
+        }
         ci.definition = "?";
         owner_.design().unsupported.push_back(
             {"IR-UNRESOLVED-INSTANCE", body_.name, "instance '" + std::string(u.name) + "' of an unknown module",

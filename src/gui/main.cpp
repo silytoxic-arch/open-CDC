@@ -27,6 +27,7 @@
 #include <QComboBox>
 #include <QCommandLineParser>
 #include <QDockWidget>
+#include <QHeaderView>
 #include <QListWidget>
 #include <QTableWidget>
 #include <QTimer>
@@ -270,6 +271,18 @@ int runSmokeTest(MainWindow& window, const QString& project, const QString& scre
                              else if (window.sourceViewer()->highlightedLine() !=
                                       inst->data(0, Qt::UserRole + 1).toInt())
                                  exitCode = fail("source viewer highlighted the wrong line");
+                         }
+                         if (exitCode == 0) {
+                             // every data column can be resized by dragging its divider
+                             for (auto* h : window.findChildren<QHeaderView*>()) {
+                                 if (h->orientation() != Qt::Horizontal)
+                                     continue;
+                                 for (int c = 0; c + 1 < h->count(); ++c)
+                                     if (h->sectionResizeMode(c) != QHeaderView::Interactive) {
+                                         exitCode = fail("a table column cannot be resized by dragging");
+                                         break;
+                                     }
+                             }
                          }
                          if (exitCode == 0 && !screenshot.isEmpty()) {
                              for (const char* dock : {"designHierarchy", "cdcPaths", "cdcSchematic"})

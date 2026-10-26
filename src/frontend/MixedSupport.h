@@ -11,6 +11,12 @@
 
 namespace opencdc::frontend::detail {
 
+/// Note attached to "unknown module" errors.
+inline constexpr const char* kUnknownModuleHint =
+    "if it is a vendor IP core (e.g. a Vivado FIFO Generator or a Quartus megafunction), add the HDL the IP "
+    "generates (Vivado: <ip>/synth/<ip>.v or .vhd, or its simulation netlist) to the sources, or set the project "
+    "option 'unknownModules' to 'blackbox' to analyze the rest of the design around it";
+
 struct VerilogMixedOptions {
     /// Definitions provided by the other language: instances of them are kept
     /// as unresolved children (parameters and port actuals as written).
@@ -22,6 +28,8 @@ struct VerilogMixedOptions {
     /// Built-in vendor primitive models: connections to ports they do not
     /// model are reported as information (FE-PRIMITIVE-PORT), not errors.
     std::set<std::string> lenientModules;
+    /// Unknown modules are black boxes (warning FE-BLACKBOX-MODULE), not errors.
+    bool blackBoxUnknown = false;
 };
 
 /// The slang frontend with mixed-language options.

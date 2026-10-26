@@ -1,4 +1,5 @@
 #include "gui/CdcViews.h"
+#include "gui/ColumnSizing.h"
 
 #include "rules/RuleEngine.h"
 
@@ -353,7 +354,7 @@ CdcPathView::CdcPathView(QWidget* parent)
     setupTable(table_);
     table_->setSortingEnabled(true);
     table_->sortByColumn(0, Qt::AscendingOrder);
-    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    makeResizable(table_->horizontalHeader());
     split->addWidget(table_);
     details_->setOpenLinks(false);
     split->addWidget(details_);
@@ -423,7 +424,7 @@ void CdcPathView::setResult(std::shared_ptr<const engine::AnalysisResult> result
     }
     const auto& paths = result_->cdc->paths;
     model_->setResult(result_);
-    table_->resizeColumnsToContents();
+    fitColumns(table_, 500);
     for (int c : {4, 5, 6})
         table_->setColumnWidth(c, std::min(table_->columnWidth(c), 260));
     applyFilter();
@@ -661,7 +662,7 @@ ViolationView::ViolationView(QWidget* parent)
     auto* split = new QSplitter(Qt::Horizontal, this);
     table_->setModel(filter_);
     setupTable(table_);
-    table_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    makeResizable(table_->horizontalHeader());
     split->addWidget(table_);
     ruleInfo_->setOpenLinks(false);
     split->addWidget(ruleInfo_);
@@ -716,9 +717,7 @@ void ViolationView::setResult(std::shared_ptr<const engine::AnalysisResult> resu
     }
     model_->setResult(result_);
     const int rows = model_->rowCount();
-    table_->resizeColumnToContents(0);
-    table_->resizeColumnToContents(1);
-    table_->resizeColumnToContents(2);
+    fitColumns(table_, 500);
     applyFilter();
     if (rows > 0)
         table_->setCurrentIndex(filter_->index(0, 0));

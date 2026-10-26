@@ -26,6 +26,8 @@ struct AnalysisOptions {
     UnknownClockPolicy unknownClockRelation = UnknownClockPolicy::Report;
     std::uint32_t minSyncStages = 2; ///< flop chains shorter than this are reported by CDC-002
     std::uint32_t reconvergenceDepth = 2; ///< register levels searched after synchronizers (CDC-005)
+    /// Instances of modules defined nowhere: errors (false) or black boxes (true)
+    bool blackBoxUnknownModules = false;
 };
 
 /// In-memory form of an OpenCDC project file (*.ocdc.json).
@@ -50,7 +52,9 @@ struct AnalysisOptions {
 ///                                                paths, e.g. the directory Quartus/Vivado runs the scripts from)
 ///   "options":     {"unknownClockRelation": "report",   (optional; report | assume_async | assume_sync)
 ///                   "minSyncStages": 2,                 (optional; 1..8)
-///                   "reconvergenceDepth": 2}            (optional; 0..8)
+///                   "reconvergenceDepth": 2,            (optional; 0..8)
+///                   "unknownModules": "error"}          (optional; error | blackbox: modules defined
+///                                                        nowhere, e.g. IP cores, are black boxes)
 /// }
 struct ProjectConfig {
     std::filesystem::path projectFile; ///< absolute path of the .ocdc.json, empty if built in memory

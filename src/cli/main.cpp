@@ -61,6 +61,7 @@ struct Outputs {
     std::string csvDir;
     std::string suggestSdc;
     std::vector<std::string> vivadoClocks; ///< extra Vivado report_clocks outputs to compare with
+    bool blackBoxUnknown = false;          ///< --blackbox-unknown
 };
 
 bool writeText(const std::filesystem::path& file, const std::string& text) {
@@ -88,6 +89,8 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
 
     for (const auto& f : outs.vivadoClocks)
         project.value().vivadoClockReports.push_back(std::filesystem::absolute(fromUtf8(f)));
+    if (outs.blackBoxUnknown)
+        project.value().options.blackBoxUnknownModules = true;
 
     NullProgressSink progress;
     CancellationToken cancel;
@@ -350,6 +353,9 @@ int main(int argc, char** argv) {
     analyze->add_option("--csv", outs.csvDir, "Write paths.csv and violations.csv into this directory");
     analyze->add_option("--suggest-sdc", outs.suggestSdc,
                         "Write suggested constraints (missing clocks, clock groups for unknown relations) to this file");
+    analyze->add_flag("--blackbox-unknown", outs.blackBoxUnknown,
+                      "Analyze instances of modules defined nowhere (e.g. IP cores) as black boxes instead of "
+                      "stopping with an error (project option unknownModules)");
     analyze->add_option("--vivado-clocks", outs.vivadoClocks,
                         "Compare the clock periods with a Vivado 'report_clocks' output (repeatable)");
     analyze->add_option("--schematic-dir", outs.schematicDir,

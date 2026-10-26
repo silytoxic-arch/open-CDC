@@ -5,6 +5,7 @@ set(_prim_dir ${CMAKE_CURRENT_SOURCE_DIR}/primitives)
 set(_prim_files
     ${_prim_dir}/xilinx_unisim.v
     ${_prim_dir}/xilinx_xpm.v
+    ${_prim_dir}/xilinx_unimacro.v
     ${_prim_dir}/intel.v
     ${_prim_dir}/lattice_gowin.v
     ${_prim_dir}/unisim_vcomponents.vhd

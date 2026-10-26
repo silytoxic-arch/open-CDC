@@ -37,7 +37,7 @@ Sources:
 | `LUT1`, `LUT2`, `LUT3`, `LUT4`, `LUT5`, `LUT6`, `LUT6_2`, `MUXF7`, `MUXF8`, `VCC`, `GND` | Combinational | |
 | `IDDR`, `IDDRE1` | Falling-edge capture, rising-edge outputs `Q1`/`Q2` | |
 | `ODDR`, `ODDRE1` | Two rising-edge registers that both reach `Q` | |
-| `IDELAYE2`, `IDELAYE3`, `ODELAYE2`, `ODELAYE3` | Data path is a wire; tap counter `CNTVALUEOUT` in the control clock (`C` / `CLK`) | |
+| `IDELAYE2`, `IDELAYE3`, `ODELAYE2`, `ODELAYE3` | Data path is a wire; tap counter `CNTVALUEOUT` in the control clock (`C` / `CLK`); in `FIXED` mode there is no counter (`CNTVALUEOUT` is constant) | |
 | `IDELAYCTRL` | `RDY` has no clock domain | |
 | `ISERDESE2`, `ISERDESE3` | Serial data shifted on `CLK`, parallel word registered on `CLKDIV` | `CLK` and `CLKDIV` come from one source, so they are not a crossing. The `ISERDESE3` FIFO is a hard synchronizer: the word is given in the `CLKDIV` domain. `NETWORKING`/`BITSLIP` timing is approximate. |
 | `OSERDESE2`, `OSERDESE3` | Word registered on `CLKDIV`, shifted out on `CLK` | Tristate byte control is approximate |
@@ -48,6 +48,15 @@ Sources:
 | `MMCME2/3/4_BASE`, `MMCME2/3/4_ADV`, `PLLE2/3/4_BASE`, `PLLE2/3/4_ADV` | Every `CLKOUT*`/`CLKFBOUT` is a clock derived from `CLKIN1` (`CLKIN` for PLLE3/4), named after the pin; `LOCKED` has no clock domain | Period = input period × `DIVCLK_DIVIDE` × `CLKOUTn_DIVIDE[_F]` / `CLKFBOUT_MULT[_F]`. The input period comes from the input clock, or from `CLKIN1_PERIOD` when the input clock has none. Phase shift, duty cycle and DRP are not modelled. |
 | `GTXE2_CHANNEL`, `GTHE2_CHANNEL`, `GTPE2_CHANNEL`, `GTHE3_CHANNEL`, `GTHE4_CHANNEL`, `GTYE3_CHANNEL`, `GTYE4_CHANNEL` | `RXOUTCLK`, `TXOUTCLK`, `RXOUTCLKPCS`, `TXOUTCLKPCS` are clock sources of their own (named `inst.RXOUTCLK` …); `TXDATA` captured on `TXUSRCLK2`, `RXDATA` registered on `RXUSRCLK2`; reset-done and lock outputs have no clock domain; DRP is combinational | The relation of a GT clock to fabric clocks is unknown until constrained (CDC-010). Vivado-style `create_clock … [get_pins ch/RXOUTCLK]` works. About 70 of the most used pins are modelled; the rest are ignored. |
 | `GTXE2_COMMON`, `GTHE2_COMMON`, `GTPE2_COMMON`, `GTHE3_COMMON`, `GTHE4_COMMON`, `GTYE3_COMMON`, `GTYE4_COMMON` | PLL output clocks derived from the first reference clock input; reference outputs pass it through; lock outputs have no clock domain | |
+
+## Xilinx UNIMACRO
+
+| Macro | Model | Recognized as |
+|---|---|---|
+| `MULT_MACRO` | `P = A × B` (signed) after `LATENCY` register stages on `CLK` | |
+| `ADDSUB_MACRO` | `RESULT = A ± B ± CARRYIN` after `LATENCY` register stages | |
+| `MACC_MACRO` | Multiply-accumulate (`LOAD` loads `LOAD_DATA`), registered on `CLK` | |
+| `FIFO_DUALCLOCK_MACRO` | Memory, Gray pointers synchronized in both directions (two stages); counter widths from `FIFO_SIZE` and `DATA_WIDTH` | Asynchronous FIFO; `ALMOSTEMPTY`/`ALMOSTFULL` follow `EMPTY`/`FULL` |
 
 ## Xilinx XPM
 
@@ -67,8 +76,8 @@ Sources:
 
 | Primitive | Model |
 |---|---|
-| `altera_std_synchronizer`, `altera_std_synchronizer_bundle` | `depth`-flop chain (per bit) |
-| `altera_reset_synchronizer` | Reset synchronizer (`ASYNC_RESET` selects asynchronous assertion) |
+| `altera_std_synchronizer`, `altera_std_synchronizer_bundle` | `depth`-flop chain (per bit): `din_s1` then `dreg`, Intel's register names (so Intel's SDC such as `*altera_std_synchronizer:*|din_s1` matches) |
+| `altera_reset_synchronizer` | Reset synchronizer (`ASYNC_RESET` selects asynchronous assertion): `altera_reset_synchronizer_int_chain` (`DEPTH` stages) then `altera_reset_synchronizer_int_chain_out`, as in Intel's source |
 | `dcfifo` | Asynchronous FIFO with Gray pointers synchronized in both directions (`rdsync_delaypipe` − 2 stages, at least 2) |
 | `altsyncram`, `altera_syncram` | Port A on `clock0`; port B on `clock1` when `address_reg_b` or `outdata_reg_b` is `"CLOCK1"`, otherwise on `clock0`; per-port write arrays as for block RAM |
 | `altddio_in`, `altddio_out` | DDR input (falling-edge capture) and output registers |

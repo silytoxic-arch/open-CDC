@@ -37,6 +37,8 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | CDC path search between asynchronous / unknown-relation clocks; single-bit / multi-bit; control / data; full hierarchical path | ✅ |
 | Synchronizer recognition: 1/2/3/N-flop chains (including vector shift registers and chains across modules) with checked conditions; data qualified by a synchronized enable/select, also when the source data is decoded into the enable, selects the qualifier, or is ANDed with it (`q <= req_sync & f(src)`, `q <= req_sync ? f(src) : 0`). Results are reported in three levels: structure recognized, necessary conditions verified, protocol conditions unverified | ✅ |
 | Protocol synchronizers: toggle (pulse), Gray code (encoder and ±1 step proven), request/acknowledge handshake, asynchronous FIFO (memory + Gray pointers in both directions, or a write pointer committed through a handshake as in frame FIFOs), reset synchronizers; grouped into synchronizer structures (all crossings of one FIFO instance form one structure, and reconvergence among its pointers, requests and acknowledges is part of its protocol) | ✅ |
+| Sources in any common encoding: UTF-8, UTF-16 with BOM, GB18030/GBK (Chinese comments of Windows editors), Windows-1252; converted to UTF-8 for analysis and the source viewer (`FE-ENCODING` note) | ✅ |
+| Modules defined nowhere (vendor IP cores without their HDL): an error with a hint, or black boxes with project option `"unknownModules": "blackbox"` (CLI `--blackbox-unknown`, GUI project settings) | ✅ |
 | Every instance without a definition or built-in model is reported (`FE-UNRESOLVED-INSTANCE`), never silently a black box; a user module whose name differs from a vendor primitive only in case does not hide the primitive's model | ✅ |
 | Asynchronous reset crossings (grouped per reset source and clock), reconvergence (bit-level, configurable depth), multi-bit incoherency, pulse loss (with clock periods), multi-domain logic | ✅ |
 | Rules CDC-001 … CDC-010, all ten (specs in [docs/rules](docs/rules)) | ✅ |
@@ -167,6 +169,8 @@ Different clock names alone never make two clocks asynchronous.
 `vivadoClockReports` (optional) lists outputs of Vivado `report_clocks` (or `report_timing_summary`). Their clocks are matched to the clock model by source pin or name, and differing periods are reported as `VIV-PERIOD-MISMATCH`. The CLI option `--vivado-clocks <file>` adds a report for one run.
 
 `tclSourceDirs` (optional) lists directories searched for relative `source` paths in constraint scripts, after the directory of the sourcing file. Set it to the directory Quartus or Vivado runs the scripts from when the scripts are written relative to it (e.g. `source ../lib/eth/syn/quartus/eth_mac_1g_rgmii.sdc`). All constraint files of a project share one Tcl interpreter, so procedures defined in one file can be called in the files listed after it.
+
+`options.unknownModules` (default `error`) sets what happens with instances of modules defined nowhere, typically vendor IP cores whose generated HDL is not in the sources: `error` stops before CDC analysis (the message says how to add the IP's HDL), `blackbox` analyzes them as black boxes with a warning each — their outputs have no clock domain, so crossings through them are not checked.
 
 `options.reconvergenceDepth` (default 2, range 0–8) is the number of register levels after synchronizer outputs that CDC-005 searches for reconvergence.
 

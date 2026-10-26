@@ -65,6 +65,7 @@ frontend::FrontendInput ProjectConfig::toFrontendInput() const {
     in.language = language;
     in.sourceLibraries = sourceLibraries;
     in.topParameters = parameters;
+    in.blackBoxUnknownModules = options.blackBoxUnknownModules;
     return in;
 }
 
@@ -218,6 +219,11 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
                     return projectError("PRJ-SCHEMA", "options.reconvergenceDepth must be an integer between 0 and 8");
                 cfg.options.reconvergenceDepth = value.get<std::uint32_t>();
             }
+            else if (key == "unknownModules") {
+                if (!value.is_string() || (value.get<std::string>() != "error" && value.get<std::string>() != "blackbox"))
+                    return projectError("PRJ-SCHEMA", "options.unknownModules must be error or blackbox");
+                cfg.options.blackBoxUnknownModules = value.get<std::string>() == "blackbox";
+            }
             else {
                 return projectError("PRJ-SCHEMA", "unknown option '" + key + "'");
             }
@@ -330,10 +336,13 @@ std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path&
     const AnalysisOptions defaults;
     if (cfg.options.unknownClockRelation != defaults.unknownClockRelation ||
         cfg.options.minSyncStages != defaults.minSyncStages ||
-        cfg.options.reconvergenceDepth != defaults.reconvergenceDepth) {
+        cfg.options.reconvergenceDepth != defaults.reconvergenceDepth ||
+        cfg.options.blackBoxUnknownModules != defaults.blackBoxUnknownModules) {
         j["options"] = {{"unknownClockRelation", std::string(policyText(cfg.options.unknownClockRelation))},
                         {"minSyncStages", cfg.options.minSyncStages},
                         {"reconvergenceDepth", cfg.options.reconvergenceDepth}};
+        if (cfg.options.blackBoxUnknownModules)
+            j["options"]["unknownModules"] = "blackbox";
     }
     return j.dump(2) + "\n";
 }

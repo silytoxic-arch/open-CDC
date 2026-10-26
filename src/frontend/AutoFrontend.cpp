@@ -346,6 +346,7 @@ public:
             detail::VerilogMixedOptions mo;
             mo.foreignModules = foreign;
             mo.lenientModules = models_;
+            mo.blackBoxUnknown = input_.blackBoxUnknownModules;
             std::map<std::string, std::vector<std::string>> params;
             mo.moduleParams = &params;
             const bool verilogTop = !input_.top.empty() && !vhdlEntities.contains(lower(input_.top));
@@ -738,7 +739,8 @@ public:
             // elaborated again with the models.
             RoundSink first;
             auto r = makeSlangFrontend()->elaborate(input, first);
-            if (r.ok() && !r.value().design && primitivesMissing(first.diags)) {
+            if (r.ok() && !r.value().design &&
+                (primitivesMissing(first.diags) || (input.blackBoxUnknownModules && unknownModules(first.diags)))) {
                 MixedLinker linker(input, sink);
                 return linker.run();
             }
@@ -776,6 +778,10 @@ private:
                 return true;
         }
         return false;
+    }
+
+    static bool unknownModules(const std::vector<Diagnostic>& diags) {
+        return std::ranges::any_of(diags, [](const Diagnostic& d) { return d.code == "FE-SLANG-UnknownModule"; });
     }
 
     /// A VHDL instance left as a black box names a modelled vendor primitive.

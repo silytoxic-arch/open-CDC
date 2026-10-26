@@ -160,7 +160,7 @@ TEST_CASE("projectToJson round-trips through parseProjectJson", "[engine][projec
         "constraints": ["c/clk.sdc"],
         "waivers": ["../w.json"],
         "tclSourceDirs": ["syn/quartus"],
-        "options": {"unknownClockRelation": "assume_async", "minSyncStages": 3}
+        "options": {"unknownClockRelation": "assume_async", "minSyncStages": 3, "unknownModules": "blackbox"}
     })", kBase);
     REQUIRE(r.ok());
     const auto& a = r.value();
@@ -191,6 +191,12 @@ TEST_CASE("projectToJson round-trips through parseProjectJson", "[engine][projec
     CHECK(b.options.unknownClockRelation == UnknownClockPolicy::AssumeAsync);
     CHECK(b.options.minSyncStages == 3);
     CHECK(b.options.reconvergenceDepth == 2);
+    CHECK(a.options.blackBoxUnknownModules);
+    CHECK(b.options.blackBoxUnknownModules);
+    // negative: other values are rejected
+    auto bad = parseProjectJson(R"({"format": "opencdc-project", "version": 1, "name": "x", "sources": ["a.v"],
+                                    "options": {"unknownModules": "ignore"}})", kBase);
+    CHECK_FALSE(bad.ok());
 }
 
 TEST_CASE("saveProjectFile writes a loadable file; unwritable location is PRJ-WRITE", "[engine][project]") {

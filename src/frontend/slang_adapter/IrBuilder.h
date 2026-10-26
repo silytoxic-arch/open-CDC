@@ -220,6 +220,8 @@ public:
         mixed_ = mixed;
     }
     [[nodiscard]] bool mixed() const noexcept { return mixed_; }
+    void setBlackBoxUnknown(bool b) noexcept { blackBoxUnknown_ = b; }
+    [[nodiscard]] bool blackBoxUnknown() const noexcept { return blackBoxUnknown_; }
     [[nodiscard]] const std::set<std::string>& foreignDefinitions() const noexcept { return foreign_; }
 
     std::shared_ptr<ir::Design> build(const sast::RootSymbol& root);
@@ -243,6 +245,7 @@ private:
     int depth_ = 0;
     std::set<std::string> foreign_;
     bool mixed_ = false;
+    bool blackBoxUnknown_ = false;
 };
 
 } // namespace opencdc::frontend::detail

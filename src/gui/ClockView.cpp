@@ -1,4 +1,5 @@
 #include "gui/ClockView.h"
+#include "gui/ColumnSizing.h"
 
 #include "ir/Dump.h"
 
@@ -65,10 +66,10 @@ ClockView::ClockView(QWidget* parent)
     auto* split = new QSplitter(Qt::Vertical, this);
     tree_->setHeaderLabels(
         {tr("Clock / register"), tr("Kind"), tr("Source"), tr("Period"), tr("Frequency"), tr("Registers")});
-    tree_->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    makeResizable(tree_->header());
     split->addWidget(tree_);
     matrix_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    matrix_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    makeResizable(matrix_->horizontalHeader());
     split->addWidget(matrix_);
     layout->addWidget(split, 1);
 
@@ -227,6 +228,8 @@ void ClockView::setResult(const engine::AnalysisResult& result) {
                           .arg(cm.registers.size())
                           .arg(unknown)
                           .arg(qs(std::string(engine::toString(result.project.options.unknownClockRelation)))));
+    fitColumns(tree_, 400);
+    fitColumns(matrix_, 300);
 }
 
 } // namespace opencdc::gui
