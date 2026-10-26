@@ -145,6 +145,11 @@ public:
     /// comparisons with constants and muxes with a constant input); empty when
     /// nothing is known.
     [[nodiscard]] std::vector<Fact> implied(const graph::BitRef& b, bool value, int depth = 0) const;
+    /// The register (2 bits or more) never holds more than one bit set: its
+    /// reset values and every value its data input can select (constants
+    /// through multiplexers, or its own value) have at most one bit set (a
+    /// one-hot state register, a one-hot select).
+    [[nodiscard]] bool atMostOneHot(std::size_t globalReg) const;
     /// Facts implied by the register's synchronous reset being active (or
     /// not); nullopt when it has none.
     [[nodiscard]] std::optional<std::vector<Fact>> syncResetFacts(std::size_t globalReg, bool active) const;

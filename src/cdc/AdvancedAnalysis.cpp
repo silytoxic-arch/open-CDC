@@ -1396,6 +1396,15 @@ void analyzeConvergence(State& st) {
         return it->second;
     };
     // merged conditions, or nullopt on a contradiction
+    // registers that never hold more than one bit set: two of their bits at 1
+    // in the same cycle contradict each other
+    std::unordered_map<std::uint32_t, bool> oneHot;
+    auto isOneHot = [&](std::uint32_t node) {
+        auto [it, inserted] = oneHot.emplace(node, false);
+        if (inserted)
+            it->second = st.isRegister(node) && st.sg.atMostOneHot(node);
+        return it->second;
+    };
     auto mergeGuards = [&](const std::vector<GFact>& a, const std::vector<GFact>& b) -> std::optional<std::vector<GFact>> {
         std::vector<GFact> m;
         m.reserve(a.size() + b.size());
@@ -1404,6 +1413,14 @@ void analyzeConvergence(State& st) {
         for (std::size_t i = 1; i < m.size(); ++i)
             if (m[i].node == m[i - 1].node && m[i].bit == m[i - 1].bit && m[i].delay == m[i - 1].delay)
                 return std::nullopt;
+        // facts are sorted by node, then bit: look for two ones of one node and cycle
+        for (std::size_t i = 0; i < m.size(); ++i) {
+            if (!m[i].value)
+                continue;
+            for (std::size_t j = i + 1; j < m.size() && m[j].node == m[i].node; ++j)
+                if (m[j].value && m[j].delay == m[i].delay && m[j].bit != m[i].bit && isOneHot(m[i].node))
+                    return std::nullopt;
+        }
         return m;
     };
     std::vector<std::pair<std::uint32_t, std::uint32_t>> members{{0, 0}}; // id -> (label set, guard)

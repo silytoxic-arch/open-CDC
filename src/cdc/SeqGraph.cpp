@@ -718,6 +718,79 @@ std::vector<SeqGraph::Fact> SeqGraph::implied(const BitRef& b, bool value, int d
     return out;
 }
 
+bool SeqGraph::atMostOneHot(std::size_t globalReg) const {
+    if (globalReg >= regLocal_.size())
+        return false;
+    const auto [inst0, r] = regLocal_[globalReg];
+    const auto& reg = view_.bodyOf(inst0).registers[r];
+    if (reg.q.width() < 2)
+        return false;
+    auto oneHotConst = [](const ConstBits& k) {
+        unsigned ones = 0;
+        for (const auto b : k.bits()) {
+            if (b == Logic::X || b == Logic::Z)
+                return false;
+            ones += b == Logic::L1 ? 1U : 0U;
+        }
+        return ones <= 1;
+    };
+    for (const auto& rs : reg.asyncResets) {
+        const auto k = rs.value.asConst();
+        if (!k || !oneHotConst(*k))
+            return false;
+    }
+    if (reg.syncReset) {
+        const auto k = reg.syncReset->value.asConst();
+        if (!k || !oneHotConst(*k))
+            return false;
+    }
+    const auto w = reg.q.width();
+    std::function<bool(InstanceId, const SigSpec&, int)> values = [&](InstanceId inst, const SigSpec& sig, int depth) {
+        if (depth > 32 || sig.width() != w)
+            return false;
+        if (const auto k = sig.asConst())
+            return oneHotConst(*k);
+        // the register's own value (hold)
+        bool hold = true;
+        for (std::uint32_t i = 0; i < w && hold; ++i) {
+            const auto b = view_.bitOf(inst, sig, i);
+            if (!b) {
+                hold = false;
+                break;
+            }
+            const Driver d = view_.driver(*b);
+            hold = d.kind == DriverKind::Register && view_.globalRegister(d.bit.inst, d.index) == globalReg &&
+                   d.bit.bit - nodes_[globalReg].first.bit == i;
+        }
+        if (hold)
+            return true;
+        // one multiplexer choosing between candidates
+        const auto b0 = view_.bitOf(inst, sig, 0);
+        if (!b0)
+            return false;
+        const Driver d0 = view_.driver(*b0);
+        if (d0.kind != DriverKind::Cell)
+            return false;
+        const Cell& c = view_.bodyOf(d0.bit.inst).cells[d0.index];
+        if (c.kind != CellKind::Mux || c.inputs.size() != 3)
+            return false;
+        const std::uint32_t off = d0.bit.bit;
+        if (off + w > c.width)
+            return false;
+        for (std::uint32_t i = 1; i < w; ++i) {
+            const auto bi = view_.bitOf(inst, sig, i);
+            if (!bi)
+                return false;
+            const Driver di = view_.driver(*bi);
+            if (di.kind != DriverKind::Cell || di.bit.inst != d0.bit.inst || di.index != d0.index || di.bit.bit != off + i)
+                return false;
+        }
+        return values(d0.bit.inst, c.inputs[0].extract(off, w), depth + 1) &&
+               values(d0.bit.inst, c.inputs[1].extract(off, w), depth + 1);
+    };
+    return values(inst0, reg.d, 0);
+}
+
 std::optional<std::vector<SeqGraph::Fact>> SeqGraph::syncResetFacts(std::size_t globalReg, bool active) const {
     if (globalReg >= regLocal_.size() || pins_[globalReg].srstLen == 0)
         return std::nullopt;
@@ -809,6 +882,41 @@ SeqGraph::dataAlternatives(std::size_t globalReg, std::uint32_t bit, const Famil
         return out; // may be empty: this input is never selected
     };
 
+    // g & x is 0 whenever g is 0, whatever x is (g | x is 1 whenever g is 1): the
+    // evaluations are partitioned by the value of a gate input; where the gate
+    // decides alone, only the gate is read. The gate is preferably the operand
+    // without labels (a select), else one whose value implies facts.
+    auto gated = [&](const Family& fa, const std::optional<BitRef>& ra, const Family& fb,
+                     const std::optional<BitRef>& rb, bool isAnd) -> Family {
+        const bool decides = !isAnd; // 0 decides an and, 1 an or
+        auto unlabeled = [&](const Family& f) {
+            return std::ranges::all_of(f, [&](std::uint32_t m) { return ops.labelsOnly(m) == 0; });
+        };
+        auto factsOf = [&](const std::optional<BitRef>& ref, bool v) {
+            return ref ? implied(*ref, v) : std::vector<Fact>{};
+        };
+        if (!ra && !rb)
+            return cross(fa, fb);
+        bool gateIsA = ra.has_value(); // only one operand is a single bit we can look at
+        if (ra && rb) {
+            if (unlabeled(fa) != unlabeled(fb))
+                gateIsA = unlabeled(fa);
+            else
+                gateIsA = !(factsOf(ra, decides).empty() && !factsOf(rb, decides).empty());
+        }
+        const auto& rg = gateIsA ? ra : rb;
+        const Family& fg = gateIsA ? fa : fb;
+        const Family& fx = gateIsA ? fb : fa;
+        const auto gd = factsOf(rg, decides);
+        const auto gn = factsOf(rg, !decides);
+        if (gd.empty() && gn.empty())
+            return cross(fa, fb); // nothing tells the evaluations apart
+        Family alt = restrictAll(fg, gd);                   // the gate decides alone
+        const Family both = restrictAll(cross(fg, fx), gn); // the other input passes
+        alt.insert(alt.end(), both.begin(), both.end());
+        return capped(std::move(alt));
+    };
+
     std::function<Family(const BitRef&, int)> ofBit;
     std::function<Family(InstanceId, std::size_t, std::uint32_t, int)> ofCell;
     ofBit = [&](const BitRef& b, int depth) -> Family {
@@ -882,6 +990,38 @@ SeqGraph::dataAlternatives(std::size_t globalReg, std::uint32_t bit, const Famil
                             alt = capped(std::move(alt));
                     }
                 out = cross(capped(std::move(alt)), Family{wholeInput(1)});
+                break;
+            }
+            case CellKind::And:
+            case CellKind::Or:
+            case CellKind::LogicAnd:
+            case CellKind::LogicOr: {
+                // g & x is 0 whenever g is 0, whatever x is (and g | x is 1 whenever g is 1):
+                // the evaluations where one input decides the output read only that input
+                const bool logic = c.kind == CellKind::LogicAnd || c.kind == CellKind::LogicOr;
+                if (c.inputs.size() != 2 || (logic && (c.inputs[0].width() != 1 || c.inputs[1].width() != 1))) {
+                    out = {0};
+                    for (const auto& ci : cellInputs(inst, cellIndex, outBit))
+                        out = cross(out, ofBit(ci.bit, depth));
+                    break;
+                }
+                const std::uint32_t ib = logic ? 0 : outBit;
+                const bool isAnd = c.kind == CellKind::And || c.kind == CellKind::LogicAnd;
+                out = gated(inputBit(0, ib), inputRef(0, ib), inputBit(1, ib), inputRef(1, ib), isAnd);
+                break;
+            }
+            case CellKind::ReduceOr:
+            case CellKind::ReduceAnd: {
+                // a chain of two-input ors (ands) over the bits
+                if (c.inputs.empty() || c.inputs[0].width() == 0) {
+                    out = {0};
+                    break;
+                }
+                const bool isAnd = c.kind == CellKind::ReduceAnd;
+                Family acc = inputBit(0, 0);
+                for (std::uint32_t b = 1; b < c.inputs[0].width() && !aborted; ++b)
+                    acc = gated(inputBit(0, b), inputRef(0, b), acc, std::nullopt, isAnd);
+                out = std::move(acc);
                 break;
             }
             default: {

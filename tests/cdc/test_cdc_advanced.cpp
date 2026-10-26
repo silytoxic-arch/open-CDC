@@ -483,6 +483,65 @@ TEST_CASE("CDC-005 positive: combined synchronized values next to a read-back", 
     }));
 }
 
+namespace {
+
+// Two synchronized signals picked by an AND-OR multiplexer.
+std::string andOrSelect(std::string_view selDecl, std::string_view combine = "(sel[0] & a2) | (sel[1] & b2)") {
+    return "module top(input clk_a, input clk_b, input [1:0] op, input d0, input d1, input [1:0] raw, output reg q);\n"
+           "  reg s0 = 0, s1 = 0;\n"
+           "  always @(posedge clk_a) begin s0 <= d0; s1 <= d1; end\n"
+           "  reg a1, a2, b1, b2;\n"
+           "  always @(posedge clk_b) begin a1 <= s0; a2 <= a1; b1 <= s1; b2 <= b1; end\n" +
+           std::string(selDecl) + "  always @(posedge clk_b) q <= " + std::string(combine) + ";\n"
+           "endmodule\n";
+}
+
+constexpr const char* kOneHotSel = "  reg [1:0] sel = 2'b00;\n"
+                                   "  always @(posedge clk_b)\n"
+                                   "    case (op)\n"
+                                   "      2'd1: sel <= 2'b01;\n"
+                                   "      2'd2: sel <= 2'b10;\n"
+                                   "      2'd3: sel <= 2'b00;\n"
+                                   "      default: ;\n"
+                                   "    endcase\n";
+
+} // namespace
+
+TEST_CASE("CDC-005 negative: AND-OR multiplexer with a one-hot select", "[CDC-005]") {
+    // sel only ever holds 00, 01 or 10: sel[0] and sel[1] are never 1 together
+    CHECK(analyze(andOrSelect(kOneHotSel), kAsync3).hits("CDC-005") == 0);
+    // a two-process one-hot state machine as the select
+    const std::string fsm = "  localparam IDLE = 3'b001, RA = 3'b010, RB = 3'b100;\n"
+                            "  reg [2:0] state = IDLE, next;\n"
+                            "  always @* begin\n"
+                            "    next = state;\n"
+                            "    case (state)\n"
+                            "      IDLE: if (op[0]) next = RA; else if (op[1]) next = RB;\n"
+                            "      RA: next = IDLE;\n"
+                            "      RB: next = IDLE;\n"
+                            "      default: next = IDLE;\n"
+                            "    endcase\n"
+                            "  end\n"
+                            "  always @(posedge clk_b) state <= next;\n"
+                            "  wire [1:0] sel = state[2:1];\n";
+    CHECK(analyze(andOrSelect(fsm), kAsync3).hits("CDC-005") == 0);
+    // the same multiplexer written as a reduction
+    CHECK(analyze(andOrSelect(kOneHotSel, "|(sel & {b2, a2})"), kAsync3).hits("CDC-005") == 0);
+}
+
+TEST_CASE("CDC-005 positive: AND-OR multiplexer whose select can have two bits set", "[CDC-005]") {
+    // the select comes from input data: both terms can be on together
+    CHECK(analyze(andOrSelect("  reg [1:0] sel; always @(posedge clk_b) sel <= raw;\n"), kAsync3).hits("CDC-005") == 2);
+    CHECK(analyze(andOrSelect("  reg [1:0] sel; always @(posedge clk_b) sel <= raw;\n", "|(sel & {b2, a2})"), kAsync3)
+              .hits("CDC-005") == 2);
+    // a one-hot select that one branch sets to 11
+    std::string twoHot = kOneHotSel;
+    twoHot.replace(twoHot.find("2'd3: sel <= 2'b00;"), 19, "2'd3: sel <= 2'b11;");
+    CHECK(analyze(andOrSelect(twoHot), kAsync3).hits("CDC-005") == 2);
+    // gating by a one-hot select does not hide two data values combined directly
+    CHECK(analyze(andOrSelect(kOneHotSel, "(sel[0] & a2) | (sel[1] & b2) | (a2 & b2)"), kAsync3).hits("CDC-005") == 2);
+}
+
 // ===========================================================================
 // CDC-006 asynchronous reset release
 // ===========================================================================
