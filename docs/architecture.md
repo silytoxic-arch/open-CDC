@@ -1121,3 +1121,22 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 
 ### 26.5 单组 `set_clock_groups`
 SDC 标准、Quartus 和 Vivado 中，只有一个 `-group` 的 `set_clock_groups` 表示组内时钟与其他所有时钟异步（或互斥）。时钟关系计算一直是这样处理的，但一致性检查报的是警告"不起作用"，与计算不符。现在改为提示，说明实际的处理方式。
+
+## 27. 源同步输入、Intel 写法与原语模型（阶段 20）
+
+### 27.1 源同步输入
+- 判定条件：输入端口的 `set_input_delay -clock V` 中，V 是虚拟时钟（由约束定义，没有源）；路径的采样时钟 C 有源，周期与 V 相同（相对误差 1e-6 以内）；V 与 C 之间原本没有约束关系（关系未知）。
+- 满足时，这条路径不算跨域：STA 会把 V 到 C 当作同步路径计时（RGMII、ADC/DAC 总线等源同步接口的标准写法）。每对 (V, C) 报一条提示 `CDC-SOURCE-SYNC`，说明可以用 `set_clock_groups` 改变这一处理。
+- 周期不同，或者时钟组把两者声明为异步时，仍然按跨域分析。
+
+### 27.2 Quartus 完整名字
+Quartus 的名字可以带 `实体名:实例名` 层级（`sync2:u_s|s1_reg`）。模式中出现 `:` 时，用这种完整名字匹配。实体名取模块体的定义名，各层递归求得。
+
+### 27.3 原语模型
+- 用户模块与厂商原语的名字比较区分大小写：只有名字完全相同的 Verilog 模块才替代原语模型。原来按小写比较，verilog-ethernet 的 `iddr` 模块（它包装 Xilinx `IDDR`）把 IDDR 的模型挡掉了；slang 一侧又按小写把 `IDDR` 当作待链接的外部定义，于是实例成了不报告的黑盒。
+- 收尾检查：链接完成后，没有模块体的实例（不是已知的内部黑盒、且没有被其他诊断提到）报 `FE-UNRESOLVED-INSTANCE` 警告。
+- `altera_std_synchronizer`（`din_s1` 加 `dreg`）和 `altera_reset_synchronizer`（`altera_reset_synchronizer_int_chain` 加 `_out`）的寄存器名和结构与 Intel 源码一致，Intel 自带的 SDC 可以匹配。
+- IDELAYE2/ODELAYE2/IDELAYE3/ODELAYE3：FIXED 模式没有抽头计数器（CE/INC/LD 不起作用），`CNTVALUEOUT` 是常数。
+
+### 27.4 Vivado 名字中的 generate 块
+Vivado 的名字不包含未命名 generate 块（`genblkN`）这一层：`oddr[0].oddr_inst` 对应展开后的 `genblk1.oddr[0].genblk1.oddr_inst`。匹配寄存器、实例、引脚时，同时用去掉 `genblkN.` 各段的名字匹配；层级（`/` 的个数）不变。

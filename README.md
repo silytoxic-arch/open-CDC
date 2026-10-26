@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 19, Tcl procedures and `source`, Quartus SDC**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 20, source-synchronous inputs, Intel SDC idioms, primitive model fixes**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–19)
+## What works today (stages 1–20)
 
 | Feature | Status |
 |---|---|
@@ -26,7 +26,8 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Register-level timing exceptions: `set_false_path` and `set_max_delay -datapath_only` between registers, pins, ports and clocks, with one side alone (`-to` reset pins) or mixed (`-from <clock> -to <registers>`); a crossing they cover whose clock relation is unknown is analyzed as asynchronous, with the constraint named | ✅ |
 | Vendor Tcl constraint scripts: `foreach`, `if`/`elseif`/`else`, `for`, `while`, `expr`, `llength`/`lindex`/`lappend`/`incr`, `get_property` (clock `PERIOD`, cell properties); `get_cells` returns flip-flops and instances, with `-hierarchical`, `-regexp` and `-filter` (`NAME`, `PARENT`, `REF_NAME`, `ORIG_REF_NAME`, `IS_SEQUENTIAL`, HDL attributes such as `ASYNC_REG`); netlist traversal with `get_pins`/`get_nets`/`get_cells -of_objects` (flip-flop pins `C D Q CE CLR PRE R S`, `REF_PIN_NAME`, `DIRECTION`, `IS_LEAF`, `IS_PRESET`, …). Verified with the constraint scripts shipped with alexforencich's verilog-ethernet (`axis_async_fifo.tcl`, `sync_reset.tcl`, `eth_mac_fifo.tcl`, `mii_phy_if.tcl`) | ✅ |
 | Tcl procedures (`proc` with default and `args` parameters, `return`, `global`) and `source` (relative to the sourcing file, then the project's `tclSourceDirs`); all constraint files of an analysis share one interpreter, as in Vivado and Quartus | ✅ |
-| Quartus SDC: `get_registers`/`get_keepers`/`get_nodes` and `get_cells`/`get_pins` with `|`-separated names (registers named after their HDL signal), `get_collection_size`, `foreach_in_collection`, `get_node_info -name`; pin paths into IP internals (`pll|auto_generated|pll1|clk[0]`) resolved to the IP's port; periods with units (`"40.000 ns"`, `{125 MHz}`); `derive_pll_clocks`; register-to-register `set_max_delay` and `-from *`. Verified with the Quartus scripts of verilog-ethernet's DE2-115 example | ✅ |
+| Quartus SDC: `get_registers`/`get_keepers`/`get_nodes` and `get_cells`/`get_pins` with `|`-separated names (registers named after their HDL signal), `get_collection_size`, `foreach_in_collection`, `get_node_info -name`; pin paths into IP internals (`pll|auto_generated|pll1|clk[0]`) resolved to the IP's port; periods with units (`"40.000 ns"`, `{125 MHz}`); `derive_pll_clocks`; register-to-register `set_max_delay` and `-from *`. Verified with the Quartus scripts of verilog-ethernet's DE2-115 example; full names with `entity:instance` levels (`*altera_std_synchronizer:*|din_s1`) | ✅ |
+| Source-synchronous inputs: an input timed against a virtual clock (`set_input_delay`) and captured by a clock of the same period is timed by STA, not a crossing (noted as `CDC-SOURCE-SYNC`) | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
 | Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), overlapping clock groups or related clocks declared asynchronous (`CON-GROUP-*`); a single `-group` makes its clocks asynchronous to all others, as in SDC | ✅ |
 | Vivado clock report cross-check (`--vivado-clocks`, project field `vivadoClockReports`, GUI project editor): `report_clocks` / `report_timing_summary` output read back, clocks matched by source pin or name, period mismatches (`VIV-PERIOD-MISMATCH`) and clocks only one side knows reported | ✅ |
@@ -36,6 +37,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | CDC path search between asynchronous / unknown-relation clocks; single-bit / multi-bit; control / data; full hierarchical path | ✅ |
 | Synchronizer recognition: 1/2/3/N-flop chains (including vector shift registers and chains across modules) with checked conditions; data qualified by a synchronized enable/select, also when the source data is decoded into the enable, selects the qualifier, or is ANDed with it (`q <= req_sync & f(src)`, `q <= req_sync ? f(src) : 0`). Results are reported in three levels: structure recognized, necessary conditions verified, protocol conditions unverified | ✅ |
 | Protocol synchronizers: toggle (pulse), Gray code (encoder and ±1 step proven), request/acknowledge handshake, asynchronous FIFO (memory + Gray pointers in both directions, or a write pointer committed through a handshake as in frame FIFOs), reset synchronizers; grouped into synchronizer structures (all crossings of one FIFO instance form one structure, and reconvergence among its pointers, requests and acknowledges is part of its protocol) | ✅ |
+| Every instance without a definition or built-in model is reported (`FE-UNRESOLVED-INSTANCE`), never silently a black box; a user module whose name differs from a vendor primitive only in case does not hide the primitive's model | ✅ |
 | Asynchronous reset crossings (grouped per reset source and clock), reconvergence (bit-level, configurable depth), multi-bit incoherency, pulse loss (with clock periods), multi-domain logic | ✅ |
 | Rules CDC-001 … CDC-010, all ten (specs in [docs/rules](docs/rules)) | ✅ |
 | GUI CDC Path Viewer and Rule Violation Viewer with filters, details (structure, reconvergence, grouped registers), fix suggestions and jump-to-source | ✅ |
