@@ -211,3 +211,28 @@ TEST_CASE("Mixed negative: name defined in both languages is reported", "[vhdl][
     CHECK(r.count("FE-MIXED-DUPLICATE") == 1);
     CHECK(r.design->stats().registers == 0); // the Verilog module is used
 }
+
+TEST_CASE("Mixed: a top that names nothing suggests the closest units", "[vhdl][mixed]") {
+    // Digilent's MIPI_CSI2_RxTop.vhd declares 'mipi_csi2_rx_top'
+    auto r = run({{"vsync.vhd", kVhdlSync},
+                  {"top.vhd", "library ieee; use ieee.std_logic_1164.all;\n"
+                              "entity mipi_csi2_rx_top is port (clk : in std_logic; d : in std_logic_vector(0 downto 0);\n"
+                              "  q : out std_logic_vector(0 downto 0)); end;\n"
+                              "architecture rtl of mipi_csi2_rx_top is begin\n"
+                              "  u : entity work.vsync port map (clk => clk, d => d, q => q);\n"
+                              "end;\n"},
+                  {"m.v", "module other(input a, output b); assign b = a; endmodule\n"}},
+                 "MIPI_CSI2_RxTop");
+    CHECK_FALSE(r.design);
+    const auto it = std::ranges::find(r.diags, std::string("FE-SLANG-InvalidTopModule"), &Diagnostic::code);
+    REQUIRE(it != r.diags.end());
+    CHECK(it->message.find("neither a VHDL entity nor a Verilog module") != std::string::npos);
+    REQUIRE_FALSE(it->notes.empty());
+    CHECK(it->notes.front().find("'mipi_csi2_rx_top'") != std::string::npos);
+    // negative: an unrelated name gets no suggestion
+    auto far = run({{"vsync.vhd", kVhdlSync}, {"m.v", "module other(input a, output b); assign b = a; endmodule\n"}},
+                   "completely_different_name");
+    const auto f = std::ranges::find(far.diags, std::string("FE-SLANG-InvalidTopModule"), &Diagnostic::code);
+    REQUIRE(f != far.diags.end());
+    CHECK(f->notes.empty());
+}

@@ -3,7 +3,7 @@
 #
 #   tools/ci/vhdl-corpus.sh <bin-dir> [work-dir]
 #
-# 1. Parses every .vhd/.vhdl file of six projects (~2000 files); only the
+# 1. Parses every .vhd/.vhdl file of seven projects (~2300 files); only the
 #    files listed in REJECT (documentation snippets, templates, VHDL-2019)
 #    may fail, and they must fail.
 # 2. Elaborates and analyzes the open-logic clock-crossing components, a
@@ -11,7 +11,10 @@
 #    primitive models) and async FIFO, and the microwatt POWER SoC (VHDL-2008,
 #    Verilog UART, Lattice ECP5 PLL declared as a local component; and the Arty
 #    A7 configuration with LiteDRAM, LiteEth and LiteSDCard, five clock
-#    domains); the CDC summaries must match.
+#    domains), and two Digilent IP cores that use Vivado IP from their .xci
+#    configuration (ZmodScopeController: FIFO Generator, MMCM, OSERDES;
+#    MIPI CSI-2 receiver: AXI-Stream FIFOs and ILA debug cores), plus each
+#    FIFO .xci of the Digilent library on its own; the CDC summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -33,6 +36,7 @@ fetch PoC        https://github.com/VLSI-EDA/PoC         8c39b2407a97ec81b8601c4
 fetch osvvm      https://github.com/OSVVM/OSVVM          716d751566b4fb6479f69c38cc01790744c911b7
 fetch surf       https://github.com/slaclab/surf         f0b5e3a7b5ab191be1cb5f4453e418299181c9d8
 fetch microwatt  https://github.com/antonblanchard/microwatt f341bed306a9a7281bf65200df8cc1f0a002617d
+fetch vivado-library https://github.com/Digilent/vivado-library 0362ce72d39eebc400fdabacff706ee7fa8ad564
 
 # ---- 1. parser -------------------------------------------------------------
 REJECT=(
@@ -42,7 +46,7 @@ REJECT=(
     microwatt/litedram/gen-src/no-init-mem.vhdl   # architecture without 'begin' (not legal VHDL)
 )
 fail=0
-for repo in open-logic neorv32 PoC osvvm surf microwatt; do
+for repo in open-logic neorv32 PoC osvvm surf microwatt vivado-library; do
     mapfile -d '' files < <(find "$repo" \( -name '*.vhd' -o -name '*.vhdl' \) -print0 | sort -z)
     ok=()
     for f in "${files[@]}"; do
@@ -206,6 +210,40 @@ j = json.load(open(os.path.join(work, "microwatt_arty_fixed.ocdc.json")))
 j["name"] = "microwatt_arty_jtag"
 j["constraints"].append("mw_jtag.sdc")
 json.dump(j, open(os.path.join(work, "microwatt_arty_jtag.ocdc.json"), "w"), indent=1)
+# Digilent IP cores with Vivado IP given as .xci
+dl = os.path.join(work, "vivado-library/ip")
+zs = os.path.join(dl, "Zmods/ZmodScopeController/src")
+json.dump({"format": "opencdc-project", "version": 1, "name": "zmod_scope", "top": "ZmodScopeController",
+           "sources": [os.path.join(zs, f) for f in ["PkgZmodADC.vhd", "SyncBase.vhd", "SyncAsync.vhd", "ResetBridge.vhd",
+                                                     "HandshakeData.vhd", "ADI_SPI.vhd", "ConfigADC.vhd", "ConfigRelays.vhd",
+                                                     "GainOffsetCalib.vhd", "DataPath.vhd", "ZmodScopeController.vhd",
+                                                     "ZmodADC_SynchonizationFIFO/ZmodADC_SynchonizationFIFO.xci"]],
+           "constraints": [os.path.join(zs, "ConstrZmodADC_ooc.xdc")]},
+          open(os.path.join(work, "zmod_scope.ocdc.json"), "w"), indent=1)
+mp = os.path.join(dl, "MIPI_CSI_2_RX/hdl")
+json.dump({"format": "opencdc-project", "version": 1, "name": "mipi_csi2_rx", "top": "mipi_csi2_rx_top",
+           "sources": [os.path.join(mp, f) for f in ["DebugLib.vhd", "SyncAsync.vhd", "SyncAsyncReset.vhd", "ECC.vhd",
+                                                     "CRC16_behavioral.vhd", "SimpleFIFO.vhd", "LM.vhd", "LLP.vhd",
+                                                     "MIPI_CSI2_Rx.vhd", "MIPI_CSI_2_RX_v1_0_S_AXI_LITE.vhd",
+                                                     "MIPI_CSI2_RxTop.vhd", "cdc_fifo/cdc_fifo.xci",
+                                                     "line_buffer/line_buffer.xci", "ila_rxclk/ila_rxclk.xci",
+                                                     "ila_vidclk/ila_vidclk.xci", "ila_rxclk_lane/ila_rxclk_lane.xci"]],
+           "constraints": [os.path.join(mp, "mipi_csi2_rx_ooc.xdc"), os.path.join(mp, "mipi_csi2_rx.xdc")]},
+          open(os.path.join(work, "mipi_csi2_rx.ocdc.json"), "w"), indent=1)
+# every FIFO .xci of the library as its own top
+fifos = []
+for root, _, names in os.walk(dl):
+    for n in sorted(names):
+        if n.endswith(".xci"):
+            path = os.path.join(root, n)
+            text = open(path, encoding="utf-8", errors="replace").read()
+            if 'spirit:name="fifo_generator"' in text or 'spirit:name="axis_data_fifo"' in text:
+                fifos.append(path)
+for k, path in enumerate(sorted(fifos)):
+    name = os.path.splitext(os.path.basename(path))[0]
+    json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": name, "sources": [path]},
+              open(os.path.join(work, "dl_fifo_%02d.ocdc.json" % k), "w"), indent=1)
+open(os.path.join(work, "dl_fifo_count.txt"), "w").write(str(len(fifos)))
 EOF
 
 check() { # project expected-regex
@@ -232,4 +270,18 @@ check microwatt_arty.ocdc.json        "IR-MULTIDRIVER.*ddram_clk_p_vec.*IR-MULTI
 check microwatt_arty_fixed.ocdc.json  "Clocks  : 8 \\(2445/2445 registers resolved\\).*bscan.TCK.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 173 crossing path\\(s\\), 170 synchronized"
 check microwatt_arty_jtag.ocdc.json   "hits: CDC-004 x1, CDC-005 x3, CDC-006 x2.*Rules   : 2 error violation\\(s\\), 0 warning violation\\(s\\), 4 path\\(s\\) at potential risk, 0 path\\(s\\) need review"
 check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodies, 7[0-9][0-9] registers.*0 latches.*Summary : 0 error"
+check zmod_scope.ocdc.json  "Clocks  : 6 \\(170/170 registers resolved\\).*async-fifo x1, handshake x1, reset-sync x6, two-flop x8.*IP 'ZmodADC_SynchonizationFIFO' \\(xilinx.com:ip:fifo_generator:13.2\\) modelled.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 21 crossing path\\(s\\), 18 synchronized"
+check mipi_csi2_rx.ocdc.json "Clocks  : 3 \\(94/94 registers resolved\\).*async-fifo x1, reset-sync x3, two-flop x5.*IP 'cdc_fifo'.*AXI-Stream.*IP 'line_buffer'.*IP 'ila_rxclk'.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 12 crossing path\\(s\\), 11 synchronized, 1 unsynchronized"
+# each FIFO .xci alone: modelled; with independent clocks an asynchronous FIFO
+n=$(cat dl_fifo_count.txt)
+[ "$n" = 13 ] || { echo "::error::expected 13 FIFO .xci files in vivado-library, found $n"; fail=1; }
+for f in dl_fifo_*.ocdc.json; do
+    out=$("$BIN/opencdc" analyze "$f" -q 2>&1 || true)
+    if ! echo "$out" | grep -q "FE-XCI-MODEL" || ! echo "$out" | grep -q "Summary : 0 error"; then
+        echo "::error::$f: FIFO .xci not modelled"; echo "$out" | tail -10; fail=1
+    elif echo "$out" | grep -q "independent clocks" && ! echo "$out" | grep -q "async-fifo x1"; then
+        echo "::error::$f: independent-clock FIFO not recognized as an asynchronous FIFO"; fail=1
+    fi
+done
+echo "ok   $n Digilent FIFO .xci models"
 exit $fail

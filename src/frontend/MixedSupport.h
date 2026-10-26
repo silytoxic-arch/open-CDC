@@ -13,9 +13,10 @@ namespace opencdc::frontend::detail {
 
 /// Note attached to "unknown module" errors.
 inline constexpr const char* kUnknownModuleHint =
-    "if it is a vendor IP core (e.g. a Vivado FIFO Generator or a Quartus megafunction), add the HDL the IP "
-    "generates (Vivado: <ip>/synth/<ip>.v or .vhd, or its simulation netlist) to the sources, or set the project "
-    "option 'unknownModules' to 'blackbox' to analyze the rest of the design around it";
+    "if it is a vendor IP core: add its Vivado configuration <ip>.xci to the sources (FIFO Generator, "
+    "AXI4-Stream Data FIFO, ILA and VIO are modelled from it), or the HDL the IP generates (Vivado: "
+    "<ip>/synth/<ip>.v or .vhd, or its simulation netlist; Quartus: the megafunction's .v/.vhd), or set the "
+    "project option 'unknownModules' to 'blackbox' to analyze the rest of the design around it";
 
 struct VerilogMixedOptions {
     /// Definitions provided by the other language: instances of them are kept

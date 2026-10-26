@@ -266,8 +266,13 @@ void Elaborator::applyContext(Scope& scope, const std::vector<ContextItem>& item
                             continue;
                         if (pre.front()->kind == SymKind::Package)
                             scope.usedItems.emplace_back(&pre.front()->package->scope, name.ident.key);
-                        else if (pre.front()->kind == SymKind::Library)
-                            resolveName(name, ctx); // use lib.pkg; makes pkg visible as a name (ok)
+                        else if (pre.front()->kind == SymKind::Library) {
+                            // use lib.pkg; makes the package name directly visible (expanded names pkg.item)
+                            auto unit = resolveName(name, ctx);
+                            if (!unit.empty() && unit.front()->kind == SymKind::Package &&
+                                !scope.local(unit.front()->key))
+                                scope.add(unit.front());
+                        }
                     }
                 }
                 break;

@@ -1,8 +1,11 @@
 # 阶段 21：Analog Devices HDL 库验证
 
-日期：2026-10-26（进行中）
+日期：2026-10-26
 
-用 Analog Devices 的 HDL 库（`analogdevicesinc/hdl`，提交 `c9a501d`）验证工具。这是 FPGA 上使用最广的开源 IP 库之一。验证对象是 AD9361 收发器核 `axi_ad9361`，以及它在 fmcomms2 ZedBoard 工程中的系统连接。
+本阶段用两个真实的开源 IP 库验证工具：
+
+- **Analog Devices 的 HDL 库**（`analogdevicesinc/hdl`，提交 `c9a501d`）：FPGA 上使用最广的开源 IP 库之一。验证对象是 AD9361 收发器核 `axi_ad9361`，以及它在 fmcomms2 ZedBoard 工程中的系统连接。
+- **Digilent 的 vivado-library**（提交 `0362ce72`）：其中的 IP 直接以 `.xci` 的形式使用 Vivado IP。为此新增了从 `.xci` 建模 Vivado IP 的功能。
 
 ## 1. 完成的功能
 
@@ -59,6 +62,33 @@ fmcomms2 剩余的 21 条潜在风险经人工逐条确认，都是真实的组�
 - `enable_int` 的选择端 `tdd_mode` 与数据 `enable_up` 来自不同同步器；
 - TDD 计数器。
 
+
+### 1.5 从 `.xci` 建模 Vivado IP
+
+用户试用时，`fifo_8X4K`（Vivado FIFO Generator）因为没有 HDL 而无法分析。现在可以直接把 IP 的 `.xci` 文件加入源文件。工具读取配置（XML 和 JSON 两种格式），生成同名、同端口的 CDC 模型，详见 [docs/vivado-ip.md](../vivado-ip.md)。
+
+| IP | 模型 |
+|---|---|
+| FIFO Generator 12.x/13.x（Native 与 AXI-Stream） | 独立时钟时，Gray 指针经 `C_SYNCHRONIZER_STAGE` 级同步，被识别为异步 FIFO；`rst` 在两个时钟域各自做复位同步。公共时钟时为单时钟 FIFO。可选端口按配置生成，各自属于自己的时钟域。支持标准读和首字直通（FWFT），支持读写宽度不同。 |
+| AXI4-Stream Data FIFO | 同上；端口由 `C_AXIS_SIGNAL_SET` 决定。 |
+| ILA | 只接收信号；约束中引用 ILA 内部（`*ila_core_inst/*`）的命令降为提示。 |
+| VIO | `probe_out` 是 `clk` 域的寄存器（VIO 内部把 JTAG 写入的值同步到 `clk`）。 |
+
+其他 IP（如 clk_wiz、blk_mem_gen）给出 `FE-XCI-UNSUPPORTED` 警告，仍按未知模块处理。
+
+验证：
+- Digilent vivado-library 的 13 个 FIFO `.xci`（12 个 FIFO Generator，1 个 axis_data_fifo；Native 和 AXI-Stream；公共时钟和独立时钟）全部建模成功；独立时钟的都被识别为异步 FIFO。
+- 两个完整的 Digilent IP 端到端通过：
+  - ZmodScopeController：VHDL，含 FIFO Generator、MMCM、OSERDES，以及 Digilent 自己的 SyncAsync/HandshakeData/ResetBridge；
+  - MIPI CSI-2 接收器：VHDL，含 AXI-Stream FIFO Generator、axis_data_fifo 和 3 个 ILA。
+- 在 ZmodScopeController 中发现一处真实问题：`sInitDoneADC and sInitDoneRelay` 先做与运算再进入同步器（CDC-004）。
+
+### 1.6 Digilent 代码暴露的 VHDL 前端问题
+
+- `use work.DebugLib;`（没有 `.all`）没有让包名可见，`DebugLib.DebugLM_t` 这样的扩展名报"未声明"。现在 `use lib.pkg;` 会让包名直接可见。
+- 偏移量可变、宽度固定的切片做赋值目标（`rbTdataInt((i+cnt+1)*8-1 downto (i+cnt)*8) <= ...`）报"范围必须是静态的"。以前只有读取一侧支持。现在赋值目标拆成逐元素的动态插入。两个边界必须是同一个变量的同一线性倍数（`k*x + c`）。
+- 混合语言时顶层名写错，以前报 slang 的 "not a valid top-level module"，看不出原因。现在说明顶层既不是 VHDL 实体也不是 Verilog 模块，并列出最相近的名字。
+
 ## 2. 修改的文件
 
 - `src/ir/BodyEditor.cpp`：`compareWithBit`，比较写法的复位条件。
@@ -70,11 +100,31 @@ fmcomms2 剩余的 21 条潜在风险经人工逐条确认，都是真实的组�
   - `FamilyCache`：跨调用缓存与预算。
 - `src/cdc/AdvancedAnalysis.cpp`：汇聚判定使用标签族，成员为（标签集合, 条件）的驻留对。
 - `tools/ci/sv-corpus.sh`：新增 ADI fmcomms2 工程。
+- `src/frontend/XciModels.{h,cpp}`（新）：解析 `.xci` 并生成 FIFO Generator、AXI4-Stream Data FIFO、ILA、VIO 的模型。
+- `src/frontend/AutoFrontend.cpp`：入口处把 `.xci` 替换为生成的模型；顶层名不存在时给出相近名字。
+- `src/frontend/MixedSupport.h`：未知模块提示中加入 `.xci` 的用法。
+- `src/frontend/vhdl/VhdlScope.cpp`：`use lib.pkg;` 的包名可见性。
+- `src/frontend/vhdl/VhdlNames.cpp`、`VhdlElab.h`：`sliceSpan`；可变偏移切片作为赋值目标。
+- `src/constraints/Sdc.cpp`：调试核内部引用降为提示；带过滤器的未匹配查询统一报告。
+- `src/gui/ProjectEditor.cpp`：文件对话框接受 `.xci`。
+- `tools/ci/vhdl-corpus.sh`：
+  - 新增 Digilent vivado-library（308 个 VHDL 文件全部解析）；
+  - 新增 ZmodScopeController、MIPI CSI-2 两个工程；
+  - 13 个 FIFO `.xci` 逐个检查。
 - 测试：
   - `tests/ir_extract/test_ir_extract.cpp`：比较写法的复位，正例 4 种写法，负例为多位比较和信号比较；
   - `tests/engine/test_adi_patterns.cpp`（新）：toggle 同步器的端到端测试，正例 3 种复位写法，负例为复位不掩盖未同步路径；
   - `tests/cdc/test_cdc.cpp`：`get_pins` 的 PRE/CLR/D/CE，含正例和负例；
   - `tests/cdc/test_cdc_advanced.cpp`：读出互斥。负例覆盖 case、跨子模块"或"和下游复制寄存器；正例覆盖旁边真正的 `a2 & c2`，以及地址范围相同时的"或"。
+  - `tests/frontend/test_xci.cpp`（新），6 个用例：
+    - JSON 独立时钟 FIFO 识别为异步 FIFO，未建模输出有说明；
+    - 负例：公共时钟 FIFO 跨域读取仍报告；
+    - XML 端口推导，以及 VHDL 组件例化的端到端；
+    - axis_data_fifo 的字段布局；
+    - 负例：AXI4 FIFO、非 IP 文件、clk_wiz 仍是未知模块，黑盒模式下照常分析；
+    - ILA/VIO，以及约束中 ILA 内部引用为提示。
+  - `tests/vhdl/test_vhdl_elab.cpp`：可变偏移切片目标（负例为边界变量不同）；`use lib.pkg;` 加扩展名（负例为没有 use 子句）。
+  - `tests/vhdl/test_vhdl_mixed.cpp`：顶层名建议（负例为毫不相近的名字）。
 - 文档：`docs/rules/CDC-005.md`、`README.md`。
 
 ## 3. 测试有效性
@@ -94,4 +144,5 @@ microwatt Arty（2445 个寄存器、173 条跨域路径，语料库中最大的
 
 - 互斥只从"同一拍内寄存器取值与常量比较"的条件推出。独热编码、不同信号的 `if/else if` 优先级链、依赖数据的互斥都证明不了，仍会报告。
 - 带使能的读出寄存器会丢弃条件。
-- 还不能读取 Vivado IP 的 .xci 文件（例如 FIFO Generator）直接建模。
+- `.xci` 模型是 CDC 模型，不是功能模型。clk_wiz（时钟 IP）、blk_mem_gen（双时钟 BRAM）、AXI4 接口的 FIFO 还没有模型。`.xcix` 压缩容器不能直接读取。
+- VHDL 时钟进程中，在时钟分支之外用变量给信号赋值（Digilent LLP.vhd 的 `sAxisTready`），仿真语义相当于寄存器，Vivado 综合为导线。工具按寄存器处理，并给出 VHDL-ASYNC-LOAD 警告。

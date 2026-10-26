@@ -15,6 +15,7 @@
 #include "frontend/Frontend.h"
 #include "frontend/MixedSupport.h"
 #include "frontend/Primitives.h"
+#include "frontend/XciModels.h"
 #include "core/Version.h"
 #include "frontend/vhdl/VhdlElab.h"
 
@@ -495,6 +496,46 @@ public:
                                  "mixed-language elaboration did not converge (Verilog <-> VHDL nesting deeper than " +
                                      std::to_string(kMaxRounds) + " levels?)",
                                  {}, {}});
+        // a top that names nothing: suggest the closest VHDL entities / Verilog modules
+        for (auto& d : lastDiags) {
+            if (d.code != "FE-SLANG-InvalidTopModule" || input_.top.empty())
+                continue;
+            std::vector<std::string> names;
+            for (const auto& v : vhdlDefs)
+                names.push_back(v.name);
+            for (const auto& v : verilogDefs_)
+                names.push_back(v.name);
+            const std::string want = lower(input_.top);
+            auto distance = [](const std::string& a, const std::string& b) {
+                std::vector<std::size_t> row(b.size() + 1);
+                for (std::size_t j = 0; j <= b.size(); ++j)
+                    row[j] = j;
+                for (std::size_t i = 1; i <= a.size(); ++i) {
+                    std::size_t diag = row[0];
+                    row[0] = i;
+                    for (std::size_t j = 1; j <= b.size(); ++j) {
+                        const std::size_t up = row[j];
+                        row[j] = std::min({row[j] + 1, row[j - 1] + 1, diag + (a[i - 1] == b[j - 1] ? 0U : 1U)});
+                        diag = up;
+                    }
+                }
+                return row[b.size()];
+            };
+            std::vector<std::pair<std::size_t, std::string>> close;
+            for (const auto& n : names) {
+                const std::size_t dist = distance(want, lower(n));
+                if (dist <= std::max<std::size_t>(3, want.size() / 3))
+                    close.emplace_back(dist, n);
+            }
+            std::ranges::sort(close);
+            d.message = "top '" + input_.top + "' is neither a VHDL entity nor a Verilog module of the sources";
+            if (!close.empty()) {
+                std::string list;
+                for (std::size_t k = 0; k < close.size() && k < 3; ++k)
+                    list += (k ? ", '" : "'") + close[k].second + "'";
+                d.notes.push_back("did you mean " + list + "?");
+            }
+        }
         // names the diagnostics already talk about (unresolved instances below)
         std::set<std::string> mentioned;
         {
@@ -732,7 +773,37 @@ private:
 
 class AutoFrontend final : public IFrontend {
 public:
-    Result<FrontendOutput> elaborate(const FrontendInput& input, DiagnosticSink& sink) override {
+    Result<FrontendOutput> elaborate(const FrontendInput& original, DiagnosticSink& sink) override {
+        // Vivado IP configurations (.xci) are replaced by generated models
+        FrontendInput input = original;
+        if (std::ranges::any_of(input.sourceFiles, isXciFile)) {
+            input.sourceFiles.clear();
+            input.sourceLibraries.clear();
+            for (std::size_t i = 0; i < original.sourceFiles.size(); ++i) {
+                const auto& f = original.sourceFiles[i];
+                const std::string lib = i < original.sourceLibraries.size() ? original.sourceLibraries[i] : std::string();
+                if (!isXciFile(f)) {
+                    input.sourceFiles.push_back(f);
+                    input.sourceLibraries.push_back(lib);
+                    continue;
+                }
+                auto model = modelFromXci(f);
+                if (!model) {
+                    sink.report(std::move(model).error()); // the IP stays an unknown module
+                    continue;
+                }
+                const auto& mv = model.value();
+                const auto path = primitiveDir() / (mv.module + "_xci_" +
+                                                    std::to_string(std::hash<std::string>{}(mv.verilog) % 1000000) + ".v");
+                writeIfChanged(path, mv.verilog);
+                input.sourceFiles.push_back(path);
+                input.sourceLibraries.push_back(std::string());
+                Diagnostic d{"FE-XCI-MODEL", Severity::Info,
+                             "IP '" + mv.module + "' (" + mv.ip + ") modelled from its configuration: " + mv.summary,
+                             SourceLocation{toUtf8(f), 0, 0}, mv.notes};
+                sink.report(std::move(d));
+            }
+        }
         const auto vhdl = std::ranges::count_if(input.sourceFiles, isVhdlFile);
         if (vhdl == 0) {
             // Verilog only: instances of modelled vendor primitives are

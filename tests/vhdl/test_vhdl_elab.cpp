@@ -904,3 +904,55 @@ TEST_CASE("VHDL: null slice targets and slices with multiplied bounds", "[vhdl][
     CHECK(r.count("VHDL-AMBIGUOUS") == 0);
     CHECK(r.has("[64] = dyn_select<1@127:0>(A=d"));
 }
+
+TEST_CASE("VHDL: slice target with a variable offset and a fixed width", "[vhdl][elab]") {
+    // Digilent MIPI CSI-2 lane merger: rbTdataInt((i+cnt+1)*8-1 downto (i+cnt)*8) <= ...
+    auto r = elaborate(lib("entity t is port (clk : in std_logic; cnt : in natural range 0 to 2;\n"
+                           "  d : in std_logic_vector(15 downto 0); q : out std_logic_vector(31 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  signal acc : std_logic_vector(31 downto 0);\n"
+                           "begin\n"
+                           "  process (clk) begin\n"
+                           "    if rising_edge(clk) then\n"
+                           "      for i in 0 to 1 loop\n"
+                           "        acc((i+cnt+1)*8-1 downto (i+cnt)*8) <= d((i+1)*8-1 downto i*8);\n"
+                           "      end loop;\n"
+                           "    end if;\n"
+                           "  end process;\n"
+                           "  q <= acc;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-NOT-STATIC") == 0);
+    CHECK(r.has("dyn_insert"));
+    // negative: bounds with different variable parts have no fixed width
+    auto bad = elaborate(lib("entity t is port (clk : in std_logic; a, b : in natural range 0 to 2;\n"
+                             "  d : in std_logic_vector(7 downto 0); q : out std_logic_vector(31 downto 0)); end;\n"
+                             "architecture rtl of t is begin\n"
+                             "  process (clk) begin\n"
+                             "    if rising_edge(clk) then q(a*8+7 downto b*8) <= d; end if;\n"
+                             "  end process;\n"
+                             "end;\n"),
+                         "t");
+    CHECK(bad.count("VHDL-NOT-STATIC") == 1);
+}
+
+TEST_CASE("VHDL: 'use lib.pkg;' makes the package name visible for expanded names", "[vhdl][elab]") {
+    const std::string pkg = lib("package dbg is\n"
+                                "  type dbg_t is record a : std_logic; b : std_logic_vector(1 downto 0); end record;\n"
+                                "end package;\n");
+    const std::string body = "library work;\nuse work.dbg;\n" +
+                             lib("entity t is port (x : in std_logic; q : out dbg.dbg_t); end;\n"
+                                 "architecture rtl of t is begin\n"
+                                 "  q.a <= x; q.b <= x & x;\n"
+                                 "end;\n");
+    auto r = elaborate({{"dbg.vhd", pkg, ""}, {"t.vhd", body, ""}}, "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    // negative: without the use clause the package name is not visible
+    std::string noUse = body;
+    noUse.replace(noUse.find("use work.dbg;\n"), 14, "");
+    auto bad = elaborate({{"dbg.vhd", pkg, ""}, {"t.vhd", noUse, ""}}, "t");
+    CHECK(bad.count("VHDL-UNDECLARED") >= 1);
+}

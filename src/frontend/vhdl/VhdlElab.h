@@ -499,6 +499,10 @@ public:
     /// a(x + k downto x): a slice whose bounds vary but whose length is
     /// static. nullopt when the range is not of that form.
     std::optional<SVal> dynamicSlice(const SVal& arr, const Expr& range, Ctx& ctx, Loc l);
+    /// Number of elements minus one of a slice `range` whose bounds are
+    /// k * x + c with the same non-static x and k (a variable offset, a fixed
+    /// width: `v((i+1)*8-1 downto i*8)`); nullopt otherwise.
+    std::optional<std::int64_t> sliceSpan(const Expr& range, Ctx& ctx);
     SVal fieldValue(const SVal& rec, std::size_t field, Loc l);
     SVal evalAggregate(const Expr& e, Ctx& ctx, const Type* expected);
     SVal evalStringLiteral(const std::string& text, const Type* expected, Loc l);

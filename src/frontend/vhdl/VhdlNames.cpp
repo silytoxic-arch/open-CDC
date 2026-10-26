@@ -157,11 +157,8 @@ bool sameExpr(const Expr* a, const Expr* b) {
 
 } // namespace
 
-std::optional<SVal> Elaborator::dynamicSlice(const SVal& arr, const Expr& range, Ctx& ctx, Loc l) {
-    if (range.kind != ExprKind::Range || !body || !body->ed)
-        return std::nullopt;
-    const Type& T = *arr.type;
-    if (!T.isArray() || T.indexTypes.size() != 1 || !T.indexRanges[0])
+std::optional<std::int64_t> Elaborator::sliceSpan(const Expr& range, Ctx& ctx) {
+    if (range.kind != ExprKind::Range)
         return std::nullopt;
     // e = k * base + c with k, c static (base null: e itself is static)
     struct Linear {
@@ -195,8 +192,20 @@ std::optional<SVal> Elaborator::dynamicSlice(const SVal& arr, const Expr& range,
     const Linear rt = linear(*range.rhs);
     if (!lf.base || !rt.base || !sameExpr(lf.base, rt.base) || lf.k != rt.k)
         return std::nullopt;
+    return range.dir == RangeDir::To ? rt.c - lf.c : lf.c - rt.c;
+}
+
+std::optional<SVal> Elaborator::dynamicSlice(const SVal& arr, const Expr& range, Ctx& ctx, Loc l) {
+    if (range.kind != ExprKind::Range || !body || !body->ed)
+        return std::nullopt;
+    const Type& T = *arr.type;
+    if (!T.isArray() || T.indexTypes.size() != 1 || !T.indexRanges[0])
+        return std::nullopt;
+    const auto spanOpt = sliceSpan(range, ctx);
+    if (!spanOpt)
+        return std::nullopt;
+    const std::int64_t span = *spanOpt;
     const bool ascending = range.dir == RangeDir::To;
-    const std::int64_t span = ascending ? rt.c - lf.c : lf.c - rt.c;
     const IntRange& ar = *T.indexRanges[0];
     if (span < 0 || ascending != ar.ascending || static_cast<std::uint64_t>(span) >= ar.length())
         return std::nullopt;
@@ -1378,7 +1387,50 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
             std::uint32_t& off = t.dynamic ? t.subOffset : t.offset;
             const auto ew = bitWidth(*T->element).value_or(0);
             if (e.args.size() == 1 && isRangeChoice(*e.args[0].actual)) {
-                auto r = discreteRange(*e.args[0].actual, ctx);
+                const Expr& re = *e.args[0].actual;
+                // a variable offset with a fixed width (v((i+1)*8-1 downto i*8) <= x): one
+                // dynamic element target per element, left to right
+                if (re.kind == ExprKind::Range && T->indexRanges[0] && T->indexTypes.size() == 1 && body &&
+                    body->ed && (!constInt(*re.lhs, ctx) || !constInt(*re.rhs, ctx))) {
+                    const IntRange& ar = *T->indexRanges[0];
+                    const auto span = sliceSpan(re, ctx);
+                    if (span && *span >= 0 && static_cast<std::uint64_t>(*span) < ar.length() &&
+                        (re.dir == RangeDir::To) == ar.ascending && ew > 0) {
+                        if (t.dynamic || t.sub) {
+                            unsupported("IR-UNSUPPORTED-TARGET", "two variable indexes in one assignment target", e.loc);
+                            return false;
+                        }
+                        const Type* it = T->indexTypes.front();
+                        const SVal right = convert(eval(*re.rhs, ctx, it), it, ctx, e.loc);
+                        const ir::SigSpec rightBits = bitsOf(right, e.loc).resized(32, isSignedInteger(*right.type));
+                        const auto n = static_cast<std::uint64_t>(*span) + 1;
+                        for (std::uint64_t m = 0; m < n; ++m) {
+                            // descending (L downto R): L = R + n-1 first; ascending (L to R): L = R - (n-1) first
+                            const std::int64_t delta = ar.ascending ? -static_cast<std::int64_t>(n - 1 - m)
+                                                                    : static_cast<std::int64_t>(n - 1 - m);
+                            Target d = t;
+                            d.dynamic = true;
+                            d.index = delta == 0 ? rightBits
+                                                 : cell(ir::CellKind::Add,
+                                                        {rightBits, ir::SigSpec::constant(static_cast<std::uint64_t>(delta), 32)},
+                                                        32, e.loc, true);
+                            d.indexSigned = true;
+                            d.elemWidth = ew;
+                            d.regionOffset = t.offset;
+                            d.regionWidth = t.width;
+                            d.range = ar;
+                            d.type = T->element;
+                            d.width = ew;
+                            out.push_back(d);
+                        }
+                        const IntRange sr = ar.ascending
+                                                ? IntRange{ar.left, ar.left + static_cast<std::int64_t>(n) - 1, true}
+                                                : IntRange{ar.right + static_cast<std::int64_t>(n) - 1, ar.right, false};
+                        setType(types.constrainedArray(T, {sr}));
+                        return true;
+                    }
+                }
+                auto r = discreteRange(re, ctx);
                 if (!r || !T->indexRanges[0])
                     return false;
                 const IntRange& ar = *T->indexRanges[0];
