@@ -1109,6 +1109,16 @@ public:
 
     std::uint32_t single(std::size_t label) { return intern({label}); }
 
+    std::uint32_t intersect(std::uint32_t a, std::uint32_t b) {
+        if (a == b)
+            return a;
+        if (a == 0 || b == 0)
+            return 0;
+        std::vector<std::size_t> common;
+        std::ranges::set_intersection(sets_[a], sets_[b], std::back_inserter(common));
+        return intern(std::move(common));
+    }
+
     std::uint32_t unite(std::uint32_t a, std::uint32_t b) {
         if (a == b || b == 0)
             return a;
@@ -1143,6 +1153,13 @@ private:
     std::vector<std::vector<std::size_t>> sets_; ///< sorted
     std::unordered_map<std::size_t, std::vector<std::uint32_t>> index_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> unions_;
+};
+
+/// A register bit value `delay` cycles before an evaluation (reconvergence conditions).
+struct GFact {
+    std::uint32_t node = 0, bit = 0, delay = 0;
+    bool value = false;
+    friend auto operator<=>(const GFact&, const GFact&) = default;
 };
 
 } // namespace
@@ -1364,15 +1381,196 @@ void analyzeConvergence(State& st) {
         meetsCache.emplace(id, found);
         return found;
     };
-    auto meeting = [&](std::size_t reg) {
+    // Refinement of the label union of a data bit: the labels one evaluation
+    // reads together. Different data inputs of a multiplexer are read one at a
+    // time (a register read-back `case`), and inputs under contradicting
+    // conditions (`addr == A` and `addr == B`, one cycle each) never together.
+    // Members are interned (label set, condition) pairs; conditions are
+    // register bit values `delay` cycles before the evaluation.
+    std::vector<std::vector<GFact>> guards{{}};
+    std::map<std::vector<GFact>, std::uint32_t> guardIndex{{{}, 0}};
+    auto internGuard = [&](std::vector<GFact> g) {
+        auto [it, inserted] = guardIndex.emplace(g, static_cast<std::uint32_t>(guards.size()));
+        if (inserted)
+            guards.push_back(std::move(g));
+        return it->second;
+    };
+    // merged conditions, or nullopt on a contradiction
+    auto mergeGuards = [&](const std::vector<GFact>& a, const std::vector<GFact>& b) -> std::optional<std::vector<GFact>> {
+        std::vector<GFact> m;
+        m.reserve(a.size() + b.size());
+        std::ranges::merge(a, b, std::back_inserter(m));
+        m.erase(std::unique(m.begin(), m.end()), m.end());
+        for (std::size_t i = 1; i < m.size(); ++i)
+            if (m[i].node == m[i - 1].node && m[i].bit == m[i - 1].bit && m[i].delay == m[i - 1].delay)
+                return std::nullopt;
+        return m;
+    };
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> members{{0, 0}}; // id -> (label set, guard)
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> memberIndex{{{0, 0}, 0}};
+    auto member = [&](std::uint32_t labelSet, std::uint32_t guard) {
+        auto [it, inserted] = memberIndex.emplace(std::pair{labelSet, guard}, static_cast<std::uint32_t>(members.size()));
+        if (inserted)
+            members.emplace_back(labelSet, guard);
+        return it->second;
+    };
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> uniteMemo;
+    SeqGraph::FamilyOps ops;
+    ops.unite = [&](std::uint32_t a, std::uint32_t b) -> std::uint32_t {
+        if (a == SeqGraph::kInfeasible || b == SeqGraph::kInfeasible)
+            return SeqGraph::kInfeasible;
+        if (a == b || b == 0)
+            return a;
+        if (a == 0)
+            return b;
+        const auto key = a < b ? std::pair{a, b} : std::pair{b, a};
+        if (auto it = uniteMemo.find(key); it != uniteMemo.end())
+            return it->second;
+        const auto [la, ga] = members[a];
+        const auto [lb, gb] = members[b];
+        std::uint32_t id = SeqGraph::kInfeasible;
+        if (auto g = mergeGuards(guards[ga], guards[gb]))
+            id = member(sets.unite(la, lb), internGuard(std::move(*g)));
+        uniteMemo.emplace(key, id);
+        return id;
+    };
+    ops.restrict = [&](std::uint32_t m, const std::vector<SeqGraph::Fact>& facts) -> std::uint32_t {
+        if (m == SeqGraph::kInfeasible)
+            return m;
+        std::vector<GFact> add;
+        for (const auto& f : facts)
+            add.push_back({f.node, f.bit, 0, f.value});
+        std::ranges::sort(add);
+        add.erase(std::unique(add.begin(), add.end()), add.end());
+        for (std::size_t i = 1; i < add.size(); ++i)
+            if (add[i].node == add[i - 1].node && add[i].bit == add[i - 1].bit)
+                return SeqGraph::kInfeasible; // the select value itself is impossible
+        const auto [l, g] = members[m];
+        auto merged = mergeGuards(guards[g], add);
+        return merged ? member(l, internGuard(std::move(*merged))) : SeqGraph::kInfeasible;
+    };
+    ops.labelsOnly = [&](std::uint32_t m) {
+        return m == SeqGraph::kInfeasible ? m : member(members[m].first, 0);
+    };
+    ops.subsumes = [&](std::uint32_t a, std::uint32_t b) {
+        const auto [la, ga] = members[a];
+        const auto [lb, gb] = members[b];
+        return std::ranges::includes(sets.get(la), sets.get(lb)) && std::ranges::includes(guards[gb], guards[ga]);
+    };
+    ops.either = [&](std::uint32_t a, std::uint32_t b) -> std::uint32_t {
+        if (a == SeqGraph::kInfeasible)
+            return b;
+        if (b == SeqGraph::kInfeasible || a == b)
+            return a;
+        const auto [la, ga] = members[a];
+        const auto [lb, gb] = members[b];
+        std::vector<GFact> common;
+        std::ranges::set_intersection(guards[ga], guards[gb], std::back_inserter(common));
+        return member(sets.unite(la, lb), internGuard(std::move(common)));
+    };
+    auto wholeOf = [&](std::size_t reg) -> std::uint32_t {
+        auto it = labels.find(reg);
+        if (it == labels.end())
+            return 0;
+        auto w = it->second.find(kWhole);
+        return w == it->second.end() ? 0 : w->second;
+    };
+    std::map<StageRef, std::vector<std::size_t>> lastByBit(lastOf.begin(), lastOf.end());
+    auto plainLabel = [&](std::uint32_t node, std::uint32_t bit) {
+        std::uint32_t id = 0;
+        if (auto it = lastByBit.find({node, bit}); it != lastByBit.end())
+            for (const auto pi : it->second)
+                id = sets.unite(id, sets.single(pi));
+        if (auto it = labels.find(node); it != labels.end()) {
+            if (auto b = it->second.find(bit); b != it->second.end())
+                id = sets.unite(id, b->second);
+        }
+        return sets.unite(id, wholeOf(node));
+    };
+    // Cell families per clock domain (labels outside the domain do not count).
+    std::map<std::vector<std::pair<std::uint32_t, int>>, SeqGraph::FamilyCache> familyCaches;
+    auto cacheFor = [&](std::size_t reg) -> SeqGraph::FamilyCache& {
+        std::vector<std::pair<std::uint32_t, int>> key;
+        for (const auto& ce : st.domain[reg])
+            key.emplace_back(ce.clock.value, static_cast<int>(ce.edge));
+        return familyCaches[key];
+    };
+    // Family of a register output bit, conditions shifted by one cycle.
+    std::map<StageRef, std::vector<std::uint32_t>> familyMemo;
+    std::set<StageRef> inProgress;
+    std::size_t evalDomainOf = 0; // register whose clock domain the walk is in
+    ops.leaf = [&](std::uint32_t node, std::uint32_t bit) -> std::vector<std::uint32_t> {
+        // labels only mean something inside the destination domain
+        if (st.domain[node] != st.domain[evalDomainOf])
+            return {0};
+        const StageRef ref{node, bit};
+        if (auto it = familyMemo.find(ref); it != familyMemo.end())
+            return it->second;
+        const std::uint32_t plain = member(plainLabel(node, bit), 0);
+        // synchronizer outputs, unlabeled registers, latches, loops and deep
+        // register nesting: as is
+        if (plain == 0 || lastByBit.contains(ref) || !st.isRegister(node) || !labels.contains(node) ||
+            inProgress.contains(ref) || inProgress.size() >= 2)
+            return {plain};
+        inProgress.insert(ref);
+        auto fam = st.sg.dataAlternatives(node, bit, ops, cacheFor(evalDomainOf));
+        inProgress.erase(ref);
         std::vector<std::uint32_t> out;
-        const auto& bl = labels[reg];
+        const bool holds = !st.sg.pinBits(node, Pin::Enable).empty();
+        const std::uint32_t whole = member(wholeOf(node), 0);
+        // one cycle later: conditions refer to one more cycle back
+        auto shift = [&](std::uint32_t m) {
+            if (m == SeqGraph::kInfeasible)
+                return m;
+            const auto [l, g] = members[m];
+            if (holds || g == 0) // a register that may hold keeps no conditions
+                return member(l, 0);
+            std::vector<GFact> sg = guards[g];
+            for (auto& f : sg)
+                ++f.delay;
+            return member(l, internGuard(std::move(sg)));
+        };
+        const auto srstOff = st.sg.syncResetFacts(node, false);
+        if (!fam)
+            out = {plain};
+        else
+            for (auto m : *fam) {
+                if (srstOff) // the data input is taken while the reset is inactive
+                    m = ops.restrict(m, *srstOff);
+                out.push_back(ops.unite(shift(m), whole));
+            }
+        if (const auto srstOn = st.sg.syncResetFacts(node, true))
+            out.push_back(ops.unite(shift(ops.restrict(0, *srstOn)), whole)); // the reset value
+        std::erase(out, SeqGraph::kInfeasible);
+        std::ranges::sort(out);
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        if (out.empty())
+            out = {plain};
+        familyMemo.emplace(ref, out);
+        return out;
+    };
+    auto meeting = [&](std::size_t reg) {
+        evalDomainOf = reg;
+        std::vector<std::uint32_t> out;
+        const auto bl = labels[reg]; // copy: lookups below may add entries
         const auto whole = bl.contains(kWhole) ? bl.at(kWhole) : 0U;
         for (const auto& [bit, id] : bl) {
             if (bit == kWhole && bl.size() > 1)
                 continue;
             const auto all = sets.unite(id, whole);
-            if (meets(all) && std::ranges::find(out, all) == out.end())
+            if (!meets(all))
+                continue;
+            if (bit != kWhole)
+                if (const auto fam = st.sg.dataAlternatives(reg, bit, ops, cacheFor(reg))) {
+                    for (const auto m : *fam) {
+                        // a refinement of the union found by the propagation, never more
+                        const auto l = sets.intersect(sets.unite(members[m].first, whole), all);
+                        if (meets(l) && std::ranges::find(out, l) == out.end())
+                            out.push_back(l);
+                    }
+                    continue;
+                }
+            if (std::ranges::find(out, all) == out.end())
                 out.push_back(all);
         }
         return out;
@@ -1415,6 +1613,9 @@ void analyzeConvergence(State& st) {
         }
         std::ranges::sort(next);
         next.erase(std::unique(next.begin(), next.end()), next.end());
+        familyMemo.clear(); // labels grew
+        for (auto& [k, c] : familyCaches)
+            c.clear();
         for (const auto reg : next)
             if (!points.contains(reg))
                 if (auto m = meeting(reg); !m.empty()) {

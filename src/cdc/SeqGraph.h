@@ -5,6 +5,8 @@
 #include "graph/DesignView.h"
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -103,6 +105,50 @@ public:
     };
     [[nodiscard]] std::vector<CellInput> cellInputs(ir::InstanceId inst, std::size_t cell, std::uint32_t outBit) const;
 
+    /// Labels a data bit of a register can read *together* in one evaluation.
+    /// A mux passes one data input at a time (and always its select), so its
+    /// data inputs are alternatives, each under the condition the select
+    /// takes for it; an array select passes one element at a time; other
+    /// cells combine their inputs. The result is a family of members (opaque
+    /// ids of the caller, see FamilyOps); combinations whose conditions
+    /// contradict each other are dropped by the caller (kInfeasible).
+    /// nullopt when the cone is too large to walk.
+    struct Fact {
+        std::uint32_t node = 0; ///< register node
+        std::uint32_t bit = 0;
+        bool value = false;
+        friend auto operator<=>(const Fact&, const Fact&) = default;
+    };
+    static constexpr std::uint32_t kInfeasible = 0xFFFFFFFFu;
+    struct FamilyOps {
+        /// family of a register (or latch) output bit
+        std::function<std::vector<std::uint32_t>(std::uint32_t node, std::uint32_t bit)> leaf;
+        /// both members together (kInfeasible if their conditions contradict)
+        std::function<std::uint32_t(std::uint32_t, std::uint32_t)> unite;
+        /// a member under additional facts (current register values; kInfeasible on contradiction)
+        std::function<std::uint32_t(std::uint32_t, const std::vector<Fact>&)> restrict;
+        /// a member without its conditions
+        std::function<std::uint32_t(std::uint32_t)> labelsOnly;
+        /// one of two members: the union of their labels under the conditions both share
+        std::function<std::uint32_t(std::uint32_t, std::uint32_t)> either;
+        /// `a` makes `b` redundant: at least b's labels under at most b's conditions
+        std::function<bool(std::uint32_t a, std::uint32_t b)> subsumes;
+    };
+    static constexpr std::size_t kMaxFamily = 16;
+    /// Families of cells, shared by the calls that see the same labels and
+    /// clock domain (the caller clears it when they change), and the cell
+    /// evaluation budget left for them.
+    struct FamilyCache;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>> dataAlternatives(std::size_t globalReg, std::uint32_t bit,
+                                                                           const FamilyOps& ops, FamilyCache& cache) const;
+    /// Register bit values implied by `b == value` (through inverters, and/or,
+    /// comparisons with constants and muxes with a constant input); empty when
+    /// nothing is known.
+    [[nodiscard]] std::vector<Fact> implied(const graph::BitRef& b, bool value, int depth = 0) const;
+    /// Facts implied by the register's synchronous reset being active (or
+    /// not); nullopt when it has none.
+    [[nodiscard]] std::optional<std::vector<Fact>> syncResetFacts(std::size_t globalReg, bool active) const;
+
     [[nodiscard]] std::size_t combLoops() const noexcept { return combLoops_; }
     [[nodiscard]] std::size_t globalRegisterOf(ir::InstanceId inst, std::size_t reg) const {
         return view_.globalRegister(inst, reg);
@@ -147,6 +193,19 @@ private:
         std::uint32_t arst = 0, arstLen = 0;
     };
     static constexpr std::uint32_t kAll = 0xFFFFFFFFu;
+
+public:
+    struct FamilyCache {
+        std::unordered_map<CellKey, std::vector<std::uint32_t>, CellKeyHash> cells;
+        std::size_t used = 0;
+        std::size_t budget = 1'000'000; ///< cell evaluations; then callers fall back to the label union
+        void clear() {
+            cells.clear();
+            used = 0;
+        }
+    };
+
+private:
 
     std::uint32_t nodeFor(const graph::Driver& d);
     std::uint32_t intern(std::vector<ConeEntry>& entries);

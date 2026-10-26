@@ -416,6 +416,73 @@ TEST_CASE("CDC-005 negative: unrelated source clocks, packed bits, one synchroni
     CHECK(analyze(reconv("y <= {sa2, m2}"), kAsync3).hits("CDC-005") == 0);
 }
 
+namespace {
+
+// Analog Devices register read-back: synchronized status words of several
+// blocks, each read by address in a `case` and OR-ed together (a block
+// outputs 0 unless its own address range is read).
+std::string readBack(std::string_view extra) {
+    return "module blk #(parameter [1:0] ID = 0) (input clk, input [3:0] raddr, input rreq, input s, input t,\n"
+           "                                     output [1:0] rdata);\n"
+           "  reg [1:0] rdata_int;\n"
+           "  wire rreq_s = (raddr[3:2] == ID) ? rreq : 1'b0;\n"
+           "  always @(posedge clk)\n"
+           "    if (rreq_s == 1'b1) begin\n"
+           "      case (raddr[1:0])\n"
+           "        2'd0: rdata_int <= {1'b0, s};\n"
+           "        2'd1: rdata_int <= {1'b0, t};\n"
+           "        default: rdata_int <= 2'd0;\n"
+           "      endcase\n"
+           "    end else rdata_int <= 2'd0;\n"
+           "  assign rdata = rdata_int;\n"
+           "endmodule\n"
+           "module top(input clk_a, input clk_b, input [3:0] addr, input rd, input [2:0] d, output reg [1:0] q,\n"
+           "           output reg [1:0] q2, output reg y);\n"
+           "  reg src0, src1, src2;\n"
+           "  always @(posedge clk_a) begin src0 <= d[0]; src1 <= d[1]; src2 <= d[2]; end\n"
+           "  reg a1, a2, b1, b2, c1, c2;\n"
+           "  always @(posedge clk_b) begin a1 <= src0; a2 <= a1; b1 <= src1; b2 <= b1; c1 <= src2; c2 <= c1; end\n"
+           "  wire [2:0] s2 = {c2, b2, a2};\n"
+           "  reg [3:0] ra; reg rr;\n"
+           "  always @(posedge clk_b) begin ra <= addr; rr <= rd; end\n"
+           "  wire [1:0] r0, r1;\n"
+           "  blk #(.ID(0)) u0 (.clk(clk_b), .raddr(ra), .rreq(rr), .s(s2[0]), .t(s2[1]), .rdata(r0));\n"
+           "  blk #(.ID(1)) u1 (.clk(clk_b), .raddr(ra), .rreq(rr), .s(s2[2]), .t(1'b0), .rdata(r1));\n"
+           "  always @(posedge clk_b) q <= r0 | r1;\n"
+           "  always @(posedge clk_b) q2 <= q;\n" +
+           std::string(extra) + "endmodule\n";
+}
+
+} // namespace
+
+TEST_CASE("CDC-005 negative: register read-back selects one synchronized value at a time", "[CDC-005]") {
+    const std::string v = readBack("");
+    auto r = analyze(v, kAsync3);
+    // in a case (one address at a time), across blocks (exclusive address
+    // ranges), and one register further on (q2)
+    CHECK(r.hits("CDC-005") == 0);
+    CHECK(r.cdc->stats.synchronized == 3);
+}
+
+TEST_CASE("CDC-005 positive: combined synchronized values next to a read-back", "[CDC-005]") {
+    const std::string base = readBack("  always @(posedge clk_b) y <= a2 & c2;\n");
+    auto r = analyze(base, kAsync3);
+    // y really combines two synchronized signals; the read-back does not
+    REQUIRE(r.hits("CDC-005") == 2);
+    for (const auto& p : r.cdc->paths)
+        for (const auto& rv : p.reconvergences)
+            CHECK(rv.at == "top.y");
+
+    // both blocks with the same address range: the two words can be
+    // non-zero together, the OR combines them
+    std::string same = base;
+    same.replace(same.find("blk #(.ID(1))"), 13, "blk #(.ID(0))");
+    auto rs = analyze(same, kAsync3);
+    CHECK(std::ranges::any_of(rs.cdc->paths, [](const CdcPath& p) {
+        return std::ranges::any_of(p.reconvergences, [](const Reconvergence& rv) { return rv.at == "top.q"; });
+    }));
+}
+
 // ===========================================================================
 // CDC-006 asynchronous reset release
 // ===========================================================================

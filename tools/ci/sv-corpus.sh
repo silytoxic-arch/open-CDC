@@ -9,8 +9,11 @@
 # its own Vivado Tcl constraint scripts, its NexysVideo example (RGMII) with
 # its Vivado scripts, its DE2-115 example with its own
 # Quartus SDC (source + procedures), and the verilog-ethernet RGMII MAC with
-# its asynchronous frame FIFOs (Xilinx IDDR/ODDR/BUFR/BUFIO, four clocks); the
-# CDC summaries must match.
+# its asynchronous frame FIFOs (Xilinx IDDR/ODDR/BUFR/BUFIO, four clocks), and
+# Analog Devices' AD9361 core as the fmcomms2 ZedBoard block design connects it
+# (l_clk -> clk) with ADI's own IP constraints (toggle and reset synchronizers,
+# register read-back across many synchronized status words); the CDC
+# summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -29,6 +32,7 @@ fetch() { # name url commit
 fetch axi          https://github.com/pulp-platform/axi          39f5f2d51c5e524f6fc5cf8b6e901f7dcc5622d7
 fetch common_cells https://github.com/pulp-platform/common_cells c27bce39ebb2e6bae52f60960814a2afca7bd4cb
 fetch verilog-ethernet https://github.com/alexforencich/verilog-ethernet 77320a9471d19c7dd383914bc049e02d9f4f1ffb
+fetch adi-hdl      https://github.com/analogdevicesinc/hdl       c9a501d87a420d2e28aa9d931557bdb4122f3c4f
 
 cat > axi_cdc_top.sv <<'SV'
 module top (input logic src_clk, input logic src_rst_n, input logic dst_clk, input logic dst_rst_n);
@@ -161,6 +165,60 @@ cat > nexys_video.ocdc.json <<'JSON'
   "verilog-ethernet/lib/axis/syn/vivado/sync_reset.tcl"]}
 JSON
 
+# fmcomms2 (projects/fmcomms2/common/fmcomms2_bd.tcl): "ad_connect axi_ad9361/l_clk axi_ad9361/clk"
+python3 - <<'PY'
+import re
+src = open("adi-hdl/library/axi_ad9361/axi_ad9361.v").read()
+hdr = src[src.index("module axi_ad9361"):]
+hdr = hdr[:hdr.index(");")]
+decl, conn = [], []
+for line in hdr.splitlines():
+    line = re.sub(r"//.*", "", line).strip().rstrip(",")
+    m = re.match(r"(input|output|inout)\s*(\[[^\]]*\])?\s*(\w+)$", line)
+    if not m:
+        continue
+    d, w, n = m.group(1), m.group(2) or "", m.group(3)
+    if n == "clk":
+        conn.append("    .clk (l_clk)")
+        continue
+    decl.append(f"  {d} {w} {n}")
+    conn.append(f"    .{n} ({n})")
+open("fmcomms2_sys.v", "w").write(
+    "module fmcomms2_sys (\n" + ",\n".join(decl) + ");\n"
+    "  axi_ad9361 #(.ID(0)) i_axi_ad9361 (\n" + ",\n".join(conn) + ");\nendmodule\n")
+PY
+cat > ps7_clocks.xdc <<'XDC'
+# clocks the Zynq PS7 IP creates on FCLK_CLK0 (sys_cpu_clk) and FCLK_CLK1 (IODELAY reference)
+create_clock -name clk_fpga_0 -period 10 [get_ports s_axi_aclk]
+create_clock -name clk_fpga_1 -period 5 [get_ports delay_clk]
+XDC
+cat > fmcomms2.ocdc.json <<'JSON'
+{"format": "opencdc-project", "version": 1, "name": "fmcomms2_zed", "top": "fmcomms2_sys",
+ "sources": ["adi-hdl/library/common/ad_rst.v", "adi-hdl/library/xilinx/common/ad_data_clk.v",
+  "adi-hdl/library/xilinx/common/ad_data_in.v", "adi-hdl/library/xilinx/common/ad_data_out.v",
+  "adi-hdl/library/xilinx/common/ad_dcfilter.v", "adi-hdl/library/xilinx/common/ad_mul.v",
+  "adi-hdl/library/common/ad_pnmon.v", "adi-hdl/library/common/ad_dds_cordic_pipe.v",
+  "adi-hdl/library/common/ad_dds_sine_cordic.v", "adi-hdl/library/common/ad_dds_sine.v",
+  "adi-hdl/library/common/ad_dds_2.v", "adi-hdl/library/common/ad_dds_1.v", "adi-hdl/library/common/ad_dds.v",
+  "adi-hdl/library/common/ad_datafmt.v", "adi-hdl/library/common/ad_iqcor.v", "adi-hdl/library/common/ad_addsub.v",
+  "adi-hdl/library/common/ad_tdd_control.v", "adi-hdl/library/common/ad_pps_receiver.v",
+  "adi-hdl/library/common/up_axi.v", "adi-hdl/library/common/up_xfer_cntrl.v",
+  "adi-hdl/library/common/up_xfer_status.v", "adi-hdl/library/common/up_clock_mon.v",
+  "adi-hdl/library/common/up_delay_cntrl.v", "adi-hdl/library/common/up_adc_common.v",
+  "adi-hdl/library/common/up_adc_channel.v", "adi-hdl/library/common/up_dac_common.v",
+  "adi-hdl/library/common/up_dac_channel.v", "adi-hdl/library/common/up_tdd_cntrl.v",
+  "adi-hdl/library/axi_ad9361/xilinx/axi_ad9361_lvds_if.v", "adi-hdl/library/axi_ad9361/xilinx/axi_ad9361_cmos_if.v",
+  "adi-hdl/library/axi_ad9361/axi_ad9361_rx_pnmon.v", "adi-hdl/library/axi_ad9361/axi_ad9361_rx_channel.v",
+  "adi-hdl/library/axi_ad9361/axi_ad9361_rx.v", "adi-hdl/library/axi_ad9361/axi_ad9361_tx_channel.v",
+  "adi-hdl/library/axi_ad9361/axi_ad9361_tx.v", "adi-hdl/library/axi_ad9361/axi_ad9361_tdd.v",
+  "adi-hdl/library/axi_ad9361/axi_ad9361_tdd_if.v", "adi-hdl/library/axi_ad9361/axi_ad9361.v",
+  "fmcomms2_sys.v"],
+ "constraints": ["ps7_clocks.xdc",
+  "adi-hdl/library/xilinx/common/up_xfer_cntrl_constr.xdc", "adi-hdl/library/xilinx/common/ad_rst_constr.xdc",
+  "adi-hdl/library/xilinx/common/up_xfer_status_constr.xdc", "adi-hdl/library/xilinx/common/up_clock_mon_constr.xdc",
+  "adi-hdl/library/axi_ad9361/axi_ad9361_constr.xdc", "adi-hdl/projects/fmcomms2/zed/system_constr.xdc"]}
+JSON
+
 fail=0
 check() { # project expected-regex
     local out
@@ -176,4 +234,5 @@ check rgmii.ocdc.json "206/206 registers resolved.*async-fifo x2.*built-in model
 check arty_eth.ocdc.json "608/608 registers resolved.*Summary : 0 error\(s\), 9 warning\(s\).*CDC     : 27 crossing path\(s\), 27 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 0 path\(s\) at potential risk, 0 path\(s\) need review"
 check de2_115.ocdc.json "Clocks  : 13 \(618/618 registers resolved\).*enet0_tx_clk_125m  \[generated\] source=fpga.ENET0_GTX_CLK master=fpga.altpll_component.clk\[0\].*CDC-SOURCE-SYNC.*Summary : 0 error\(s\), 14 warning\(s\).*CDC     : 16 crossing path\(s\), 16 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 2 path\(s\) at potential risk, 0 path\(s\) need review"
 check nexys_video.ocdc.json "Clocks  : 4 \(645/645 registers resolved\).*built-in models used for vendor primitives: BUFG, BUFIO, BUFR, IBUFG, IDDR, IDELAYCTRL, IDELAYE2, MMCME2_BASE, ODDR.*Summary : 0 error\(s\), 9 warning\(s\).*CDC     : 16 crossing path\(s\), 16 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 2 path\(s\) at potential risk, 0 path\(s\) need review"
+check fmcomms2.ocdc.json "Clocks  : 3 \(1667/1667 registers resolved\).*built-in models used for vendor primitives: BUFG, DSP48E1, IBUFDS, IBUFGDS, IDELAYCTRL, MULT_MACRO, OBUF, OBUFDS.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 78 crossing path\(s\), 77 synchronized, 1 unsynchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 21 path\(s\) at potential risk, 0 path\(s\) need review"
 exit $fail
