@@ -692,7 +692,7 @@ TEST_CASE("Vendor Tcl constraint scripts: foreach over instances by REF_NAME, re
     // constrained; only the instance query (without -quiet) warns, as in Vivado
     auto none = analyze(v, clocks + withModule("axis_async_fifo"));
     CHECK(none.path("top.a", "top.u_s0.s1").relation == clock::ClockRelation::Unknown);
-    CHECK(none.countCode("CON-UNMATCHED") == 1);
+    CHECK(none.countSeverity("CON-UNMATCHED", Severity::Warning) == 1);
 }
 
 TEST_CASE("Path exceptions: reset source hunted through the netlist, reset pins alone, clock-to-register, -quiet", "[cdc][constraints]") {
@@ -742,6 +742,48 @@ TEST_CASE("Path exceptions: reset source hunted through the netlist, reset pins 
                                      "set_false_path -to [get_cells -hier -filter {nosuch_attr == TRUE}]\n");
     CHECK(quiet.countCode("CON-UNSUPPORTED-OPTION") == 2);
     CHECK(quiet.countSeverity("CON-UNSUPPORTED-OPTION", Severity::Warning) == 1);
+}
+
+TEST_CASE("get_pins by name: PRE/CLR/D/CE/R/S pins of flip-flops", "[cdc][constraints]") {
+    // ad_rst_constr.xdc: set_false_path -to [get_pins -hier *rst_sync_reg*/PRE]
+    constexpr const char* v = "module top(input clk_a, input clk_b, input en, input d, output q, output r, output w);\n"
+                              "  reg a, x1, s1, s2, e1;\n"
+                              "  reg rst_sync, rst_sync_d, rs_clr;\n"
+                              "  always @(posedge clk_a) begin a <= d; x1 <= d; end\n"
+                              "  always @(posedge clk_b) begin s1 <= a; s2 <= s1; end\n"
+                              "  always @(posedge clk_b) if (en) e1 <= a;\n"
+                              "  always @(posedge clk_b or posedge x1)\n"
+                              "    if (x1) begin rst_sync <= 1'b1; rst_sync_d <= 1'b1; end\n"
+                              "    else begin rst_sync <= 1'b0; rst_sync_d <= rst_sync; end\n"
+                              "  always @(posedge clk_b or posedge x1) if (x1) rs_clr <= 1'b0; else rs_clr <= 1'b1;\n"
+                              "  assign q = s2 ^ e1;\n"
+                              "  assign r = rst_sync_d;\n"
+                              "  assign w = rs_clr;\n"
+                              "endmodule\n";
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    auto pre = analyze(v, clocks + "set_false_path -to [get_pins -hier *rst_sync_reg*/PRE]\n");
+    CHECK(pre.countCode("CON-UNMATCHED") == 0);
+    CHECK(pre.path("top.x1", "top.rst_sync").relation == clock::ClockRelation::Asynchronous);
+    CHECK(std::ranges::find(pre.path("top.x1", "top.rst_sync").groupMembers, std::string("top.rst_sync_d")) !=
+          pre.path("top.x1", "top.rst_sync").groupMembers.end()); // grouped reset path
+    // negative: rs_clr is reset to 0, so its pin is CLR, not PRE
+    CHECK(pre.path("top.x1", "top.rs_clr").relation == clock::ClockRelation::Unknown);
+
+    auto clr = analyze(v, clocks + "set_false_path -to [get_pins rs_clr_reg/CLR]\n");
+    CHECK(clr.countCode("CON-UNMATCHED") == 0);
+    CHECK(clr.path("top.x1", "top.rs_clr").relation == clock::ClockRelation::Asynchronous);
+    // negative: the PRE pin of a cleared flop matches nothing
+    auto none = analyze(v, clocks + "set_false_path -to [get_pins rs_clr_reg/PRE]\n");
+    CHECK(none.countSeverity("CON-UNMATCHED", Severity::Warning) == 1);
+
+    // D and CE: data endpoints
+    auto data = analyze(v, clocks + "set_false_path -to [get_pins {s1_reg/D e1_reg/CE}]\n");
+    CHECK(data.countCode("CON-UNMATCHED") == 0);
+    CHECK(data.path("top.a", "top.s1").relation == clock::ClockRelation::Asynchronous);
+    // negative: a D pin does not cover the asynchronous reset of the same flop
+    auto d = analyze(v, clocks + "set_false_path -to [get_pins rst_sync_reg/D]\n");
+    CHECK(d.path("top.x1", "top.rst_sync").relation == clock::ClockRelation::Unknown);
 }
 
 TEST_CASE("Quartus SDC: procedures over instances, max delays between registers, '-from *'", "[cdc][constraints]") {

@@ -182,6 +182,32 @@ TEST_CASE("Synchronous reset (active high and active low)", "[extract][srst]") {
     CHECK(e.has("reg q2 <= d @(posedge clk) srst(!srst_n -> 1'b1)"));
 }
 
+TEST_CASE("Synchronous reset written as a comparison with a constant", "[extract][srst]") {
+    // Analog Devices style: if (rstn == 1'b0); also == 1, != 0 (32-bit) and != 1'b1
+    auto e = extract("module m(input clk, input r1, input r2, input r3, input r4, input d,\n"
+                     "         output reg q1, output reg q2, output reg q3, output reg q4);\n"
+                     "  always @(posedge clk) if (r1 == 1'b0) q1 <= 1'b0; else q1 <= d;\n"
+                     "  always @(posedge clk) if (r2 == 1) q2 <= 1'b1; else q2 <= d;\n"
+                     "  always @(posedge clk) if (r3 != 0) q3 <= 1'b0; else q3 <= d;\n"
+                     "  always @(posedge clk) if (r4 != 1'b1) q4 <= 1'b0; else q4 <= d;\n"
+                     "endmodule\n");
+    CHECK(e.has("reg q1 <= d @(posedge clk) srst(!r1 -> 1'b0)"));
+    CHECK(e.has("reg q2 <= d @(posedge clk) srst(r2 -> 1'b1)"));
+    CHECK(e.has("reg q3 <= d @(posedge clk) srst(r3 -> 1'b0)"));
+    CHECK(e.has("reg q4 <= d @(posedge clk) srst(!r4 -> 1'b0)"));
+}
+
+TEST_CASE("Comparisons that are not a reset stay in D", "[extract][srst]") {
+    // negative: a multi-bit compare (decoded state) and a compare of two
+    // signals select data, not a reset
+    auto e = extract("module m(input clk, input [1:0] s, input a, input b, input d,\n"
+                     "         output reg q1, output reg q2);\n"
+                     "  always @(posedge clk) if (s == 2'd0) q1 <= 1'b0; else q1 <= d;\n"
+                     "  always @(posedge clk) if (a == b) q2 <= 1'b0; else q2 <= d;\n"
+                     "endmodule\n");
+    CHECK_FALSE(e.contains("srst("));
+}
+
 TEST_CASE("Clock enable", "[extract][enable]") {
     auto e = extract("module m(input clk, input en, input [7:0] d, output reg [7:0] q);\n"
                      "  always @(posedge clk) if (en) q <= d;\n"

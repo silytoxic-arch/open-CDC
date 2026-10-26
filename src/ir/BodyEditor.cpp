@@ -128,6 +128,36 @@ void BodyEditor::finish(DiagnosticSink& sink, const std::function<void(const std
     checkMultipleDrivers(sink);
 }
 
+namespace {
+
+/// `x == 1'b0`, `x != 0`, `x == 1` ... where x is a 1-bit signal (possibly
+/// zero-extended to the width of the constant). Returns x and whether the
+/// comparison is true when x is 1.
+std::optional<std::pair<SigSpec, bool>> compareWithBit(const Cell& c) {
+    if ((c.kind != CellKind::Eq && c.kind != CellKind::Ne) || c.inputs.size() != 2 || c.width != 1)
+        return std::nullopt;
+    for (std::size_t side = 0; side < 2; ++side) {
+        const SigSpec& sig = c.inputs[side];
+        const SigSpec& other = c.inputs[1 - side];
+        const auto k = other.asConst();
+        if (!k || !k->isFullyDefined() || sig.width() != other.width() || sig.width() == 0)
+            continue;
+        const SigSpec bit0 = sig.bit(0);
+        if (bit0.isFullyConst())
+            continue;
+        if (sig.width() > 1) {
+            const auto upper = sig.extract(1, sig.width() - 1).asConst();
+            if (!upper || !upper->isZero() || !k->extract(1, k->width() - 1).isZero())
+                continue;
+        }
+        const bool one = (*k)[0] == Logic::L1;
+        return std::make_pair(bit0, c.kind == CellKind::Eq ? one : !one);
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
 void BodyEditor::extractControls(Register& r, const SourceLocation& l) {
     // Recognizes D = Mux(S, A, B) structures created by if/else:
     //   sync reset:  if (srst) q <= CONST; else q <= ...   (outermost)
@@ -155,10 +185,19 @@ void BodyEditor::extractControls(Register& r, const SourceLocation& l) {
             if (it == driverCell_.end())
                 break;
             const Cell& c = body_.cells[it->second];
-            if ((c.kind != CellKind::Not && c.kind != CellKind::LogicNot) || c.inputs[0].width() != 1)
-                break;
-            sig = c.inputs[0];
-            activeHigh = !activeHigh;
+            if ((c.kind == CellKind::Not || c.kind == CellKind::LogicNot) && c.inputs[0].width() == 1) {
+                sig = c.inputs[0];
+                activeHigh = !activeHigh;
+                continue;
+            }
+            // rst == 1'b0, rst != 0, rst == 1 ... (operands may be widened)
+            if (auto cmp = compareWithBit(c)) {
+                sig = cmp->first;
+                if (!cmp->second)
+                    activeHigh = !activeHigh;
+                continue;
+            }
+            break;
         }
         return std::make_pair(sig, activeHigh);
     };

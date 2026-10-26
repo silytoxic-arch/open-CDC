@@ -16,6 +16,7 @@ add_executable(opencdc_tests
     schematic/test_schematic.cpp
     DesignUtil.h
     engine/test_project_config.cpp
+    engine/test_adi_patterns.cpp
     engine/test_analysis_session.cpp
     engine/test_waivers.cpp
     engine/test_report.cpp

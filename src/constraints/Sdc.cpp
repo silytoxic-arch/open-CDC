@@ -15,6 +15,7 @@
 #include "core/TextEncoding.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <fstream>
@@ -328,11 +329,18 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
     const auto pin = pattern.substr(slash + 1);
     const bool q = globMatch(pin, "Q", nocase);
     const bool c = globMatch(pin, "C", nocase);
-    if (!q && !c)
+    // the input pins of FDRE/FDSE/FDCE/FDPE other than C
+    static constexpr std::array<std::string_view, 6> kInputs = {"D", "CE", "R", "S", "CLR", "PRE"};
+    const bool other = std::ranges::any_of(kInputs, [&](std::string_view p) { return globMatch(pin, p, nocase); });
+    if (!q && !c && !other)
         return out;
     buildRegisters();
     const auto regPattern = pattern.substr(0, slash);
     for (auto o : match(regs_, ObjectKind::Pin, regPattern, hierarchical, nocase)) {
+        if (other && o.item >= 0)
+            for (auto& p : registerPins(static_cast<std::size_t>(o.item), o.name, o.bits))
+                if (p.pin != "Q" && p.pin != "C" && globMatch(pin, p.pin, nocase))
+                    out.push_back(std::move(p));
         if (q) {
             Object qo = o;
             qo.name += "/Q";
