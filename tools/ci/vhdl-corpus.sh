@@ -17,7 +17,9 @@
 #    FIFO .xci of the Digilent library on its own, and two Digilent board
 #    demos with their Vivado IP (Cmod A7 GPIO: Clocking Wizard; Nexys A7 out-of-
 #    box demo: Clocking Wizard, block ROM, CORDIC, XADC, the DDR2 memory
-#    interface); the CDC summaries must match.
+#    interface), and four Pmod IP cores (Vivado block design netlists: AXI
+#    GPIO, IIC, UART 16550, Quad SPI, Slice, Concat; ports from the component
+#    files); the CDC summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -249,6 +251,15 @@ for k, path in enumerate(sorted(fifos)):
     json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": name, "sources": [path]},
               open(os.path.join(work, "dl_fifo_%02d.ocdc.json" % k), "w"), indent=1)
 open(os.path.join(work, "dl_fifo_count.txt"), "w").write(str(len(fifos)))
+# Pmod IP cores: Vivado block design netlists whose Xilinx IP is given as .xci
+# (ports from the component file next to each .xci); Digilent's own IP blocks
+# (pmod_bridge) are black boxes
+for pm in ["PmodGPIO", "PmodSF3", "PmodCOLOR", "PmodBT2"]:
+    d = glob.glob(os.path.join(dl, "Pmods", pm + "_v1_*", "src"))[0]
+    json.dump({"format": "opencdc-project", "version": 1, "name": pm, "top": pm,
+               "sources": [os.path.join(d, pm + ".v")] + sorted(glob.glob(os.path.join(d, "*", "*.xci"))),
+               "constraints": glob.glob(os.path.join(d, "*_ooc.xdc")), "options": {"unknownModules": "blackbox"}},
+              open(os.path.join(work, pm.lower() + ".ocdc.json"), "w"), indent=1)
 # Digilent board demos with their Vivado IP
 cm = os.path.join(work, "cmod-a7-gpio/src")
 json.dump({"format": "opencdc-project", "version": 1, "name": "cmod_a7_gpio", "top": "GPIO_demo",
@@ -293,6 +304,10 @@ check zmod_scope.ocdc.json  "Clocks  : 6 \\(170/170 registers resolved\\).*async
 check mipi_csi2_rx.ocdc.json "Clocks  : 3 \\(94/94 registers resolved\\).*async-fifo x1, reset-sync x3, two-flop x5.*IP 'cdc_fifo'.*AXI-Stream.*IP 'line_buffer'.*IP 'ila_rxclk'.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 12 crossing path\\(s\\), 11 synchronized, 1 unsynchronized"
 check cmod_a7_gpio.ocdc.json "Clocks  : 2 \\(37/37 registers resolved\\).*alias=clk_out1_clk_wiz_0.*\\(100 MHz\\).*IP 'clk_wiz_0' \\(xilinx.com:ip:clk_wiz:6.0\\) modelled.*MMCM, input 12 MHz.*Summary : 0 error\\(s\\), 0 warning"
 check nexys_a7_oob.ocdc.json "Clocks  : 4 \\(383/383 registers resolved\\).*Inst_DDR.ui_clk  \\[divider\\] alias=mem_ui_clk alias=clk_pll_i.*\\(75.01 MHz\\).*IP 'ClkGen'.*IP 'BRAM_1'.*single-port ROM.*IP 'Square_Root'.*cordic.*IP 'ddr' \\(xilinx.com:ip:mig_7series:4.1\\) modelled.*DDR2 x16, native interface.*BUFG, MMCME2_ADV, XADC.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 4 crossing path\\(s\\), 2 synchronized, 2 unsynchronized"
+check pmodgpio.ocdc.json "Clocks  : 1 \\(10/10 registers resolved\\).*IP 'PmodGPIO_axi_gpio_0_0' \\(xilinx.com:ip:axi_gpio:2.0\\) modelled.*IP 'PmodGPIO_xlconcat_0_0'.*IP 'PmodGPIO_xlslice_0_0'.*pmod_bridge.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 0 crossing path"
+check pmodsf3.ocdc.json  "Clocks  : 2 \\(51/51 registers resolved\\).*async-fifo x2, reset-sync x4.*IP 'PmodSF3_axi_quad_spi_0_0'.*asynchronous FIFOs.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 10 crossing path\\(s\\), 10 synchronized, 0 unsynchronized"
+check pmodcolor.ocdc.json "Clocks  : 1 \\(25/25 registers resolved\\).*IP 'PmodCOLOR_axi_iic_0_0' \\(xilinx.com:ip:axi_iic:2.0\\) modelled.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 0 crossing path"
+check pmodbt2.ocdc.json  "Clocks  : 1 \\(28/28 registers resolved\\).*IP 'PmodBT2_axi_uart16550_0_0' \\(xilinx.com:ip:axi_uart16550:2.0\\) modelled.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 0 crossing path"
 # each FIFO .xci alone: modelled; with independent clocks an asynchronous FIFO
 n=$(cat dl_fifo_count.txt)
 [ "$n" = 13 ] || { echo "::error::expected 13 FIFO .xci files in vivado-library, found $n"; fail=1; }

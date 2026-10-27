@@ -12,8 +12,10 @@
 // interfaces, common or independent clocks) and AXI4-Stream Data FIFO
 // (axis_data_fifo 1.x/2.x), and the debug cores ILA (inputs only) and VIO
 // (outputs in the clk domain), Clocking Wizard, Block Memory Generator,
-// one-clock datapath IP and the 7-series memory interface (mig_7series,
-// DDR2/DDR3). Both the XML (IP-XACT, Vivado up to 2020.1) and
+// one-clock datapath IP, the 7-series memory interface (mig_7series,
+// DDR2/DDR3), AXI GPIO/IIC/Timer/UART/Quad SPI and the block design Slice,
+// Concat and Constant. Next to an XML .xci, the IP's component file
+// (<instance>.xml) gives the port list. Both the XML (IP-XACT, Vivado up to 2020.1) and
 // the JSON (Vivado 2020.2 and later) formats are read.
 
 #include "core/Result.h"

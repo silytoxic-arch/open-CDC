@@ -809,3 +809,181 @@ TEST_CASE("XCI: memory interface clocking from its memory configuration (.prj)",
     REQUIRE(ui2->periodNs);
     CHECK((*ui2->periodNs > 26.66 && *ui2->periodNs < 26.67));
 }
+
+namespace {
+
+// IP-XACT component file of an IP instance (<instance>.xml), as Vivado writes it
+std::string component(const std::vector<std::tuple<std::string, std::string, int, bool>>& ports) {
+    std::string s = "<?xml version=\"1.0\"?>\n<spirit:component xmlns:spirit=\"http://www.spiritconsortium.org/"
+                    "XMLSchema/SPIRIT/1685-2009\" xmlns:xilinx=\"http://www.xilinx.com\">\n<spirit:model><spirit:ports>\n";
+    for (const auto& [name, dir, left, enabled] : ports) {
+        s += "<spirit:port><spirit:name>" + name + "</spirit:name><spirit:wire><spirit:direction>" + dir +
+             "</spirit:direction>";
+        if (left >= 0)
+            s += "<spirit:vector><spirit:left spirit:format=\"long\">" + std::to_string(left) +
+                 "</spirit:left><spirit:right spirit:format=\"long\">0</spirit:right></spirit:vector>";
+        s += "</spirit:wire>";
+        if (!enabled)
+            // as Vivado writes it: a '>' inside the dependency expression
+            s += "<spirit:vendorExtensions><xilinx:portInfo><xilinx:enablement><xilinx:isEnabled "
+                 "xilinx:resolve=\"dependent\" xilinx:dependency=\"spirit:decode(id('C_IS_DUAL')) >0\">false"
+                 "</xilinx:isEnabled></xilinx:enablement></xilinx:portInfo>"
+                 "</spirit:vendorExtensions>";
+        s += "</spirit:port>\n";
+    }
+    return s + "</spirit:ports></spirit:model>\n</spirit:component>\n";
+}
+
+std::vector<std::tuple<std::string, std::string, int, bool>> axiLitePorts() {
+    return {{"s_axi_aclk", "in", -1, true},    {"s_axi_aresetn", "in", -1, true}, {"s_axi_awaddr", "in", 8, true},
+            {"s_axi_awvalid", "in", -1, true}, {"s_axi_awready", "out", -1, true}, {"s_axi_wdata", "in", 31, true},
+            {"s_axi_wvalid", "in", -1, true},  {"s_axi_wready", "out", -1, true},  {"s_axi_rdata", "out", 31, true},
+            {"s_axi_rvalid", "out", -1, true}};
+}
+
+} // namespace
+
+TEST_CASE("XCI XML: ports from the component file next to the .xci", "[frontend][xci][component]") {
+    // AXI GPIO, one 4-bit channel; the second channel and the interrupt disabled
+    auto ports = axiLitePorts();
+    for (const auto& p : std::vector<std::tuple<std::string, std::string, int, bool>>{
+             {"ip2intc_irpt", "out", -1, false}, {"gpio_io_i", "in", 3, true}, {"gpio_io_o", "out", 3, true},
+             {"gpio_io_t", "out", 3, true}, {"gpio2_io_i", "in", 31, false}, {"gpio2_io_o", "out", 31, false}})
+        ports.push_back(p);
+    const std::string xci = spirit("gpio0", "axi_gpio", "2.0", {{"C_GPIO_WIDTH", "4"}, {"C_IS_DUAL", "0"}});
+    test::TempDir dir;
+    dir.write("ip/gpio0/gpio0.xml", component(ports));
+    auto m = frontend::modelFromXciText(xci, dir.path() / "ip/gpio0");
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p : {"input  wire s_axi_aclk", "input  wire [8:0] s_axi_awaddr", "input  wire [3:0] gpio_io_i",
+                          "output wire [3:0] gpio_io_o", "output wire [31:0] s_axi_rdata",
+                          "always @(posedge s_axi_aclk) oc_gpio_io_o"})
+        CHECK(v.find(p) != std::string::npos);
+    for (const char* p : {"gpio2_io", "ip2intc_irpt"}) // negative: disabled ports
+        CHECK(v.find(p) == std::string::npos);
+    // negative: without the component file the ports are unknown
+    auto none = frontend::modelFromXciText(xci, dir.path() / "elsewhere");
+    REQUIRE_FALSE(none);
+    CHECK(none.error().code == "FE-XCI-UNSUPPORTED");
+    CHECK(none.error().message.find("gpio0.xml") != std::string::npos);
+    // negative: an unresolved width is not guessed
+    std::string unresolved = component(ports);
+    unresolved.replace(unresolved.find("<spirit:left spirit:format=\"long\">8</spirit:left>"), 48,
+                       "<spirit:left spirit:format=\"long\">C_W-1</spirit:left>");
+    dir.write("ip/u/gpio0.xml", unresolved);
+    CHECK_FALSE(frontend::modelFromXciText(xci, dir.path() / "ip/u"));
+
+    // end to end: GPIO outputs are registers of s_axi_aclk; read on another clock they cross
+    test::TempDir d2;
+    d2.write("ip/gpio0/gpio0.xml", component(ports));
+    auto cfg = project(d2,
+                       "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+                       "           output reg [11:0] level);\n"
+                       "  wire [3:0] o, t; wire aw, w; wire [31:0] rd; wire rv;\n"
+                       "  gpio0 u (.s_axi_aclk(clk_a), .s_axi_aresetn(1'b1), .s_axi_awaddr(9'd0), .s_axi_awvalid(we),\n"
+                       "           .s_axi_awready(aw), .s_axi_wdata({4{d}}), .s_axi_wvalid(we), .s_axi_wready(w),\n"
+                       "           .s_axi_rdata(rd), .s_axi_rvalid(rv), .gpio_io_i(d[3:0]), .gpio_io_o(o), .gpio_io_t(t));\n"
+                       "  always @(posedge clk_a) q <= {4'd0, o};\n"
+                       "  always @(posedge clk_b) level <= {8'd0, t};\n"
+                       "endmodule\n",
+                       {d2.write("ip/gpio0/gpio0.xci", xci)});
+    auto r = run(cfg);
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.unsynchronized == 1); // gpio_io_t read on clk_b; o on clk_a does not cross
+    CHECK(count(*r, "FE-XCI-MODEL") == 1);
+}
+
+TEST_CASE("XCI: Slice, Concat and Constant of a block design", "[frontend][xci][component]") {
+    auto slice = frontend::modelFromXciText(spirit("s0", "xlslice", "1.0", {{"DIN_FROM", "2"}, {"DIN_TO", "1"}, {"DIN_WIDTH", "4"}}));
+    REQUIRE(slice);
+    CHECK(slice.value().verilog.find("input  wire [3:0] Din") != std::string::npos);
+    CHECK(slice.value().verilog.find("output wire [1:0] Dout") != std::string::npos);
+    CHECK(slice.value().verilog.find("assign Dout = Din[2:1];") != std::string::npos);
+    auto rev = frontend::modelFromXciText(spirit("s1", "xlslice", "1.0", {{"DIN_FROM", "0"}, {"DIN_TO", "1"}, {"DIN_WIDTH", "2"}}));
+    REQUIRE(rev);
+    CHECK(rev.value().verilog.find("assign Dout[1] = Din[1];") != std::string::npos);
+    CHECK(rev.value().verilog.find("assign Dout[0] = Din[0];") != std::string::npos);
+    // negative: a range outside the input
+    CHECK_FALSE(frontend::modelFromXciText(spirit("s2", "xlslice", "1.0", {{"DIN_FROM", "4"}, {"DIN_TO", "0"}, {"DIN_WIDTH", "4"}})));
+
+    auto cat = frontend::modelFromXciText(spirit("c0", "xlconcat", "2.1",
+                                                 {{"NUM_PORTS", "3"}, {"IN0_WIDTH", "2"}, {"IN1_WIDTH", "1"},
+                                                  {"IN2_WIDTH", "1"}, {"IN3_WIDTH", "5"}}));
+    REQUIRE(cat);
+    const auto& cv = cat.value().verilog;
+    for (const char* p : {"input  wire [1:0] In0", "input  wire [0:0] In2", "output wire [3:0] dout",
+                          "assign dout = {In2, In1, In0};"})
+        CHECK(cv.find(p) != std::string::npos);
+    CHECK(cv.find("In3") == std::string::npos); // negative: beyond NUM_PORTS
+
+    auto k = frontend::modelFromXciText(spirit("k0", "xlconstant", "1.1", {{"CONST_VAL", "0x5"}, {"CONST_WIDTH", "3"}}));
+    REQUIRE(k);
+    CHECK(k.value().verilog.find("assign dout = 3'd5;") != std::string::npos);
+
+    // end to end: a constant and a concatenation do not create domains; a slice of
+    // a clk_a register read on clk_b still crosses
+    test::TempDir dir;
+    auto cfg = project(dir,
+                       "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+                       "           output reg [11:0] level);\n"
+                       "  reg [3:0] a; always @(posedge clk_a) a <= d[3:0];\n"
+                       "  wire [1:0] s; wire [2:0] kk; wire [3:0] c;\n"
+                       "  s0 us (.Din(a), .Dout(s));\n"
+                       "  k0 uk (.dout(kk));\n"
+                       "  c0 uc (.In0(s), .In1(kk[0]), .In2(kk[1]), .dout(c));\n"
+                       "  always @(posedge clk_a) q <= {4'd0, c};\n"
+                       "  always @(posedge clk_b) level <= {10'd0, s};\n"
+                       "endmodule\n",
+                       {dir.write("s0.xci", spirit("s0", "xlslice", "1.0", {{"DIN_FROM", "2"}, {"DIN_TO", "1"}, {"DIN_WIDTH", "4"}})),
+                        dir.write("k0.xci", spirit("k0", "xlconstant", "1.1", {{"CONST_VAL", "0x5"}, {"CONST_WIDTH", "3"}})),
+                        dir.write("c0.xci", spirit("c0", "xlconcat", "2.1",
+                                                   {{"NUM_PORTS", "3"}, {"IN0_WIDTH", "2"}, {"IN1_WIDTH", "1"},
+                                                    {"IN2_WIDTH", "1"}}))});
+    auto r = run(cfg);
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.paths == 1); // a[2:1] read on clk_b
+    CHECK(count(*r, "FE-XCI-MODEL") == 3);
+}
+
+TEST_CASE("XCI: AXI Quad SPI sides and their asynchronous FIFOs", "[frontend][xci][component]") {
+    auto ports = axiLitePorts();
+    for (const auto& p : std::vector<std::tuple<std::string, std::string, int, bool>>{
+             {"ext_spi_clk", "in", -1, true}, {"io0_i", "in", -1, true}, {"io0_o", "out", -1, true},
+             {"io1_i", "in", -1, true}, {"sck_o", "out", -1, true}, {"ss_o", "out", 0, true},
+             {"ip2intc_irpt", "out", -1, true}})
+        ports.push_back(p);
+    auto spiTop = [](const std::string& rd) {
+        return "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+               "           output reg [11:0] level);\n"
+               "  wire aw, w, rv, irq, mosi, sck; wire [31:0] rdata; wire [0:0] ss;\n"
+               "  spi0 u (.s_axi_aclk(clk_a), .s_axi_aresetn(1'b1), .s_axi_awaddr(9'd0), .s_axi_awvalid(we),\n"
+               "          .s_axi_awready(aw), .s_axi_wdata({4{d}}), .s_axi_wvalid(we), .s_axi_wready(w),\n"
+               "          .s_axi_rdata(rdata), .s_axi_rvalid(rv), .ext_spi_clk(clk_b), .io0_i(re), .io0_o(mosi),\n"
+               "          .io1_i(re), .sck_o(sck), .ss_o(ss), .ip2intc_irpt(irq));\n"
+               "  always @(posedge clk_a) q <= " + rd + ";\n"
+               "endmodule\n";
+    };
+    auto runSpi = [&](const std::string& async, const std::string& rd) {
+        test::TempDir dir;
+        dir.write("ip/spi0/spi0.xml", component(ports));
+        return run(project(dir, spiTop(rd),
+                           {dir.write("ip/spi0/spi0.xci", spirit("spi0", "axi_quad_spi", "3.2",
+                                                                 {{"Async_Clk", async}, {"C_FIFO_DEPTH", "16"}}))}));
+    };
+    // Async_Clk: the sides exchange through asynchronous FIFOs (recognized as such)
+    auto r = runSpi("1", "rdata[7:0]");
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.paths >= 2);
+    CHECK(r->cdc->stats.unsynchronized == 0);
+    CHECK(std::ranges::count_if(r->cdc->structures, [](const auto& s) { return s.type == cdc::SyncType::AsyncFifo; }) == 2);
+    // the SPI pins are on ext_spi_clk: read on clk_a they cross (positive)
+    auto pins = runSpi("1", "{7'd0, mosi}");
+    REQUIRE(pins->cdc);
+    CHECK(pins->cdc->stats.unsynchronized >= 1);
+    // without Async_Clk the IP expects one clock: different clocks cross unsynchronized
+    auto direct = runSpi("0", "rdata[7:0]");
+    REQUIRE(direct->cdc);
+    CHECK(direct->cdc->stats.unsynchronized >= 1);
+    CHECK(std::ranges::none_of(direct->cdc->structures, [](const auto& s) { return s.type == cdc::SyncType::AsyncFifo; }));
+}
