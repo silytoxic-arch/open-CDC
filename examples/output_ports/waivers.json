@@ -1,0 +1,13 @@
+{
+  "format": "opencdc-waivers",
+  "version": 1,
+  "waivers": [
+    {
+      "id": "W-LED",
+      "rule": "CDC-OUTPUT-CLOCK",
+      "destination": "output_ports.dbg_led",
+      "reason": "debug LED: no receiver samples it",
+      "author": "example"
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 #include <QAbstractTableModel>
 #include <QSortFilterProxyModel>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTextBrowser>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -770,6 +771,151 @@ void ViolationView::showRule(std::size_t pathId, std::size_t hit) {
     }
     html += "<p><i>" + tr("Double-click the row to open the path and the source.") + "</i></p>";
     ruleInfo_->setHtml(html);
+}
+
+// ---------------------------------------------------------------------------
+// Output ports
+// ---------------------------------------------------------------------------
+
+namespace {
+QString joined(const std::vector<std::string>& v, std::size_t max = 4) {
+    QStringList parts;
+    for (std::size_t i = 0; i < v.size() && i < max; ++i)
+        parts << qs(v[i]);
+    if (v.size() > max)
+        parts << OutputPortView::tr("(+%1 more)").arg(v.size() - max);
+    return parts.join(QStringLiteral(", "));
+}
+} // namespace
+
+OutputPortView::OutputPortView(QWidget* parent)
+    : QWidget(parent), waiverFilter_(combo(this, tr("Waived and not waived"))), countLabel_(new QLabel(this)),
+      table_(new QTableWidget(0, 8, this)), details_(new QTextBrowser(this)) {
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(2, 2, 2, 2);
+    auto* bar = new QHBoxLayout();
+    waiverFilter_->addItem(tr("Not waived"), QStringLiteral("open"));
+    waiverFilter_->addItem(tr("Waived"), QStringLiteral("waived"));
+    bar->addWidget(waiverFilter_);
+    bar->addStretch(1);
+    bar->addWidget(countLabel_);
+    layout->addLayout(bar);
+    table_->setHorizontalHeaderLabels({tr("Output port"), tr("Driven by"), tr("Driver clock"), tr("Output delay clock"),
+                                       tr("Relation"), tr("Constraint"), tr("Fingerprint"), tr("Waiver")});
+    setupTable(table_);
+    makeResizable(table_->horizontalHeader());
+    auto* split = new QSplitter(Qt::Horizontal, this);
+    split->addWidget(table_);
+    details_->setOpenLinks(false);
+    split->addWidget(details_);
+    split->setStretchFactor(0, 3);
+    split->setStretchFactor(1, 1);
+    layout->addWidget(split, 1);
+    connect(waiverFilter_, &QComboBox::currentIndexChanged, this, &OutputPortView::applyFilter);
+    connect(table_, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) { showDetails(row); });
+    connect(table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (!result_ || !result_->cdc || row < 0)
+            return;
+        const auto& o = result_->cdc->outputs.at(static_cast<std::size_t>(table_->item(row, 0)->data(kIdRole).toInt()));
+        if (!o.loc.file.empty())
+            emit locationActivated(qs(o.loc.file), static_cast<int>(o.loc.line));
+    });
+    clear();
+}
+
+void OutputPortView::clear() {
+    result_.reset();
+    table_->setRowCount(0);
+    countLabel_->clear();
+    details_->setHtml(tr("<p>No output port results.</p>"));
+}
+
+void OutputPortView::setResult(std::shared_ptr<const engine::AnalysisResult> result) {
+    clear();
+    result_ = std::move(result);
+    if (!result_ || !result_->cdc) {
+        details_->setHtml(tr("<p>CDC analysis did not run (see Messages).</p>"));
+        return;
+    }
+    const auto& outs = result_->cdc->outputs;
+    table_->setRowCount(static_cast<int>(outs.size()));
+    for (std::size_t i = 0; i < outs.size(); ++i) {
+        const auto& o = outs[i];
+        const int r = static_cast<int>(i);
+        const QStringList cells{joined(o.ports),           joined(o.sources),
+                                qs(o.srcClock),            qs(o.outClock),
+                                qs(clock::toString(o.relation)),
+                                qs(o.loc.file.empty() ? std::string() : toString(o.loc)),
+                                qs(o.fingerprint),         qs(o.waiver)};
+        for (int c = 0; c < cells.size(); ++c) {
+            auto* item = new QTableWidgetItem(cells[c]);
+            item->setData(kIdRole, r);
+            if (o.waiver.empty())
+                item->setBackground(statusColor(cdc::AnalysisStatus::PotentialRisk));
+            table_->setItem(r, c, item);
+        }
+    }
+    fitColumns(table_, 400);
+    applyFilter();
+    if (outs.empty())
+        details_->setHtml(tr("<p><b>No output port is driven asynchronously to its output delay clock.</b></p>"
+                             "<p>Outputs are checked against the clock of their <tt>set_output_delay</tt>.</p>"));
+    else
+        table_->setCurrentCell(0, 0);
+}
+
+int OutputPortView::rowCount() const {
+    return table_->rowCount();
+}
+
+int OutputPortView::visibleRows() const {
+    int n = 0;
+    for (int r = 0; r < table_->rowCount(); ++r)
+        n += table_->isRowHidden(r) ? 0 : 1;
+    return n;
+}
+
+void OutputPortView::applyFilter() {
+    const QString mode = waiverFilter_->currentData().toString();
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        const bool waived = !table_->item(r, 7)->text().isEmpty();
+        table_->setRowHidden(r, (mode == QStringLiteral("open") && waived) || (mode == QStringLiteral("waived") && !waived));
+    }
+    countLabel_->setText(tr("%1 of %2 outputs").arg(visibleRows()).arg(rowCount()));
+}
+
+void OutputPortView::showDetails(int row) {
+    if (!result_ || !result_->cdc || row < 0 || row >= table_->rowCount())
+        return;
+    const auto& o = result_->cdc->outputs.at(static_cast<std::size_t>(table_->item(row, 0)->data(kIdRole).toInt()));
+    QString html = "<h3>CDC-OUTPUT-CLOCK</h3><p>" +
+                   tr("Timed against <b>%1</b> (set_output_delay), driven from <b>%2</b> (%3).")
+                       .arg(esc(o.outClock), esc(o.srcClock), qs(clock::toString(o.relation))) +
+                   "</p><p><b>" + tr("Ports") + "</b><br/>";
+    for (const auto& p : o.ports)
+        html += esc(p) + "<br/>";
+    html += "</p><p><b>" + tr("Drivers") + "</b><br/>";
+    for (const auto& s : o.sources)
+        html += esc(s) + "<br/>";
+    html += "</p>";
+    if (!o.waiver.empty()) {
+        for (const auto& w : result_->cdc->waivers)
+            if (w.id == o.waiver) {
+                html += "<p style='background:#eeeeee'><b>" + tr("Waived by %1").arg(esc(w.id)) + "</b>: " +
+                        esc(w.reason);
+                if (!w.author.empty())
+                    html += " &mdash; " + esc(w.author);
+                html += "</p>";
+            }
+    }
+    else {
+        html += "<p>" + tr("Drive the output from the clock it is timed against, or exempt it with "
+                           "<tt>set_false_path -to</tt> (or a waiver for rule CDC-OUTPUT-CLOCK with fingerprint "
+                           "<tt>%1</tt>) if the receiver synchronizes it.")
+                            .arg(esc(o.fingerprint)) +
+                "</p>";
+    }
+    details_->setHtml(html);
 }
 
 } // namespace opencdc::gui

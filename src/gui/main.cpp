@@ -87,6 +87,43 @@ std::vector<const opencdc::cdc::CdcPath*> samplePaths(const opencdc::engine::Ana
 }
 
 /// Every hit is listed; filtering by a rule shows exactly that rule's hits.
+/// Output Ports view: one row per output crossing, the waiver filter splits
+/// waived and open ones, the waiver column and details match the record, and
+/// a double-click opens the set_output_delay command.
+bool checkOutputPorts(MainWindow& window, const opencdc::engine::AnalysisResult& result) {
+    auto* view = window.outputView();
+    const auto& outs = result.cdc->outputs;
+    if (view->rowCount() != static_cast<int>(outs.size()))
+        return false;
+    const auto waived = std::ranges::count_if(outs, [](const auto& o) { return !o.waiver.empty(); });
+    auto* f = view->waiverFilter();
+    f->setCurrentIndex(f->findData(QStringLiteral("open")));
+    const int open = view->visibleRows();
+    f->setCurrentIndex(f->findData(QStringLiteral("waived")));
+    const int closed = view->visibleRows();
+    f->setCurrentIndex(0);
+    if (open != static_cast<int>(outs.size() - static_cast<std::size_t>(waived)) || closed != waived ||
+        view->visibleRows() != view->rowCount())
+        return false;
+    for (int r = 0; r < view->rowCount(); ++r) {
+        const auto& o = outs[static_cast<std::size_t>(r)];
+        if (view->table()->item(r, 7)->text() != QString::fromStdString(o.waiver) ||
+            view->table()->item(r, 3)->text() != QString::fromStdString(o.outClock))
+            return false;
+        view->table()->setCurrentCell(r, 0);
+        const QString details = view->details()->toPlainText();
+        if (!details.contains(QString::fromStdString(o.outClock)) ||
+            (!o.waiver.empty() && !details.contains(QStringLiteral("Waived by ") + QString::fromStdString(o.waiver))))
+            return false;
+        emit view->table()->cellDoubleClicked(r, 0);
+        if (window.sourceViewer()->highlightedLine() != static_cast<int>(o.loc.line) ||
+            !QFileInfo(window.sourceViewer()->currentFile()).fileName().endsWith(
+                QFileInfo(QString::fromStdString(o.loc.file)).fileName()))
+            return false;
+    }
+    return true;
+}
+
 bool checkViolationFilter(MainWindow& window, const opencdc::engine::AnalysisResult& result) {
     auto* view = window.violationView();
     std::size_t total = 0;
@@ -112,7 +149,12 @@ bool checkViolationFilter(MainWindow& window, const opencdc::engine::AnalysisRes
             wf->setCurrentIndex(i);
             const int visible = view->visibleRows();
             wf->setCurrentIndex(0);
-            if (visible != static_cast<int>(result.waivedHits()))
+            // (waivedHits() also counts waived output crossings: they are in the Output Ports view)
+            std::size_t waivedPathHits = 0;
+            for (const auto& p : result.cdc->paths)
+                waivedPathHits += static_cast<std::size_t>(
+                    std::ranges::count_if(p.hits, [](const auto& h) { return !h.waiver.empty(); }));
+            if (visible != static_cast<int>(waivedPathHits))
                 return false;
         }
     return true;
@@ -252,6 +294,9 @@ int runSmokeTest(MainWindow& window, const QString& project, const QString& scre
                                                      static_cast<int>(result->cdc->paths.size())) {
                              exitCode = fail("CDC path table does not match the analysis result");
                          }
+                         else if (result->cdc && !checkOutputPorts(window, *result)) {
+                             exitCode = fail("output port table, its filter or its details do not match the result");
+                         }
                          else if (result->cdc && !checkViolationFilter(window, *result)) {
                              exitCode = fail("rule violation table or its filter does not match the analysis result");
                          }
@@ -314,12 +359,13 @@ int runSmokeTest(MainWindow& window, const QString& project, const QString& scre
                          }
                          if (exitCode == 0) {
                              std::printf("GUI smoke test passed: %d top instance(s), %d module(s), "
-                                         "%d message(s), %d CDC path(s), %d rule hit(s), jumped to %s:%d; "
+                                         "%d message(s), %d CDC path(s), %d rule hit(s), %d output crossing(s), "
+                                         "jumped to %s:%d; "
                                          "analysis and views ready in %lld ms\n",
                                          window.hierarchyTree()->topLevelItemCount(),
                                          countModules(window.projectTree()), window.messageTable()->rowCount(),
                                          window.pathView()->rowCount(),
-                                         window.violationView()->rowCount(),
+                                         window.violationView()->rowCount(), window.outputView()->rowCount(),
                                          qPrintable(window.sourceViewer()->currentFile()),
                                          window.sourceViewer()->highlightedLine(),
                                          static_cast<long long>(loadedMs));
@@ -349,11 +395,12 @@ int runEditTest(MainWindow& window, const QString& project) {
     const auto orig = *window.project();
     opencdc::gui::ProjectEditor editor(orig, QString());
     if (editor.sourceTable()->rowCount() != static_cast<int>(orig.sources.size()) ||
-        editor.constraintList()->count() != static_cast<int>(orig.constraints.size()))
+        editor.constraintTable()->rowCount() != static_cast<int>(orig.constraints.size()))
         return fail("project editor does not show the project");
     auto same = editor.config();
     if (same.sources != orig.sources || same.sourceLibraries != orig.sourceLibraries || same.name != orig.name ||
         same.top != orig.top || same.language != orig.language || same.constraints != orig.constraints ||
+        same.constraintScopes != orig.constraintScopes ||
         same.parameters != orig.parameters || same.includeDirs != orig.includeDirs ||
         same.waivers != orig.waivers || same.vivadoClockReports != orig.vivadoClockReports ||
         same.ipRepositories != orig.ipRepositories || same.tclSourceDirs != orig.tclSourceDirs ||
@@ -362,6 +409,37 @@ int runEditTest(MainWindow& window, const QString& project) {
         return fail("project editor changes a project it did not edit");
     if (orig.sources.empty())
         return fail("project has no sources");
+
+    // the module of a scoped constraint file is edited in the constraints
+    // table and kept through save and reopen; a name that is no module is refused
+    if (!orig.constraints.empty()) {
+        const QString before = editor.constraintTable()->item(0, 1) ? editor.constraintTable()->item(0, 1)->text()
+                                                                     : QString();
+        editor.setConstraintScope(0, QStringLiteral("not a module"));
+        if (editor.validationError().isEmpty())
+            return fail("a module name with spaces is accepted for scoped constraints");
+        editor.setConstraintScope(0, QStringLiteral("opencdc_scope_test"));
+        if (!editor.validationError().isEmpty())
+            return fail("a scoped constraint module is refused");
+        const auto scoped = editor.config();
+        if (scoped.constraintScopes.size() != orig.constraints.size() ||
+            scoped.constraintScopes.front() != "opencdc_scope_test" || scoped.constraints != orig.constraints)
+            return fail("the scoped constraint module is not in the configuration");
+        const QTemporaryDir sdir;
+        const QString sfile = sdir.filePath(QStringLiteral("scoped.ocdc.json"));
+        window.setProject(scoped);
+        if (!sdir.isValid() || !window.saveProjectAs(sfile) || !window.openProject(sfile))
+            return fail("project with a scoped constraint file could not be saved and reopened");
+        if (window.project()->constraintScopes != scoped.constraintScopes)
+            return fail("the scoped constraint module is lost on save and reopen");
+        opencdc::gui::ProjectEditor reEdit(*window.project(), QString());
+        if (!reEdit.constraintTable()->item(0, 1) ||
+            reEdit.constraintTable()->item(0, 1)->text() != QStringLiteral("opencdc_scope_test"))
+            return fail("the editor does not show the module of a scoped constraint file");
+        editor.setConstraintScope(0, before);
+        if (editor.config().constraintScopes != orig.constraintScopes)
+            return fail("clearing the scoped constraint module does not restore the project");
+    }
 
     const auto last = static_cast<int>(orig.sources.size()) - 1;
     const QString lastFile = editor.sourceTable()->item(last, 0)->text();

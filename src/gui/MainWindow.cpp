@@ -316,6 +316,9 @@ void MainWindow::createDocks() {
     connect(violationView_, &ViolationView::locationActivated, this, jump);
     auto* pathDock = addDock(tr("CDC Paths"), "cdcPaths", pathView_, Qt::BottomDockWidgetArea);
     auto* violationDock = addDock(tr("Rule Violations"), "ruleViolations", violationView_, Qt::BottomDockWidgetArea);
+    outputView_ = new OutputPortView(this);
+    connect(outputView_, &OutputPortView::locationActivated, this, jump);
+    auto* outputDock = addDock(tr("Output Ports"), "outputPorts", outputView_, Qt::BottomDockWidgetArea);
     pathDock_ = pathDock;
     violationDock_ = violationDock;
     connect(violationView_, &ViolationView::pathActivated, this, [this](std::size_t id) {
@@ -329,7 +332,8 @@ void MainWindow::createDocks() {
     auto* reportDock = addDock(tr("Report"), "report", reportView_, Qt::BottomDockWidgetArea);
     tabifyDockWidget(msgDock, pathDock);
     tabifyDockWidget(pathDock, violationDock);
-    tabifyDockWidget(violationDock, reportDock);
+    tabifyDockWidget(violationDock, outputDock);
+    tabifyDockWidget(outputDock, reportDock);
     msgDock->raise();
 }
 
@@ -398,6 +402,7 @@ void MainWindow::setProject(engine::ProjectConfig config) {
     clockView_->clear();
     pathView_->clear();
     violationView_->clear();
+    outputView_->clear();
     schematicView_->clear();
     showProjectInfo();
     statusLabel_->setText(tr("Project '%1'").arg(qs(project_->name)));
@@ -558,6 +563,7 @@ void MainWindow::populateResult(const engine::AnalysisResult& result) {
     schematicView_->setResult(lastResult_);
     pathView_->setResult(lastResult_);
     violationView_->setResult(lastResult_);
+    outputView_->setResult(lastResult_);
     if (result.elaboration) {
         const auto& e = *result.elaboration;
         const auto counts = registerCounts(result.design.get());

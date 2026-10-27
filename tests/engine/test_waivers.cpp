@@ -252,3 +252,25 @@ TEST_CASE("Waivers cover output ports driven asynchronously (CDC-OUTPUT-CLOCK)",
     CHECK(j["cdc"]["outputCrossings"].size() == 2);
     CHECK(j["cdc"]["stats"]["outputCrossings"] == 1);
 }
+
+TEST_CASE("output_ports example: one output reported, one waived, synchronized and same-clock outputs not",
+          "[waiver][engine][example][outputs]") {
+    auto cfg = engine::loadProjectFile(test::examplesDir() / "output_ports" / "output_ports.ocdc.json");
+    REQUIRE(cfg);
+    NullProgressSink progress;
+    CancellationToken cancel;
+    auto result = engine::AnalysisSession().run(cfg.value(), progress, cancel);
+    REQUIRE(result->cdc);
+    const auto& outs = result->cdc->outputs;
+    REQUIRE(outs.size() == 2); // sys_flag and dbg_led; io_data and io_req are driven from clk_io
+    for (const auto& o : outs) {
+        REQUIRE(o.ports.size() == 1);
+        CHECK(o.srcClock == "clk_sys");
+        CHECK(o.outClock == "clk_io");
+        CHECK(o.waiver == (o.ports.front() == "output_ports.dbg_led" ? "W-LED" : ""));
+    }
+    CHECK(countCode(result->diagnostics, "CDC-OUTPUT-CLOCK") == 1);
+    CHECK(countCode(result->diagnostics, "WAIVER-UNUSED") == 0);
+    CHECK(result->cdc->stats.outputCrossings == 1);
+    CHECK(result->violations(Severity::Error) == 0); // the internal crossing is synchronized
+}

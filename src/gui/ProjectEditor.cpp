@@ -15,6 +15,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -92,7 +93,7 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
       includeDirs_(nullptr),
       defines_(makeTable({tr("Macro"), tr("Value")}, this)),
       parameters_(makeTable({tr("Parameter / generic"), tr("Value (HDL syntax)")}, this)),
-      constraints_(nullptr),
+      constraints_(makeTable({tr("File"), tr("Scoped to module (read_xdc -ref)")}, this)),
       waivers_(nullptr),
       vivadoReports_(nullptr),
       tclSourceDirs_(nullptr),
@@ -182,15 +183,26 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
     tabs->addTab(srcPage, tr("Sources"));
 
     // Constraints and waivers
-    constraints_ = makePathList(config.constraints);
+    for (std::size_t i = 0; i < config.constraints.size(); ++i) {
+        const int row = constraints_->rowCount();
+        constraints_->insertRow(row);
+        setRow(constraints_, row, qs(config.constraints[i]),
+               i < config.constraintScopes.size() ? qs(config.constraintScopes[i]) : QString());
+        constraints_->item(row, 0)->setFlags(constraints_->item(row, 0)->flags() & ~Qt::ItemIsEditable);
+    }
+    constraints_->setToolTip(tr("A module in the second column makes the file a scoped constraint file: it is run "
+                                "once in every instance of the module, with names relative to the instance (as "
+                                "Vivado's read_xdc -ref / SCOPED_TO_REF). Leave it empty for a plain file."));
+    makeResizable(constraints_->horizontalHeader());
+    fitColumns(constraints_, 700);
     waivers_ = makePathList(config.waivers);
     auto* addCon = button(tr("Add..."), this);
     auto* rmCon = button(tr("Remove"), this);
     connect(addCon, &QPushButton::clicked, this, [this] {
         addConstraints(QFileDialog::getOpenFileNames(this, tr("Add constraints"), baseDir_,
-                                                     tr("Constraints (*.sdc *.xdc);;All files (*)")));
+                                                     tr("Constraints (*.sdc *.xdc *.tcl);;All files (*)")));
     });
-    connect(rmCon, &QPushButton::clicked, this, [this] { delete constraints_->currentItem(); });
+    connect(rmCon, &QPushButton::clicked, this, [this] { removeConstraint(selectedRow(constraints_)); });
     auto* addWv = button(tr("Add..."), this);
     auto* rmWv = button(tr("Remove"), this);
     connect(addWv, &QPushButton::clicked, this, [this] {
@@ -217,7 +229,9 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
     connect(rmTcl, &QPushButton::clicked, this, [this] { delete tclSourceDirs_->currentItem(); });
     auto* conPage = new QWidget(tabs);
     auto* conLayout = new QVBoxLayout(conPage);
-    conLayout->addWidget(new QLabel(tr("SDC / XDC constraints:"), conPage));
+    conLayout->addWidget(new QLabel(tr("SDC / XDC constraints (a module in the second column: scoped constraints, "
+                                       "run in every instance of that module):"),
+                                    conPage));
     conLayout->addWidget(withButtons(constraints_, {addCon, rmCon}, conPage), 2);
     conLayout->addWidget(new QLabel(tr("Waiver files:"), conPage));
     conLayout->addWidget(withButtons(waivers_, {addWv, rmWv}, conPage), 1);
@@ -338,7 +352,30 @@ void ProjectEditor::setSourceLibrary(int row, const QString& library) {
         sources_->setItem(row, 1, new QTableWidgetItem(library));
 }
 
-void ProjectEditor::addConstraints(const QStringList& files) { addPathItems(constraints_, files); }
+void ProjectEditor::addConstraints(const QStringList& files) {
+    for (const auto& f : files) {
+        const QString norm = qs(toPath(f));
+        bool present = false;
+        for (int r = 0; r < constraints_->rowCount() && !present; ++r)
+            present = cell(constraints_, r, 0) == norm;
+        if (present || f.isEmpty())
+            continue;
+        const int row = constraints_->rowCount();
+        constraints_->insertRow(row);
+        setRow(constraints_, row, norm, QString());
+        constraints_->item(row, 0)->setFlags(constraints_->item(row, 0)->flags() & ~Qt::ItemIsEditable);
+    }
+}
+
+void ProjectEditor::removeConstraint(int row) {
+    if (row >= 0 && row < constraints_->rowCount())
+        constraints_->removeRow(row);
+}
+
+void ProjectEditor::setConstraintScope(int row, const QString& module) {
+    if (row >= 0 && row < constraints_->rowCount())
+        constraints_->setItem(row, 1, new QTableWidgetItem(module));
+}
 void ProjectEditor::addIncludeDir(const QString& dir) { addPathItems(includeDirs_, {dir}); }
 void ProjectEditor::addWaivers(const QStringList& files) { addPathItems(waivers_, files); }
 
@@ -391,15 +428,10 @@ engine::ProjectConfig ProjectEditor::config() const {
         if (!n.isEmpty())
             c.parameters.emplace_back(n.toStdString(), cell(parameters_, r, 1).trimmed().toStdString());
     }
-    c.constraints = listPaths(constraints_);
-    // scoped constraint files keep their module (not editable here)
     c.constraintScopes.clear();
-    for (const auto& f : c.constraints) {
-        std::string ref;
-        for (std::size_t i = 0; i < original_.constraints.size(); ++i)
-            if (original_.constraints[i] == f && i < original_.constraintScopes.size())
-                ref = original_.constraintScopes[i];
-        c.constraintScopes.push_back(ref);
+    for (int r = 0; r < constraints_->rowCount(); ++r) {
+        c.constraints.push_back(toPath(cell(constraints_, r, 0)));
+        c.constraintScopes.push_back(cell(constraints_, r, 1).trimmed().toStdString());
     }
     c.waivers = listPaths(waivers_);
     c.vivadoClockReports = listPaths(vivadoReports_);
@@ -420,6 +452,11 @@ QString ProjectEditor::validationError() const {
     for (int r = 0; r < parameters_->rowCount(); ++r)
         if (!cell(parameters_, r, 0).trimmed().isEmpty() && cell(parameters_, r, 1).trimmed().isEmpty())
             return tr("Parameter '%1' has no value.").arg(cell(parameters_, r, 0).trimmed());
+    for (int r = 0; r < constraints_->rowCount(); ++r) {
+        const QString m = cell(constraints_, r, 1).trimmed();
+        if (m.contains(QRegularExpression(QStringLiteral("[\\s/\\[\\]{}*?]"))))
+            return tr("'%1' is not a module name (constraints %2).").arg(m, cell(constraints_, r, 0));
+    }
     return {};
 }
 

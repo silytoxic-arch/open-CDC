@@ -155,13 +155,16 @@ if(TARGET opencdc-gui)
     add_test(NAME gui.primitives
         COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json)
     set_tests_properties(gui.primitives PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME gui.output_ports
+        COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/output_ports/output_ports.ocdc.json)
+    set_tests_properties(gui.output_ports PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_test(NAME gui.project_edit
         COMMAND opencdc-gui --edit-test ${PROJECT_SOURCE_DIR}/examples/mixed/cdc_advanced/cdc_advanced_mixed.ocdc.json)
     set_tests_properties(gui.project_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     if(WIN32)
         # Let the test find the Qt DLLs (and, through them, the platform plugins)
         # without running windeployqt first.
-        set_tests_properties(gui.smoke gui.cdc_rules gui.cdc_advanced gui.cdc_advanced_waived gui.vhdl_mixed gui.project_edit gui.primitives PROPERTIES
+        set_tests_properties(gui.smoke gui.cdc_rules gui.cdc_advanced gui.cdc_advanced_waived gui.vhdl_mixed gui.project_edit gui.primitives gui.output_ports PROPERTIES
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
 endif()

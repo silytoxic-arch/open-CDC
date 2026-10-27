@@ -76,6 +76,6 @@ In globs, `*` matches any sequence of characters (including `.`), and `?` matche
   - `summary.waivedHits`.
 - **HTML report**: a "Waivers" section, plus "Waived by …" with the reason on each hit.
 - **CSV**: a `waived` column in `paths.csv`, and a `waiver` column in `violations.csv`.
-- **GUI**: the violation table has a Waiver column and a "Waived / Not waived" filter. The rule pane shows the waiver's reason, author and expiry date.
+- **GUI**: the violation table has a Waiver column and a "Waived / Not waived" filter. The rule pane shows the waiver's reason, author and expiry date. Output crossings (`CDC-OUTPUT-CLOCK`) are in the Output Ports view, with the same filter and the waiver in the details pane.
 
 Prefer fingerprint or exact source/destination selectors over broad globs. With narrow selectors, a design change that creates a new crossing is not waived silently. `WAIVER-UNUSED` tells you when a waiver no longer matches anything.

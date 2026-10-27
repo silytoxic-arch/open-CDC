@@ -10,6 +10,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QTableView;
+class QTableWidget;
 class QTextBrowser;
 
 namespace opencdc::gui {
@@ -112,6 +113,40 @@ private:
     detail::HitFilter* filter_;
     QTableView* table_;
     QTextBrowser* ruleInfo_;
+};
+
+/// Output Ports: outputs driven asynchronously to the clock their
+/// set_output_delay names (rule CDC-OUTPUT-CLOCK), one row per constraint and
+/// driver clock, waived ones with their waiver; double-click opens the
+/// set_output_delay command.
+class OutputPortView final : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit OutputPortView(QWidget* parent = nullptr);
+
+    void clear();
+    void setResult(std::shared_ptr<const engine::AnalysisResult> result);
+
+    [[nodiscard]] QTableWidget* table() const { return table_; }
+    [[nodiscard]] QComboBox* waiverFilter() const { return waiverFilter_; }
+    /// Records in the table (all of them, filtered or not).
+    [[nodiscard]] int rowCount() const;
+    [[nodiscard]] int visibleRows() const;
+    [[nodiscard]] QTextBrowser* details() const { return details_; }
+
+signals:
+    void locationActivated(const QString& file, int line);
+
+private:
+    void applyFilter();
+    void showDetails(int row);
+
+    std::shared_ptr<const engine::AnalysisResult> result_;
+    QComboBox* waiverFilter_;
+    QLabel* countLabel_;
+    QTableWidget* table_;
+    QTextBrowser* details_;
 };
 
 } // namespace opencdc::gui

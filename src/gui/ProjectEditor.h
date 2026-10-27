@@ -36,6 +36,10 @@ public:
     void moveSource(int row, int delta);
     void setSourceLibrary(int row, const QString& library);
     void addConstraints(const QStringList& files);
+    void removeConstraint(int row);
+    /// Scoped constraints: the module the file is run in (Vivado read_xdc -ref);
+    /// empty = a plain constraint file.
+    void setConstraintScope(int row, const QString& module);
     void addIncludeDir(const QString& dir);
     void addWaivers(const QStringList& files);
     void addVivadoReports(const QStringList& files);
@@ -46,7 +50,8 @@ public:
     void setDefine(const QString& name, const QString& value, bool hasValue);
 
     [[nodiscard]] QTableWidget* sourceTable() const { return sources_; }
-    [[nodiscard]] QListWidget* constraintList() const { return constraints_; }
+    /// Constraint files (column 0) with the module they are scoped to (column 1).
+    [[nodiscard]] QTableWidget* constraintTable() const { return constraints_; }
 
 public slots:
     void accept() override;
@@ -64,7 +69,7 @@ private:
     QListWidget* includeDirs_;
     QTableWidget* defines_;
     QTableWidget* parameters_;
-    QListWidget* constraints_;
+    QTableWidget* constraints_;
     QListWidget* waivers_;
     QListWidget* vivadoReports_;
     QListWidget* tclSourceDirs_;

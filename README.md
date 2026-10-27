@@ -46,7 +46,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Every instance without a definition or built-in model is reported (`FE-UNRESOLVED-INSTANCE`), never silently a black box; a user module whose name differs from a vendor primitive only in case does not hide the primitive's model | ✅ |
 | Asynchronous reset crossings (grouped per reset source and clock), reconvergence (bit-level, configurable depth), multi-bit incoherency, pulse loss (with clock periods), multi-domain logic | ✅ |
 | Rules CDC-001 … CDC-010, all ten (specs in [docs/rules](docs/rules)) | ✅ |
-| GUI CDC Path Viewer and Rule Violation Viewer with filters, details (structure, reconvergence, grouped registers), fix suggestions and jump-to-source | ✅ |
+| GUI CDC Path Viewer, Rule Violation Viewer and Output Ports viewer (outputs driven asynchronously to their `set_output_delay` clock, waived or not; example `examples/output_ports`) with filters, details (structure, reconvergence, grouped registers), fix suggestions and jump-to-source | ✅ |
 | CDC schematic: the path, the other sources of its destination logic, synchronizer stages, qualifier, reconvergence point and the whole synchronizer structure (FIFO, handshake), laid out left to right (own layered layout), colored by clock domain; zoom/fit, PNG/SVG export, double-click to source | ✅ |
 | View linkage: path/violation selection drives the schematic; hierarchy tree with CDC path and issue counts per instance and an instance filter for the path table | ✅ |
 | `opencdc analyze --schematic-dir <dir>`: one SVG schematic per path (no Qt needed) | ✅ |
@@ -175,7 +175,7 @@ Different clock names alone never make two clocks asynchronous.
 
 `tclSourceDirs` (optional) lists directories searched for relative `source` paths in constraint scripts, after the directory of the sourcing file. Set it to the directory Quartus or Vivado runs the scripts from when the scripts are written relative to it (e.g. `source ../lib/eth/syn/quartus/eth_mac_1g_rgmii.sdc`). All constraint files of a project share one Tcl interpreter, so procedures defined in one file can be called in the files listed after it.
 
-A `constraints` entry `{"file": …, "ref": "<module>"}` is a scoped constraint file, as Vivado's `read_xdc -ref`: it is run once in every instance of the module (or for the top module itself), each run with its own Tcl variables, with object names relative to the instance (`get_cells s1_reg`), `get_ports` naming the instance's ports, and `-hierarchical` searching below the instance only. A module the design does not instantiate is noted (`CON-UNMATCHED`, info). The GUI keeps the module of such entries. In a scoped file, `current_instance` moves within the instance only.
+A `constraints` entry `{"file": …, "ref": "<module>"}` is a scoped constraint file, as Vivado's `read_xdc -ref`: it is run once in every instance of the module (or for the top module itself), each run with its own Tcl variables, with object names relative to the instance (`get_cells s1_reg`), `get_ports` naming the instance's ports, and `-hierarchical` searching below the instance only. A module the design does not instantiate is noted (`CON-UNMATCHED`, info). In the GUI project settings the module is the second column of the constraints table. In a scoped file, `current_instance` moves within the instance only.
 
 `ipRepositories` (optional) lists Vivado IP repositories (`ip_repo_paths`). An IP given as `.xci` that OpenCDC does not model is looked up there by its `component.xml`, and its HDL is analyzed (see [docs/vivado-ip.md](docs/vivado-ip.md)).
 
@@ -227,7 +227,7 @@ An interface instance becomes part of the module that declares it (its signals a
 
 #### Editing projects in the GUI
 
-**File → New Project…**, **Edit Project…** (Ctrl+E) and **Save Project As…** open the project settings: sources in compilation order with their VHDL library, constraints, waivers, top parameters/generics, defines, include directories and the analysis options. The project is written back as `*.ocdc.json` with paths relative to the file, and analyzed again.
+**File → New Project…**, **Edit Project…** (Ctrl+E) and **Save Project As…** open the project settings: sources in compilation order with their VHDL library, constraints (with the module a scoped constraint file is run in), waivers, IP repositories, top parameters/generics, defines, include directories and the analysis options. The project is written back as `*.ocdc.json` with paths relative to the file, and analyzed again.
 
 Examples: `examples/vhdl/` has VHDL versions of all four examples, `examples/mixed/` has mixed versions; both give the same CDC results as the Verilog originals.
 

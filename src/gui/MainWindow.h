@@ -21,6 +21,7 @@ namespace opencdc::gui {
 
 class CdcPathView;
 class ClockView;
+class OutputPortView;
 class SchematicView;
 class ViolationView;
 class SourceViewer;
@@ -48,6 +49,7 @@ public:
     [[nodiscard]] ClockView* clockView() const { return clockView_; }
     [[nodiscard]] CdcPathView* pathView() const { return pathView_; }
     [[nodiscard]] ViolationView* violationView() const { return violationView_; }
+    [[nodiscard]] OutputPortView* outputView() const { return outputView_; }
     [[nodiscard]] SchematicView* schematicView() const { return schematicView_; }
     [[nodiscard]] AnalysisController* controller() const { return controller_; }
     [[nodiscard]] const AnalysisController::ResultPtr& lastResult() const { return lastResult_; }
@@ -95,6 +97,7 @@ private:
     ClockView* clockView_ = nullptr;
     CdcPathView* pathView_ = nullptr;
     ViolationView* violationView_ = nullptr;
+    OutputPortView* outputView_ = nullptr;
     SchematicView* schematicView_ = nullptr;
     QDockWidget* schematicDock_ = nullptr;
     QDockWidget* pathDock_ = nullptr;

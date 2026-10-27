@@ -1,0 +1,9 @@
+{
+  "format": "opencdc-project",
+  "version": 1,
+  "name": "output_ports",
+  "top": "output_ports",
+  "sources": ["rtl/output_ports.v"],
+  "constraints": ["constraints/output_ports.sdc"],
+  "waivers": ["waivers.json"]
+}
