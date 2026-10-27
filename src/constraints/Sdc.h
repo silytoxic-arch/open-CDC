@@ -73,6 +73,9 @@ public:
     }
     /// Clock bits of the flip-flops of a cell (empty for instances).
     virtual std::vector<graph::BitRef> cellClocks(const Object& /*cell*/) { return {}; }
+    /// The flip-flop cells of a vector register cell, one per bit, named as
+    /// Vivado names them ("x_reg[3]"); other cells are returned unchanged.
+    virtual std::vector<Object> cellBits(const Object& cell) { return {cell}; }
     /// "instance (definition)" of a black-box instance (a module or IP the
     /// design does not define) whose path the pattern starts with.
     virtual std::optional<std::string> blackBoxContaining(std::string_view /*pattern*/) { return std::nullopt; }
@@ -118,6 +121,7 @@ public:
     bool cellPropertyKnown(std::string_view prop) override;
     std::optional<std::string> cellProperty(const Object& cell, std::string_view prop) override;
     std::vector<graph::BitRef> cellClocks(const Object& cell) override;
+    std::vector<Object> cellBits(const Object& cell) override;
     std::vector<Object> cellPins(const Object& cell) override;
     std::vector<Object> pinNets(const Object& pin) override;
     std::vector<Object> netPins(const Object& net) override;
@@ -149,8 +153,11 @@ private:
         std::int32_t msb = 0;
         std::int32_t lsb = 0;
         bool indexable = false;
+        bool vector = false; ///< registers: declared as a vector (Vivado names its flip-flops x_reg[i], also for one bit)
         std::vector<graph::BitRef> explicitBits; ///< for register clock pins (C): one bit
     };
+    /// A whole vector register split into one object per bit ("x_reg[3]").
+    std::vector<Object> perBit(const Object& reg);
     std::vector<Object> match(const std::vector<Named>& items, ObjectKind kind, std::string_view pattern,
                               bool hierarchical, bool nocase) const;
     void buildNames();      ///< ports, nets and instance pins (on first use)

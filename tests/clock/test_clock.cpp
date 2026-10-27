@@ -376,9 +376,10 @@ TEST_CASE("set_clock_groups with get_clocks -of_objects", "[clock][constraints]"
                                  "set_clock_groups -asynchronous -group [get_clocks -of_objects [get_nets d]] -group clk_b\n");
     CHECK(n.countCode("CON-UNMATCHED") == 1);
     CHECK(n.rel("top.div", "clk_b") == ClockRelation::Unknown);
-    // -of_objects of other queries is still not supported
+    // get_ports -of_objects: the port on the net
     auto p = analyze(design, std::string(clocks) + "set_input_delay -clock clk_a 1 [get_ports -of_objects [get_nets d]]\n");
-    CHECK(p.countCode("CON-UNSUPPORTED-OPTION") == 1);
+    CHECK(p.countCode("CON-UNSUPPORTED-OPTION") == 0);
+    CHECK(p.countCode("CON-UNMATCHED") == 0);
 }
 
 TEST_CASE("Clock-level false paths and datapath-only max delays declare asynchronous pairs", "[clock][constraints]") {

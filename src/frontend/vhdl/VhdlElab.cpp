@@ -160,6 +160,7 @@ int Elaborator::createStorageObject(const std::string& name, const Type* t, bool
             if (ty.element && ty.element->isScalar() && bitWidth(*ty.element).value_or(0) == 1) {
                 net.msb = clamp32(r.left);
                 net.lsb = clamp32(r.right);
+                net.vector = true;
                 net.isSigned = ty.baseTag() == TypeTag::Signed || ty.baseTag() == TypeTag::ArithSigned;
             }
             else if (ty.element) {

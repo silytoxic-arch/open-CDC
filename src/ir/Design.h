@@ -51,6 +51,7 @@ struct Net {
     NetKind kind = NetKind::Wire;
     PortDir dir = PortDir::None;
     bool isSigned = false;
+    bool vector = false; ///< declared as a bit vector (std_logic_vector(0 downto 0), logic [0:0]), not a scalar
     /// Unpacked arrays (memories) are flattened: width = elemWidth * depth.
     std::uint32_t arrayDepth = 0; ///< 0 = not an array
     std::uint32_t elemWidth = 0;

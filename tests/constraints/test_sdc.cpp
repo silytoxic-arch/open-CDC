@@ -354,7 +354,7 @@ TEST_CASE("Design resolver: cells, instances, filters, regexp, clocks of cells a
                    "    set ffs [get_cells -quiet -hier -regexp {.*/s[12]_reg_reg} -filter \"PARENT == $inst\"]\n"
                    "    set bits [get_cells -quiet -hier -regexp {.*/cnt_reg_reg\\[\\d+\\]} -filter \"PARENT == $inst\"]\n"
                    "    set async [get_cells -quiet -hier -filter \"PARENT == $inst && ASYNC_REG == TRUE\"]\n"
-                   "    if {[llength $ffs] == 2 && [llength $bits] == 1 && [llength $async] == 2} { incr n }\n"
+                   "    if {[llength $ffs] == 2 && [llength $bits] == 2 && [llength $async] == 2} { incr n }\n"
                    "    set clk [get_clocks -of_objects [get_cells \"$inst/s1_reg_reg $inst/s2_reg_reg\"]]\n"
                    "    if {[llength $clk] == 1} { incr n }\n"
                    "}\n"
@@ -704,4 +704,152 @@ TEST_CASE("Scoped constraints run in every instance of their module (read_xdc -r
     // without -ref: a plain constraint file
     auto plain = parse("read_xdc " + toUtf8(topScoped) + "\n", r);
     CHECK(plain.set.pathExceptions.size() == 1);
+}
+
+namespace {
+struct TwoSyncs {
+    test::BuiltDesign b = test::buildDesign("module sync2(input clk_in, input clk_out, input d, output q);\n"
+                                            "  reg d_q, s1, s2;\n"
+                                            "  always @(posedge clk_in) d_q <= d;\n"
+                                            "  always @(posedge clk_out) begin s1 <= d_q; s2 <= s1; end\n"
+                                            "  assign q = s2;\n"
+                                            "endmodule\n"
+                                            "module wrap(input ca, input cb, input d, output q);\n"
+                                            "  sync2 inner (.clk_in(ca), .clk_out(cb), .d(d), .q(q));\n"
+                                            "endmodule\n"
+                                            "module top(input clk_a, input clk_b, input d, output q0, output q1);\n"
+                                            "  sync2 u0 (.clk_in(clk_a), .clk_out(clk_b), .d(d), .q(q0));\n"
+                                            "  wrap u1 (.ca(clk_b), .cb(clk_a), .d(d), .q(q1));\n"
+                                            "endmodule\n",
+                                            "top");
+    graph::DesignView view{*b.design};
+    DesignObjectResolver r{view};
+
+    [[nodiscard]] std::vector<std::string> toNames(const Parsed& p) const {
+        std::vector<std::string> out;
+        for (const auto& e : p.set.pathExceptions)
+            for (const auto& t : e.to)
+                out.push_back(view.name(t.bit));
+        std::ranges::sort(out);
+        return out;
+    }
+};
+} // namespace
+
+TEST_CASE("current_instance: names relative to an instance, '..', reset, get_ports", "[constraints][scoped]") {
+    TwoSyncs d;
+    // as Digilent's synchronizer example writes it
+    auto& r = d.r;
+    auto a = parse("create_clock -name a -period 10 [get_ports clk_a]\n"
+                   "current_instance -quiet\n"
+                   "current_instance [get_cells u0]\n"
+                   "set_false_path -to [get_cells s1_reg]\n"
+                   "if {[current_instance .] != \"u0\"} { create_clock -name wrong_value -period 1 }\n"
+                   // plain get_ports still names the top-level ports
+                   "create_clock -name b -period 7 [get_ports clk_b]\n"
+                   // the instance's own pins
+                   "set ci [get_ports -scoped_to_current_instance clk_out]\n"
+                   "if {[llength $ci] != 1} { create_clock -name wrong_pins -period 1 }\n"
+                   "current_instance -quiet\n"
+                   "current_instance u1/inner\n"
+                   "set_false_path -to [get_cells s2_reg]\n"
+                   "current_instance ..\n"
+                   "set_false_path -to [get_cells inner/d_q_reg]\n"
+                   "current_instance\n"
+                   "set_false_path -to [get_cells u0/s2_reg]\n",
+                   r);
+    CHECK(a.countCode("CON-UNMATCHED") == 0);
+    CHECK(a.countCode("CON-IGNORED") == 0); // current_instance is a command now, not an ignored one
+    CHECK(d.toNames(a) == std::vector<std::string>{"top.u0.s1", "top.u0.s2", "top.u1.inner.d_q", "top.u1.inner.s2"});
+    CHECK(std::ranges::count_if(a.set.clocks, [](const ClockDef& c) { return c.name.starts_with("wrong"); }) == 0);
+    CHECK(std::ranges::count_if(a.set.clocks, [](const ClockDef& c) { return c.name == "b" && !c.sources.empty(); }) == 1);
+
+    // negative: get_ports does not see the instance's pins without the option
+    auto n = parse("current_instance u0\nset x [get_ports clk_out]\n", r);
+    CHECK(n.countCode("CON-UNMATCHED") == 1);
+
+    // negative: an instance that does not exist, or '..' above the top,
+    // leaves the current instance unchanged
+    auto bad = parse("current_instance nosuch\n"
+                     "set_false_path -to [get_cells u0/s1_reg]\n"
+                     "current_instance ..\n"
+                     "current_instance [get_cells u0/s1_reg]\n"
+                     "set_false_path -to [get_cells u0/s2_reg]\n",
+                     r);
+    CHECK(bad.countCode("CON-UNMATCHED") == 3);
+    CHECK(d.toNames(bad) == std::vector<std::string>{"top.u0.s1", "top.u0.s2"});
+
+    // the current instance ends with its file
+    ConstraintSet set;
+    CollectingDiagnosticSink sink;
+    SdcReader reader(r, set, sink);
+    reader.parse("current_instance u0\nset_false_path -to [get_cells s1_reg]\n", "a.xdc");
+    reader.parse("set_false_path -to [get_cells u0/s2_reg]\n", "b.xdc");
+    const auto diags = sink.take();
+    CHECK(std::ranges::count_if(diags, [](const Diagnostic& x) { return x.code == "CON-UNMATCHED"; }) == 0);
+    CHECK(set.pathExceptions.size() == 2);
+}
+
+TEST_CASE("current_instance inside scoped constraints stays within the instance", "[constraints][scoped]") {
+    TwoSyncs d;
+    test::TempDir dir;
+    const auto scoped = dir.write("wrap.tcl", "current_instance inner\n"
+                                              "set_false_path -to [get_cells s1_reg]\n"
+                                              "current_instance\n"
+                                              "set_false_path -to [get_cells inner/s2_reg]\n"
+                                              "current_instance ..\n" // above the scoped instance: refused
+                                              "set_false_path -to [get_cells inner/d_q_reg]\n");
+    auto p = parse("read_xdc -ref wrap " + toUtf8(scoped) + "\n", d.r);
+    CHECK(p.countCode("CON-UNMATCHED") == 1);
+    CHECK(d.toNames(p) == std::vector<std::string>{"top.u1.inner.d_q", "top.u1.inner.s1", "top.u1.inner.s2"});
+}
+
+TEST_CASE("get_ports -of_objects: the instance ports on nets (open-logic olo_intf_sync)", "[constraints][scoped]") {
+    TwoSyncs d;
+    test::TempDir dir;
+    const auto scoped = dir.write(
+        "sync2.tcl",
+        "set in_ffs [get_pins -of_objects [get_cells d_q_reg] -filter {REF_PIN_NAME == D}]\n"
+        "set in_ports [get_ports -scoped_to_current_instance -prop_thru_buffers -of_objects [get_nets -of_objects "
+        "$in_ffs]]\n"
+        "if {[llength $in_ports] != 1} { create_clock -name wrong_ports -period 1 }\n"
+        "set_max_delay -datapath_only 2 -from $in_ports\n");
+    auto p = parse("read_xdc -ref sync2 " + toUtf8(scoped) + "\n", d.r);
+    CHECK(p.countCode("CON-UNMATCHED") == 0);
+    CHECK(p.countCode("CON-UNSUPPORTED-OPTION") == 0);
+    CHECK(std::ranges::none_of(p.set.clocks, [](const ClockDef& c) { return c.name == "wrong_ports"; }));
+    // two instances of sync2: an exception from each instance's d pin
+    REQUIRE(p.set.pathExceptions.size() == 2);
+    for (const auto& e : p.set.pathExceptions)
+        CHECK(!e.from.empty());
+    // negative: no port on a net that stays inside the instance
+    auto n = parse("set x [get_ports -of_objects [get_nets u0/s1]]\n", d.r);
+    CHECK(n.countCode("CON-UNMATCHED") == 1);
+}
+
+TEST_CASE("Filters see one flip-flop per bit, as Vivado names them", "[constraints]") {
+    auto b = test::buildDesign("module top(input clk, input [3:0] d, output [3:0] q, output [0:0] o, output s);\n"
+                               "  reg [3:0] v; reg [0:0] one; reg sc;\n"
+                               "  always @(posedge clk) begin v <= d; one <= d[0]; sc <= d[1]; end\n"
+                               "  assign q = v; assign o = one; assign s = sc;\n"
+                               "endmodule\n",
+                               "top");
+    graph::DesignView view(*b.design);
+    DesignObjectResolver r(view);
+    auto p = parse("set a [get_cells -hier -filter {NAME =~ *v_reg[2]}]\n"
+                   "if {[llength $a] != 1} { create_clock -name wrong_a -period 1 }\n"
+                   "set_false_path -to $a\n"
+                   "set c [get_pins -hier -filter {NAME =~ *v_reg[*]/C}]\n"
+                   "if {[llength $c] != 4} { create_clock -name wrong_c -period 1 }\n"
+                   // a vector of one bit is named with its index
+                   "set o [get_cells -hier -filter {NAME =~ *one_reg[0]}]\n"
+                   "if {[llength $o] != 1} { create_clock -name wrong_o -period 1 }\n",
+                   r);
+    CHECK(std::ranges::none_of(p.set.clocks, [](const ClockDef& c) { return c.name.starts_with("wrong"); }));
+    REQUIRE(p.set.pathExceptions.size() == 1);
+    REQUIRE(p.set.pathExceptions.front().to.size() == 1);
+    CHECK(view.name(p.set.pathExceptions.front().to.front().bit) == "top.v[2]");
+    // negative: a scalar register is not indexed
+    auto n = parse("set x [get_cells -hier -filter {NAME =~ *sc_reg[0]}]\n", r);
+    CHECK(n.countCode("CON-UNMATCHED") == 1);
 }

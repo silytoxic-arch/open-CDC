@@ -266,6 +266,23 @@ for pm in ["PmodGPIO", "PmodSF3", "PmodCOLOR", "PmodBT2", "PmodAMP2"]:
                "sources": [os.path.join(d, pm + ".v")] + sorted(glob.glob(os.path.join(d, "*", "*.xci"))),
                "constraints": glob.glob(os.path.join(d, "*_ooc.xdc")), "ipRepositories": [dl]},
               open(os.path.join(work, pm.lower() + ".ocdc.json"), "w"), indent=1)
+# Digilent's synchronizer example: its XDC constrains each synchronizer with
+# current_instance, get_ports -scoped_to_current_instance and per-bit filters
+sy = os.path.join(work, "vivado-library/module/synchronizers")
+json.dump({"format": "opencdc-project", "version": 1, "name": "dl_sync_example", "top": "top",
+           "sources": [os.path.join(sy, f) for f in ["SyncAsync.vhd", "SyncBase.vhd", "ResetBridge.vhd",
+                                                     "HandshakeData.vhd", "example/top.vhd"]],
+           "constraints": [os.path.join(sy, "example/top.xdc")]},
+          open(os.path.join(work, "dl_sync_example.ocdc.json"), "w"), indent=1)
+# open-logic interface synchronizer with its scoped constraints (get_ports
+# -scoped_to_current_instance -of_objects <nets>)
+intf = os.path.join(work, "open-logic/src/intf")
+open(os.path.join(work, "olo_intf.sdc"), "w").write("create_clock -name clk -period 10 [get_ports Clk]\n")
+json.dump({"format": "opencdc-project", "version": 1, "name": "olo_intf_sync", "top": "olo_intf_sync",
+           "sources": [{"file": f, "library": "olo"} for f in files + [os.path.join(intf, "vhdl/olo_intf_sync.vhd")]],
+           "parameters": {"Width_g": 4},
+           "constraints": ["olo_intf.sdc", {"file": os.path.join(intf, "tcl/olo_intf_sync.tcl"), "ref": "olo_intf_sync"}]},
+          open(os.path.join(work, "olo_intf_sync.ocdc.json"), "w"), indent=1)
 # Digilent board demos with their Vivado IP
 cm = os.path.join(work, "cmod-a7-gpio/src")
 json.dump({"format": "opencdc-project", "version": 1, "name": "cmod_a7_gpio", "top": "GPIO_demo",
@@ -317,6 +334,10 @@ check pmodsf3.ocdc.json  "Clocks  : 2 \\(51/51 registers resolved\\).*async-fifo
 check pmodcolor.ocdc.json "Clocks  : 1 \\(25/25 registers resolved\\).*IP 'PmodCOLOR_axi_iic_0_0' \\(xilinx.com:ip:axi_iic:2.0\\) modelled.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 0 crossing path"
 check pmodbt2.ocdc.json  "Clocks  : 1 \\(28/28 registers resolved\\).*IP 'PmodBT2_axi_uart16550_0_0' \\(xilinx.com:ip:axi_uart16550:2.0\\) modelled.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 0 crossing path"
 check pmodamp2.ocdc.json "Clocks  : 1 \\(39/39 registers resolved\\).*IP 'PmodAMP2_PWM_0_0' \\(digilentinc.com:IP:PWM:2.0\\) modelled.*top module 'PWM_v2_0'.*IR-MIXED-ASSIGN.*reg_data_out.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 0 crossing path"
+# the XDC's per-instance constraints all resolve; its datapath-only max delay
+# makes the handshake's data path safe
+check dl_sync_example.ocdc.json "Clocks  : 2 \\(17/17 registers resolved\\).*Summary : 0 error\\(s\\), 0 warning.*CDC     : 7 crossing path\\(s\\), 7 synchronized.*OneClk -> TwoClk \\(asynchronous\\): 5 path\\(s\\), 5 synchronized, 4 need review"
+check olo_intf_sync.ocdc.json "Summary : 0 error\\(s\\), 0 warning"
 # each FIFO .xci alone: modelled; with independent clocks an asynchronous FIFO
 n=$(cat dl_fifo_count.txt)
 [ "$n" = 13 ] || { echo "::error::expected 13 FIFO .xci files in vivado-library, found $n"; fail=1; }

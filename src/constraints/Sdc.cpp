@@ -280,6 +280,7 @@ void DesignObjectResolver::buildRegisters() {
             x.width = ch.width;
             x.msb = net.indexOf(ch.offset + ch.width - 1);
             x.lsb = net.indexOf(ch.offset);
+            x.vector = net.vector || net.width > 1;
             // a 1-bit register also answers to "<name>_reg[0]" (Vivado names
             // a [0:0] vector so; the IR does not record the declared range)
             x.indexable = true;
@@ -347,10 +348,11 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
     buildNames();
     auto out = match(pins_, ObjectKind::Pin, pattern, hierarchical, nocase);
     // Synthesized flip-flop pins: <reg>_reg[/bit]/Q and /C (Vivado naming).
+    // "-hierarchical *" (a query narrowed by -filter): all flip-flop pins too
     const auto slash = pattern.rfind('/');
-    if (slash == std::string_view::npos)
+    if (slash == std::string_view::npos && !hierarchical)
         return out;
-    const auto pin = pattern.substr(slash + 1);
+    const auto pin = slash == std::string_view::npos ? pattern : pattern.substr(slash + 1);
     const bool q = globMatch(pin, "Q", nocase);
     const bool c = globMatch(pin, "C", nocase);
     // the input pins of FDRE/FDSE/FDCE/FDPE other than C
@@ -359,8 +361,12 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
     if (!q && !c && !other)
         return out;
     buildRegisters();
-    const auto regPattern = pattern.substr(0, slash);
-    for (auto o : match(regs_, ObjectKind::Pin, regPattern, hierarchical, nocase)) {
+    const auto regPattern = slash == std::string_view::npos ? std::string_view("*") : pattern.substr(0, slash);
+    std::vector<Object> regsMatched;
+    for (const auto& whole : match(regs_, ObjectKind::Pin, regPattern, hierarchical, nocase))
+        for (auto& b : perBit(whole)) // one flip-flop per bit, as Vivado names them: x_reg[3]/C
+            regsMatched.push_back(std::move(b));
+    for (auto o : regsMatched) {
         if (other && o.item >= 0)
             for (auto& p : registerPins(static_cast<std::size_t>(o.item), o.name, o.bits))
                 if (p.pin != "Q" && p.pin != "C" && globMatch(pin, p.pin, nocase))
@@ -431,9 +437,14 @@ std::vector<Object> DesignObjectResolver::cells(std::string_view pattern, bool h
     // "u_*" is a top-level cell, "u_s0/*" a cell directly inside u_s0 ('*'
     // does not cross hierarchy levels)
     const auto levels = [](std::string_view n) { return std::ranges::count(n, '/'); };
-    auto out = match(regs_, ObjectKind::Cell, pattern, hierarchical, nocase);
+    auto matched = match(regs_, ObjectKind::Cell, pattern, hierarchical, nocase);
     if (!hierarchical)
-        std::erase_if(out, [&](const Object& o) { return levels(regs_[static_cast<std::size_t>(o.item)].name) != levels(pattern); });
+        std::erase_if(matched, [&](const Object& o) { return levels(regs_[static_cast<std::size_t>(o.item)].name) != levels(pattern); });
+    // one flip-flop cell per bit, as Vivado has them ("x_reg[3]")
+    std::vector<Object> out;
+    for (const auto& o : matched)
+        for (auto& b : perBit(o))
+            out.push_back(std::move(b));
     for (std::size_t i = 0; i < insts_.size(); ++i) {
         bool hit = false;
         const std::string alias = withoutGenblk(insts_[i]);
@@ -480,20 +491,24 @@ std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bo
         if (hits(it.name)) {
             for (std::uint32_t b = 0; b < it.width; ++b)
                 o.bits.push_back(BitRef{it.first.inst, it.first.net, it.first.bit + b});
+            for (auto& x : perBit(o)) // one flip-flop cell per bit, as in Vivado
+                out.push_back(std::move(x));
+            continue;
         }
         else if (it.indexable) {
-            std::string last;
+            // matched per bit: one flip-flop cell per bit, as in Vivado
             for (std::uint32_t b = 0; b < it.width; ++b) {
                 const std::int32_t index = it.msb >= it.lsb ? it.lsb + static_cast<std::int32_t>(b)
                                                             : it.lsb - static_cast<std::int32_t>(b);
                 std::string bitName = it.name + "[" + std::to_string(index) + "]";
                 if (hits(bitName)) {
-                    o.bits.push_back(BitRef{it.first.inst, it.first.net, it.first.bit + b});
-                    last = std::move(bitName);
+                    Object x = o;
+                    x.name = std::move(bitName);
+                    x.bits = {BitRef{it.first.inst, it.first.net, it.first.bit + b}};
+                    out.push_back(std::move(x));
                 }
             }
-            if (o.bits.size() == 1)
-                o.name = last;
+            continue;
         }
         if (!o.bits.empty())
             out.push_back(std::move(o));
@@ -542,6 +557,36 @@ std::optional<std::string> DesignObjectResolver::cellProperty(const Object& cell
                 return v.empty() ? std::string("1") : v;
             }
     return std::nullopt;
+}
+
+std::vector<Object> DesignObjectResolver::cellBits(const Object& cell) {
+    if (cell.kind != ObjectKind::Cell || cell.instance || cell.item < 0)
+        return {cell};
+    return perBit(cell);
+}
+
+std::vector<Object> DesignObjectResolver::perBit(const Object& cell) {
+    buildRegisters();
+    const auto idx = static_cast<std::size_t>(cell.item);
+    if (idx >= regs_.size())
+        return {cell};
+    const Named& it = regs_[idx];
+    // a whole vector register only: "x_reg" -> "x_reg[0]", "x_reg[1]", ...
+    if (cell.name != it.name || (it.width < 2 && !it.vector) || !it.indexable || !it.explicitBits.empty() || it.name.ends_with(']'))
+        return {cell};
+    std::vector<Object> out;
+    for (std::uint32_t b = 0; b < it.width; ++b) {
+        const BitRef bit{it.first.inst, it.first.net, it.first.bit + b};
+        if (std::ranges::find(cell.bits, bit) == cell.bits.end())
+            continue;
+        const std::int32_t index =
+            it.msb >= it.lsb ? it.lsb + static_cast<std::int32_t>(b) : it.lsb - static_cast<std::int32_t>(b);
+        Object o = cell;
+        o.name = it.name + "[" + std::to_string(index) + "]";
+        o.bits = {bit};
+        out.push_back(std::move(o));
+    }
+    return out.empty() ? std::vector<Object>{cell} : out;
 }
 
 std::vector<BitRef> DesignObjectResolver::cellClocks(const Object& cell) {
@@ -1216,7 +1261,7 @@ std::optional<double> toNumber(std::string_view s) {
 
 const std::set<std::string, std::less<>>& knownCommands() {
     static const std::set<std::string, std::less<>> cmds = {
-        "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "set_output_delay", "read_xdc", "get_ports", "get_port", "get_pin", "get_cell", "get_net", "get_clock", "get_pins", "get_nets",
+        "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "set_output_delay", "read_xdc", "current_instance", "get_ports", "get_port", "get_pin", "get_cell", "get_net", "get_clock", "get_pins", "get_nets",
         "get_clocks", "all_clocks", "get_cells", "all_inputs", "all_outputs", "all_registers", "expr", "if",
         "foreach", "for", "while", "break", "continue", "incr", "llength", "lindex", "lappend", "puts",
         "get_property", "list", "concat", "proc", "return", "global", "source", "get_registers", "get_keepers",
@@ -1232,7 +1277,7 @@ bool isTimingOrMiscCommand(std::string_view c) {
         "set_multicycle_path", "set_clock_uncertainty", "set_clock_latency", "set_input_jitter",
         "set_system_jitter", "set_clock_sense", "set_case_analysis", "set_property", "set_load",
         "set_drive", "set_driving_cell", "set_input_transition", "set_disable_timing", "set_units",
-        "current_design", "current_instance", "set_max_fanout", "set_max_transition", "set_bus_skew",
+        "current_design", "set_max_fanout", "set_max_transition", "set_bus_skew",
         "set_max_time_borrow", "set_propagated_clock", "set_ideal_network", "set_dont_touch",
         "set_operating_conditions", "set_wire_load_model", "group_path", "set_clock_transition",
         "create_pblock", "add_cells_to_pblock", "resize_pblock", "set_clock_gating_check", "set_data_check",
@@ -1243,16 +1288,20 @@ bool isTimingOrMiscCommand(std::string_view c) {
     return cmds.contains(c);
 }
 
-/// The design seen from inside one instance, for scoped constraints
-/// (read_xdc -ref <module>, Vivado SCOPED_TO_REF): names are relative to the
-/// instance, get_ports names the instance's pins, -hierarchical searches
-/// below the instance only.
+/// The design seen from inside one instance: names are relative to the
+/// instance and -hierarchical searches below it only. Used for scoped
+/// constraints (read_xdc -ref <module>, Vivado SCOPED_TO_REF) and for
+/// current_instance. get_ports names the pins of `portScope` (the instance a
+/// scoped file applies to), or the top-level ports when it is empty (Vivado:
+/// current_instance does not change get_ports).
 class ScopedResolver final : public IObjectResolver {
 public:
-    ScopedResolver(IObjectResolver& base, std::string scope) : base_(base), scope_(std::move(scope)) {}
+    ScopedResolver(IObjectResolver& base, std::string scope, std::string portScope)
+        : base_(base), scope_(std::move(scope)), portScope_(std::move(portScope)) {}
 
     std::vector<Object> ports(std::string_view pattern, bool nocase) override {
-        return base_.pins(scope_ + "/" + std::string(pattern), false, nocase);
+        return portScope_.empty() ? base_.ports(pattern, nocase)
+                                  : base_.pins(portScope_ + "/" + std::string(pattern), false, nocase);
     }
     std::vector<Object> pins(std::string_view pattern, bool hierarchical, bool nocase) override {
         return hierarchical ? inside(base_.pins(pattern, true, nocase))
@@ -1282,6 +1331,7 @@ public:
         return base_.cellProperty(cell, prop);
     }
     std::vector<graph::BitRef> cellClocks(const Object& cell) override { return base_.cellClocks(cell); }
+    std::vector<Object> cellBits(const Object& cell) override { return base_.cellBits(cell); }
     std::optional<std::string> blackBoxContaining(std::string_view pattern) override {
         return base_.blackBoxContaining(scope_ + "/" + std::string(pattern));
     }
@@ -1305,19 +1355,24 @@ private:
     }
     IObjectResolver& base_;
     std::string scope_;
+    std::string portScope_;
 };
 
 class Interp {
 public:
     Interp(IObjectResolver& resolver, ConstraintSet& out, DiagnosticSink& sink, SdcOptions options)
-        : resolver_(&resolver), out_(out), sink_(sink), options_(std::move(options)) {}
+        : resolver_(&resolver), root_(&resolver), out_(out), sink_(sink), options_(std::move(options)) {}
 
     /// Runs one constraint file; the interpreter state (variables,
-    /// procedures) carries over to the next file.
+    /// procedures) carries over to the next file. The current instance is
+    /// the top during the file and is reset after it, as in Vivado.
     void runFile(std::string_view text, const std::string& fileName) {
+        const ScopeState saved = scopeState();
+        setScope("", "");
         file_ = fileName;
         runScript(text, 1);
         ctl_ = Ctl::None; // a `return` (or stray break) at file level ends the file
+        restoreScope(saved);
         reportIgnored();
     }
 
@@ -1330,14 +1385,14 @@ public:
             return t;
         };
         std::vector<std::string> scopes;
-        for (const auto& t : resolver_->topModules())
+        for (const auto& t : root_->topModules())
             if (lowerOf(t) == lowerOf(ref))
                 scopes.emplace_back(); // the top itself: names as they are
-        for (const auto& c : resolver_->cells("*", true, false)) {
+        for (const auto& c : root_->cells("*", true, false)) {
             if (!c.instance)
                 continue;
-            const auto r = resolver_->cellProperty(c, "REF_NAME");
-            const auto o = resolver_->cellProperty(c, "ORIG_REF_NAME");
+            const auto r = root_->cellProperty(c, "REF_NAME");
+            const auto o = root_->cellProperty(c, "ORIG_REF_NAME");
             if ((r && lowerOf(*r) == lowerOf(ref)) || (o && lowerOf(*o) == lowerOf(ref)))
                 scopes.push_back(c.name);
         }
@@ -1352,20 +1407,7 @@ public:
             file_ = caller;
             return 0;
         }
-        IObjectResolver* base = resolver_;
-        auto frames = std::move(frames_);
-        for (const auto& scope : scopes) {
-            ScopedResolver sr(*base, scope);
-            resolver_ = scope.empty() ? base : &sr;
-            frames_ = std::vector<Frame>(1);
-            const std::string caller = file_;
-            file_ = fileName;
-            runScript(text, 1);
-            ctl_ = Ctl::None;
-            file_ = caller;
-            resolver_ = base;
-        }
-        frames_ = std::move(frames);
+        runInScopes(text, fileName, scopes);
         const std::string caller = file_;
         file_ = fileName;
         reportIgnored();
@@ -1386,8 +1428,12 @@ public:
             }
             if (w == "-cells" && i + 1 < cmd.words.size()) {
                 Value v = subst(cmd.words[++i], cmd.line);
-                for (const auto& o : v.objects)
-                    cells.push_back(o.name);
+                if (v.hasObjects)
+                    for (const auto& o : v.objects)
+                        cells.push_back(o.name);
+                else
+                    for (auto& n : splitList(v.text))
+                        cells.push_back(absoluteInstance(n));
                 continue;
             }
             if (w == "-mode" || w == "-of_objects") {
@@ -1419,28 +1465,163 @@ public:
             return {};
         }
         if (!cells.empty()) {
-            IObjectResolver* base = resolver_;
-            auto frames = std::move(frames_);
-            for (const auto& scope : cells) {
-                ScopedResolver sr(*base, scope);
-                resolver_ = &sr;
-                frames_ = std::vector<Frame>(1);
-                const std::string caller = file_;
-                file_ = name;
-                runScript(decoded->utf8, 1);
-                ctl_ = Ctl::None;
-                file_ = caller;
-                resolver_ = base;
-            }
-            frames_ = std::move(frames);
+            runInScopes(decoded->utf8, name, cells);
             return {};
         }
-        const std::string caller = file_;
-        file_ = name;
-        runScript(decoded->utf8, 1);
-        ctl_ = Ctl::None;
-        file_ = caller;
+        runInScopes(decoded->utf8, name, {std::string()}, false);
         return {};
+    }
+
+    /// current_instance [-quiet] [<instance>]: sets the instance that names
+    /// are relative to. No instance: back to the top (of a scoped file: its
+    /// instance); "..": one level up; "." or an empty name: unchanged.
+    /// Returns the current instance (relative to the top).
+    Value currentInstanceCmd(const Command& cmd) {
+        std::optional<Value> arg;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+            const std::string w = cmd.words[i].raw;
+            if (w == "-quiet" || w == "-verbose")
+                continue;
+            if (arg) {
+                diag("CON-PARSE", Severity::Error, "current_instance: more than one instance given", cmd.line);
+                return {};
+            }
+            arg = subst(cmd.words[i], cmd.line);
+        }
+        if (!arg) {
+            setScope(fileScope_, fileScope_);
+            return relativeScopeValue();
+        }
+        std::string target;
+        if (arg->hasObjects) {
+            if (arg->objects.size() != 1 || arg->objects.front().kind != ObjectKind::Cell ||
+                !arg->objects.front().instance) {
+                diag("CON-UNMATCHED", Severity::Warning,
+                     "current_instance: expected one hierarchical instance (got " +
+                         std::to_string(arg->objects.size()) + " object(s)); the current instance is unchanged",
+                     cmd.line);
+                return relativeScopeValue();
+            }
+            target = arg->objects.front().name;
+        }
+        else {
+            std::string scope = curScope_;
+            for (const auto& part : splitPath(arg->text)) {
+                if (part == ".")
+                    continue;
+                if (part == "..") {
+                    if (scope == fileScope_) {
+                        diag("CON-UNMATCHED", Severity::Warning,
+                             "current_instance: '..' goes above the top" +
+                                 (fileScope_.empty() ? std::string() : " of the scoped instance '" + fileScope_ + "'") +
+                                 "; the current instance is unchanged",
+                             cmd.line);
+                        return relativeScopeValue();
+                    }
+                    const auto slash = scope.rfind('/');
+                    scope = slash == std::string::npos ? std::string() : scope.substr(0, slash);
+                    continue;
+                }
+                scope = scope.empty() ? part : scope + "/" + part;
+            }
+            if (scope != curScope_ && !scope.empty()) {
+                // the name must be one hierarchical instance (a pattern may name it)
+                std::vector<Object> found;
+                for (auto& c : root_->cells(scope, false, false))
+                    if (c.instance)
+                        found.push_back(std::move(c));
+                if (found.size() != 1) {
+                    diag("CON-UNMATCHED", Severity::Warning,
+                         "current_instance: " +
+                             (found.empty() ? "no hierarchical instance '" + arg->text + "'"
+                                            : "'" + arg->text + "' matches " + std::to_string(found.size()) +
+                                                  " instances") +
+                             "; the current instance is unchanged",
+                         cmd.line);
+                    return relativeScopeValue();
+                }
+                scope = found.front().name;
+            }
+            target = scope;
+        }
+        if (!fileScope_.empty() && target != fileScope_ && !target.starts_with(fileScope_ + "/")) {
+            diag("CON-UNMATCHED", Severity::Warning,
+                 "current_instance: '" + target + "' is outside the scoped instance '" + fileScope_ +
+                     "'; the current instance is unchanged",
+                 cmd.line);
+            return relativeScopeValue();
+        }
+        setScope(fileScope_, target);
+        return relativeScopeValue();
+    }
+
+    struct ScopeState {
+        std::string fileScope, curScope;
+    };
+    ScopeState scopeState() const { return {fileScope_, curScope_}; }
+    void restoreScope(const ScopeState& st) { setScope(st.fileScope, st.curScope); }
+
+    /// Makes `cur` the current instance in a file scoped to `file` ("" = top).
+    void setScope(const std::string& file, const std::string& cur) {
+        fileScope_ = file;
+        curScope_ = cur;
+        if (cur.empty()) {
+            resolver_ = root_;
+            return;
+        }
+        auto& r = scoped_[{cur, file}]; // kept: objects of earlier commands may refer to it
+        if (!r)
+            r = std::make_unique<ScopedResolver>(*root_, cur, file);
+        resolver_ = r.get();
+    }
+
+    /// Runs a file once per scope ("" = the top); `freshVars`: each run with
+    /// its own Tcl variables (scoped constraints).
+    void runInScopes(std::string_view text, const std::string& fileName, const std::vector<std::string>& scopes,
+                     bool freshVars = true) {
+        const ScopeState saved = scopeState();
+        auto frames = freshVars ? std::move(frames_) : std::vector<Frame>{};
+        for (const auto& scope : scopes) {
+            setScope(scope, scope);
+            if (freshVars)
+                frames_ = std::vector<Frame>(1);
+            const std::string caller = file_;
+            file_ = fileName;
+            runScript(text, 1);
+            ctl_ = Ctl::None;
+            file_ = caller;
+        }
+        if (freshVars)
+            frames_ = std::move(frames);
+        restoreScope(saved);
+    }
+
+    /// The current instance relative to the top (of a scoped file: to its instance).
+    Value relativeScopeValue() const {
+        Value v;
+        if (curScope_ == fileScope_)
+            return v;
+        v.text = fileScope_.empty() ? curScope_ : curScope_.substr(fileScope_.size() + 1);
+        return v;
+    }
+    std::string absoluteInstance(const std::string& name) const {
+        return curScope_.empty() ? name : curScope_ + "/" + name;
+    }
+    static std::vector<std::string> splitPath(const std::string& path) {
+        std::vector<std::string> parts;
+        std::string cur;
+        for (const char c : path) {
+            if (c == '/') {
+                if (!cur.empty())
+                    parts.push_back(std::move(cur));
+                cur.clear();
+                continue;
+            }
+            cur += c;
+        }
+        if (!cur.empty())
+            parts.push_back(std::move(cur));
+        return parts;
     }
 
     Value runScript(std::string_view text, std::uint32_t firstLine) {
@@ -1701,8 +1882,21 @@ private:
                                             {"-include_generated_clocks", false}};
         if (name == "get_nets")
             spec.emplace("-segments", false); // all segments of a net: our nets are whole
+        if (name == "get_ports") {
+            spec.emplace("-scoped_to_current_instance", false);
+            spec.emplace("-prop_thru_buffers", false); // no I/O buffers between ports and logic in the model
+        }
 
         Args a = parseArgs(cmd, name, spec);
+        // get_ports -scoped_to_current_instance: the pins of the current
+        // instance (plain get_ports names the top-level ports, or in a scoped
+        // file the pins of its instance)
+        const bool currentPorts = a.flags.contains("-scoped_to_current_instance");
+        auto portQuery = [&](const std::string& pat, bool nc) {
+            if (currentPorts && !curScope_.empty())
+                return root_->pins(curScope_ + "/" + pat, false, nc);
+            return resolver_->ports(pat, nc);
+        };
         const bool quiet = a.flags.contains("-quiet");
         const bool nocase = a.flags.contains("-nocase");
         const bool hier = a.flags.contains("-hierarchical");
@@ -1715,9 +1909,36 @@ private:
         const std::string filter = pins && a.opts.contains("-filter") ? a.opts["-filter"].back().text : std::string();
         if (a.opts.contains("-of_objects") && !clocks) {
             if (name == "get_ports") {
-                diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
-                     name + ": -of_objects is not supported; the command returns nothing", cmd.line);
-                return objectsValue({});
+                // the ports on nets: those sharing a bit with the net
+                std::vector<Object> result;
+                bool unsupportedKind = false;
+                const auto all = portQuery("*", false);
+                for (const auto& ov : a.opts["-of_objects"])
+                    for (const auto& o : objectsOf(ov, cmd, name + " -of_objects")) {
+                        if (o.kind != ObjectKind::Net) {
+                            unsupportedKind = true;
+                            continue;
+                        }
+                        for (const auto& port : all) {
+                            const bool shares = std::ranges::any_of(port.bits, [&](const BitRef& b) {
+                                return std::ranges::find(o.bits, b) != o.bits.end();
+                            });
+                            if (!shares)
+                                continue;
+                            // just the bits on the net ("data[3]" of a bus)
+                            Object x = port;
+                            std::erase_if(x.bits,
+                                          [&](const BitRef& b) { return std::ranges::find(o.bits, b) == o.bits.end(); });
+                            if (std::ranges::none_of(result, [&](const Object& r) { return r.bits == x.bits; }))
+                                result.push_back(std::move(x));
+                        }
+                    }
+                if (unsupportedKind)
+                    diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
+                         name + ": -of_objects supports nets; other objects contribute nothing", cmd.line);
+                if (result.empty() && !quiet)
+                    diag("CON-UNMATCHED", Severity::Warning, name + ": -of_objects: no port is on these nets", cmd.line);
+                return objectsValue(std::move(result));
             }
             // netlist traversal: pins of cells or nets, nets of pins
             std::vector<Object> result;
@@ -1761,6 +1982,11 @@ private:
             return objectsValue(std::move(result));
         }
         std::vector<Object> result;
+        if (a.positional.empty()) {
+            Value all; // no pattern: all objects (get_pins -hier -filter {...})
+            all.text = "*";
+            a.positional.push_back(std::move(all));
+        }
         for (const auto& pv : a.positional) {
             std::vector<std::string> patterns;
             if (pv.hasObjects)
@@ -1773,7 +1999,7 @@ private:
                     result.push_back({ObjectKind::Clock, pat, {}});
                     continue;
                 }
-                std::vector<Object> r = name == "get_ports"   ? resolver_->ports(pat, nocase)
+                std::vector<Object> r = name == "get_ports"   ? portQuery(pat, nocase)
                                         : name == "get_pins"  ? resolver_->pins(pat, hier, nocase)
                                         : name == "get_cells" ? resolver_->cells(pat, hier, nocase)
                                                               : resolver_->nets(pat, hier, nocase);
@@ -3066,6 +3292,15 @@ private:
                     objs.clear();
                     return false;
                 }
+            if (!pins) {
+                // Vivado has one flip-flop cell per bit: a filter on NAME sees
+                // "x_reg[3]", not "x_reg"
+                std::vector<Object> perBit;
+                for (const auto& o : objs)
+                    for (auto& b : resolver_->cellBits(o))
+                        perBit.push_back(std::move(b));
+                objs = std::move(perBit);
+            }
             std::erase_if(objs, [&](const Object& o) {
                 return !FilterParser(
                             filter,
@@ -3527,6 +3762,8 @@ private:
             return setPortDelay(cmd, name, out_.outputDelays);
         if (name == "read_xdc")
             return readXdcCmd(cmd);
+        if (name == "current_instance")
+            return currentInstanceCmd(cmd);
         if (name == "set_clock_groups")
             return setClockGroups(cmd);
         if (name == "get_ports" || name == "get_pins" || name == "get_nets" || name == "get_clocks")
@@ -3593,7 +3830,11 @@ private:
     }
 
     std::string file_; ///< the file being run (diagnostics; base of relative `source` paths)
-    IObjectResolver* resolver_;
+    IObjectResolver* resolver_; ///< the design seen from the current instance
+    IObjectResolver* root_;     ///< the design seen from the top
+    std::string fileScope_;     ///< the instance the running scoped file applies to ("" = top)
+    std::string curScope_;      ///< the current instance ("" = top)
+    std::map<std::pair<std::string, std::string>, std::unique_ptr<ScopedResolver>> scoped_;
     ConstraintSet& out_;
     DiagnosticSink& sink_;
     /// Tcl variable frames: the global frame and one per procedure call

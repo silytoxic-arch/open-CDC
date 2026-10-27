@@ -380,6 +380,7 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
                 auto r = t.getFixedRange();
                 n.msb = r.left;
                 n.lsb = r.right;
+                n.vector = true;
             }
         }
         if (t.kind == sast::SymbolKind::PackedStructType)
