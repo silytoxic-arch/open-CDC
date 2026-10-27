@@ -16,8 +16,8 @@
 #    MIPI CSI-2 receiver: AXI-Stream FIFOs and ILA debug cores), plus each
 #    FIFO .xci of the Digilent library on its own, and two Digilent board
 #    demos with their Vivado IP (Cmod A7 GPIO: Clocking Wizard; Nexys A7 out-of-
-#    box demo: Clocking Wizard, block ROM, CORDIC, XADC, the DDR2 controller as a
-#    black box); the CDC summaries must match.
+#    box demo: Clocking Wizard, block ROM, CORDIC, XADC, the DDR2 memory
+#    interface); the CDC summaries must match.
 set -euo pipefail
 
 BIN=$(cd "$1" && pwd)
@@ -292,7 +292,7 @@ check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodie
 check zmod_scope.ocdc.json  "Clocks  : 6 \\(170/170 registers resolved\\).*async-fifo x1, handshake x1, reset-sync x6, two-flop x8.*IP 'ZmodADC_SynchonizationFIFO' \\(xilinx.com:ip:fifo_generator:13.2\\) modelled.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 21 crossing path\\(s\\), 18 synchronized"
 check mipi_csi2_rx.ocdc.json "Clocks  : 3 \\(94/94 registers resolved\\).*async-fifo x1, reset-sync x3, two-flop x5.*IP 'cdc_fifo'.*AXI-Stream.*IP 'line_buffer'.*IP 'ila_rxclk'.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 12 crossing path\\(s\\), 11 synchronized, 1 unsynchronized"
 check cmod_a7_gpio.ocdc.json "Clocks  : 2 \\(37/37 registers resolved\\).*alias=clk_out1_clk_wiz_0.*\\(100 MHz\\).*IP 'clk_wiz_0' \\(xilinx.com:ip:clk_wiz:6.0\\) modelled.*MMCM, input 12 MHz.*Summary : 0 error\\(s\\), 0 warning"
-check nexys_a7_oob.ocdc.json "Clocks  : 4 \\(362/362 registers resolved\\).*IP 'ClkGen'.*IP 'BRAM_1'.*single-port ROM.*IP 'Square_Root'.*cordic.*FE-XCI-UNSUPPORTED.*mig_7series.*BUFG, MMCME2_ADV, XADC.*Summary : 0 error\\(s\\), 2 warning.*CDC     : 5 crossing path\\(s\\), 3 synchronized, 2 unsynchronized"
+check nexys_a7_oob.ocdc.json "Clocks  : 4 \\(383/383 registers resolved\\).*Inst_DDR.ui_clk  \\[divider\\] alias=mem_ui_clk alias=clk_pll_i.*\\(75.01 MHz\\).*IP 'ClkGen'.*IP 'BRAM_1'.*single-port ROM.*IP 'Square_Root'.*cordic.*IP 'ddr' \\(xilinx.com:ip:mig_7series:4.1\\) modelled.*DDR2 x16, native interface.*BUFG, MMCME2_ADV, XADC.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 4 crossing path\\(s\\), 2 synchronized, 2 unsynchronized"
 # each FIFO .xci alone: modelled; with independent clocks an asynchronous FIFO
 n=$(cat dl_fifo_count.txt)
 [ "$n" = 13 ] || { echo "::error::expected 13 FIFO .xci files in vivado-library, found $n"; fail=1; }

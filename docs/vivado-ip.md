@@ -34,6 +34,7 @@ format, the port list (`boundary`) is taken as it is.
 | Clocking Wizard (`xilinx.com:ip:clk_wiz`) | An `MMCME2_ADV` (or `PLLE2_ADV` for `PRIMITIVE = PLL`) with the multiply/divide values Vivado computed (`C_MMCM_CLKFBOUT_MULT_F`, `C_MMCM_CLKOUTn_DIVIDE`, ...): the clock analysis derives every output clock from the input clock, as Vivado does. Single-ended or differential input (`IBUFDS`), input clock switchover, active-high or active-low reset, `locked`, external feedback. The output clocks also carry Vivado's names (`clk_out1_clk_wiz_0`, the net on the MMCM output) as aliases: `get_clocks`, `set_clock_groups` and `set_input_delay -clock` can use them. Dynamic reconfiguration is not modelled (the configured frequencies are kept). |
 | Block Memory Generator (`xilinx.com:ip:blk_mem_gen`), native interface | Ports by memory type (single-port RAM, simple/true dual-port RAM, single/dual-port ROM). A write port writes on its clock, a read port reads through 1 + output-register stages on its clock: data written on `clka` and read on `clkb` is reported as a crossing (the design must hand over the address/data with a protocol). The model keeps 256 words: the contents do not matter for CDC. |
 | CORDIC, Floating-point, Divider, Multiplier, Adder/Subtracter, Accumulator, Counter, Shift RAM, DDS, FIR, CIC, Complex Multiplier, DSP48 Macro | A one-clock datapath: every output is a register of the IP's clock (`aclk`/`CLK`) that depends on every input. The ports come from a JSON `.xci`; from an XML `.xci` only for the CORDIC. |
+| Memory Interface Generator (`xilinx.com:ip:mig_7series`), one DDR2 or DDR3 controller, native or AXI4 interface | `ui_clk` is a clock derived from the system clock (`sys_clk_i`, or `sys_clk_p`/`sys_clk_n` through `IBUFDS`), with Vivado's name `clk_pll_i` as an alias. Its period comes from the memory configuration that Vivado keeps next to the `.xci` (`XML_INPUT_FILE`, usually `mig_a.prj`: memory clock period x PHY ratio, as a ratio to the configured input clock); without that file, from the configured user interface frequency (`FREQ_HZ`), still related to the system clock. Additional clocks `ui_addn_clk_<n>` (`MMCM_CLKOUT<n>_FREQ`) likewise. Every user interface port (`app_*`, or `s_axi_*` and `aresetn`) belongs to `ui_clk`: inputs are read on `ui_clk`, outputs are `ui_clk` registers. `sys_rst` (with its polarity) is synchronized into `ui_clk` by `u_<ip>_mig/u_<mem>_infrastructure/rstdiv0_sync_r`, the register of the IP, so constraints on it match; `ui_clk_sync_rst` and `mmcm_locked` come from it. Memory pins are driven by `ui_clk` registers (`ck_p`/`ck_n` with 0); `device_temp_i` is not read. |
 | ILA (`xilinx.com:ip:ila`) | Inputs only (`clk`, `probe<i>`); `trig_out` and `trig_in_ack` are in the `clk` domain. Constraints that refer to the inside of debug cores (`*ila_core_inst/*`, `dbg_hub`) are noted (`CON-UNMATCHED` info), not warned. |
 | VIO (`xilinx.com:ip:vio`) | `probe_out<i>` are registers in the `clk` domain with their initial value: VIO synchronizes the values set over JTAG to `clk`. `probe_in<i>` are inputs only. |
 
@@ -43,7 +44,8 @@ The following IP gets an `FE-XCI-UNSUPPORTED` warning:
 - FIFO Generator and Block Memory Generator with an AXI4 interface;
 - ILA in AXI monitor mode from an XML file;
 - the one-clock datapath IP above (except CORDIC) from an XML file;
-- any other IP, for example the memory controller (`mig_7series`), DMA and the AXI interconnect.
+- the memory interface with another memory type (QDR II+, RLDRAM, LPDDR2), with ECC or with several controllers;
+- any other IP, for example the UltraScale memory interface (`ddr4`), DMA and the AXI interconnect.
 
 The IP then stays an unknown module. Add its generated HDL, or set the
 project option `unknownModules` to `blackbox`. `.xcix` files (compressed IP
@@ -51,8 +53,8 @@ containers) are not read; extract the `.xci` from them.
 
 A VHDL component declaration of such an IP still helps. With the IP as a
 black box, its outputs drive their signals: a clock output becomes a clock of
-its own (for example the memory controller's `ui_clk`), and its registers are
-analyzed. Constraints that refer to the inside of the black box are noted,
+its own (for example the `ui_clk` of a memory interface without a model), and
+its registers are analyzed. Constraints that refer to the inside of the black box are noted,
 not warned.
 
 ## Example

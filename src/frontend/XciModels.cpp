@@ -1443,19 +1443,374 @@ Result<XciModel> oneClockIp(const XciInfo& info) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Memory Interface Generator (mig_7series, DDR2/DDR3, one controller): the
+// user interface clock ui_clk is derived from the system clock; every user
+// interface port (native app_* or AXI s_axi_*) belongs to ui_clk; sys_rst is
+// synchronized into ui_clk (rstdiv0_sync_r, as in the IP).
+// ---------------------------------------------------------------------------
+
+/// The memory configuration Vivado keeps next to the .xci (XML_INPUT_FILE,
+/// e.g. mig_a.prj): only the first controller's clocking is used.
+struct MigProject {
+    double inputClkMHz = 0;  ///< <InputClkFreq>
+    double timePeriodPs = 0; ///< <TimePeriod> (memory clock)
+    unsigned phyRatio = 0;   ///< <PHYRatio> 4:1 -> 4
+};
+
+std::optional<MigProject> parseMigProject(const std::string& text) {
+    auto tag = [&](const char* name) -> std::optional<std::string> {
+        const std::regex re(std::string("<") + name + R"(>\s*([^<]*?)\s*</)" + name + ">");
+        std::smatch m;
+        if (std::regex_search(text, m, re))
+            return m[1].str();
+        return std::nullopt;
+    };
+    MigProject p;
+    try {
+        if (auto v = tag("InputClkFreq"))
+            p.inputClkMHz = std::stod(*v);
+        if (auto v = tag("TimePeriod"))
+            p.timePeriodPs = std::stod(*v);
+        if (auto v = tag("PHYRatio"))
+            p.phyRatio = static_cast<unsigned>(std::stoul(*v));
+    }
+    catch (...) {
+        return std::nullopt;
+    }
+    if (p.inputClkMHz <= 0 || p.timePeriodPs <= 0 || (p.phyRatio != 2 && p.phyRatio != 4))
+        return std::nullopt;
+    return p;
+}
+
+std::string fmtReal(double v) {
+    std::ostringstream s;
+    s.precision(10);
+    s << v;
+    std::string r = s.str();
+    if (r.find_first_of(".eE") == std::string::npos)
+        r += ".0";
+    return r;
+}
+
+Result<XciModel> memoryInterface(const XciInfo& info, const std::optional<std::string>& prjText,
+                                 const std::string& prjName) {
+    const auto& m = info.model;
+    const auto unsupportedMig = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (memory interface): " + why + " is not modelled",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox (its outputs then drive their signals)"});
+    };
+    if (num(m, "NoOfControllers", 1) != 1)
+        return unsupportedMig("more than one controller");
+    const std::string memType = lower(text(m, "MEM_TYPE", ""));
+    if (memType != "ddr2" && memType != "ddr3")
+        return unsupportedMig("memory type '" + text(m, "MEM_TYPE", "?") + "'");
+    if (lower(text(m, "ECC", "OFF")) == "on")
+        return unsupportedMig("ECC");
+    const std::string up = memType == "ddr2" ? "DDR2_" : "DDR3_";
+    auto w = [&](const char* key, long long def) {
+        return static_cast<unsigned>(std::max(1LL, num(m, up + key, def)));
+    };
+    const unsigned nCk = w("nCK_PER_CLK", 4);
+    const unsigned dq = w("DQ_WIDTH", 16);
+    const unsigned appData = 2 * nCk * dq;
+    const bool axi = num(m, "USE_AXI", 0) != 0;
+    const bool extraClocks = lower(text(m, "UI_EXTRA_CLOCKS", "FALSE")) == "true";
+    const bool resetLow = lower(text(m, "POLARITY", "ACTIVE_HIGH")) == "active_low";
+    const double uiHz = [&] {
+        try {
+            return std::stod(text(m, "FREQ_HZ", "0"));
+        }
+        catch (...) {
+            return 0.0;
+        }
+    }();
+
+    // ports: the JSON boundary as it is, otherwise from the configuration
+    struct P {
+        std::string name;
+        int dir; ///< 0 in, 1 out, 2 inout
+        unsigned width;
+        bool isVec;
+    };
+    std::vector<P> ports;
+    auto add = [&](std::string n, int dir, unsigned width, bool isVec) { ports.push_back({std::move(n), dir, width, isVec}); };
+    if (!info.ports.empty()) {
+        for (const auto& b : info.ports) {
+            const bool inout = memType.size() && b.name.starts_with(memType + "_dq"); // dq, dqs_p, dqs_n
+            add(b.name, inout ? 2 : b.output ? 1 : 0,
+                b.range ? static_cast<unsigned>(std::llabs(b.range->first - b.range->second) + 1) : 1U, b.range.has_value());
+        }
+    }
+    else {
+        const std::string p = memType + "_";
+        add(p + "dq", 2, dq, true);
+        add(p + "dqs_n", 2, w("DQS_WIDTH", 2), true);
+        add(p + "dqs_p", 2, w("DQS_WIDTH", 2), true);
+        add(p + "addr", 1, w("ROW_WIDTH", 13), true);
+        add(p + "ba", 1, w("BANK_WIDTH", 3), true);
+        add(p + "ras_n", 1, 1, false);
+        add(p + "cas_n", 1, 1, false);
+        add(p + "we_n", 1, 1, false);
+        if (memType == "ddr3")
+            add(p + "reset_n", 1, 1, false);
+        add(p + "ck_p", 1, w("CK_WIDTH", 1), true);
+        add(p + "ck_n", 1, w("CK_WIDTH", 1), true);
+        add(p + "cke", 1, w("CKE_WIDTH", 1), true);
+        if (num(m, up + "USE_CS_PORT", 1))
+            add(p + "cs_n", 1, w("CS_WIDTH", 1) * w("nCS_PER_RANK", 1), true);
+        if (num(m, up + "USE_DM_PORT", 1))
+            add(p + "dm", 1, w("DM_WIDTH", 2), true);
+        if (num(m, up + "USE_ODT_PORT", 1))
+            add(p + "odt", 1, w("ODT_WIDTH", 1), true);
+        const std::string sysType = lower(text(m, "SYSCLK_TYPE", "DIFFERENTIAL"));
+        if (sysType == "differential") {
+            add("sys_clk_p", 0, 1, false);
+            add("sys_clk_n", 0, 1, false);
+        }
+        else {
+            add("sys_clk_i", 0, 1, false);
+        }
+        const std::string refType = lower(text(m, "REFCLK_TYPE", "NONE"));
+        if (refType == "differential") {
+            add("clk_ref_p", 0, 1, false);
+            add("clk_ref_n", 0, 1, false);
+        }
+        else if (refType == "single_ended" || refType == "nobuf" || refType == "no_buffer") {
+            add("clk_ref_i", 0, 1, false);
+        }
+        if (axi) {
+            const unsigned id = static_cast<unsigned>(std::max(1LL, num(m, "C_S_AXI_ID_WIDTH", 4)));
+            const unsigned aw = static_cast<unsigned>(std::max(1LL, num(m, "C_S_AXI_ADDR_WIDTH", 32)));
+            const unsigned dw = static_cast<unsigned>(std::max(8LL, num(m, "C_S_AXI_DATA_WIDTH", 32)));
+            for (const char* ch : {"aw", "ar"}) {
+                const std::string c = std::string("s_axi_") + ch;
+                add(c + "id", 0, id, true);
+                add(c + "addr", 0, aw, true);
+                add(c + "len", 0, 8, true);
+                add(c + "size", 0, 3, true);
+                add(c + "burst", 0, 2, true);
+                add(c + "lock", 0, 1, true);
+                add(c + "cache", 0, 4, true);
+                add(c + "prot", 0, 3, true);
+                add(c + "qos", 0, 4, true);
+                add(c + "valid", 0, 1, false);
+                add(c + "ready", 1, 1, false);
+                if (std::string(ch) == "aw") {
+                    add("s_axi_wdata", 0, dw, true);
+                    add("s_axi_wstrb", 0, dw / 8, true);
+                    add("s_axi_wlast", 0, 1, false);
+                    add("s_axi_wvalid", 0, 1, false);
+                    add("s_axi_wready", 1, 1, false);
+                    add("s_axi_bready", 0, 1, false);
+                    add("s_axi_bid", 1, id, true);
+                    add("s_axi_bresp", 1, 2, true);
+                    add("s_axi_bvalid", 1, 1, false);
+                }
+            }
+            add("s_axi_rready", 0, 1, false);
+            add("s_axi_rid", 1, id, true);
+            add("s_axi_rdata", 1, dw, true);
+            add("s_axi_rresp", 1, 2, true);
+            add("s_axi_rlast", 1, 1, false);
+            add("s_axi_rvalid", 1, 1, false);
+        }
+        else {
+            add("app_addr", 0, static_cast<unsigned>(std::max(1LL, num(m, up + "ADDR_WIDTH", 27))), true);
+            add("app_cmd", 0, 3, true);
+            add("app_en", 0, 1, false);
+            add("app_wdf_data", 0, appData, true);
+            add("app_wdf_end", 0, 1, false);
+            add("app_wdf_mask", 0, appData / 8, true);
+            add("app_wdf_wren", 0, 1, false);
+            add("app_rd_data", 1, appData, true);
+            add("app_rd_data_end", 1, 1, false);
+            add("app_rd_data_valid", 1, 1, false);
+            add("app_rdy", 1, 1, false);
+            add("app_wdf_rdy", 1, 1, false);
+        }
+        add("app_sr_req", 0, 1, false);
+        add("app_ref_req", 0, 1, false);
+        add("app_zq_req", 0, 1, false);
+        add("app_sr_active", 1, 1, false);
+        add("app_ref_ack", 1, 1, false);
+        add("app_zq_ack", 1, 1, false);
+        add("ui_clk", 1, 1, false);
+        add("ui_clk_sync_rst", 1, 1, false);
+        if (extraClocks)
+            for (unsigned n = 0; n < 5; ++n)
+                if (lower(text(m, "MMCM_CLKOUT" + std::to_string(n) + "_EN", "FALSE")) == "true")
+                    add("ui_addn_clk_" + std::to_string(n), 1, 1, false);
+        if (axi) {
+            add("mmcm_locked", 1, 1, false);
+            add("aresetn", 0, 1, false);
+        }
+        if (lower(text(m, "TEMP_MON_CONTROL", "INTERNAL")) == "external")
+            add("device_temp_i", 0, 12, true);
+        else
+            add("device_temp", 1, 12, true);
+        add("init_calib_complete", 1, 1, false);
+        add("sys_rst", 0, 1, false);
+    }
+    auto has = [&](const std::string& n) { return std::ranges::any_of(ports, [&](const P& p) { return p.name == n; }); };
+    if (!has("ui_clk"))
+        return unsupportedMig("a configuration without ui_clk");
+
+    // clock periods: from the memory configuration (exact ratio to the input
+    // clock), otherwise the configured user interface frequency (absolute)
+    std::optional<MigProject> prj;
+    if (prjText)
+        prj = parseMigProject(*prjText);
+    double uiPeriodNs = uiHz > 0 ? 1e9 / uiHz : 0.0;
+    double inPeriodNs = 0;
+    if (prj) {
+        uiPeriodNs = prj->timePeriodPs * prj->phyRatio / 1000.0;
+        inPeriodNs = 1000.0 / prj->inputClkMHz;
+    }
+    if (uiPeriodNs <= 0)
+        return unsupportedMig("a configuration without the user interface frequency (FREQ_HZ)");
+
+    std::ostringstream v;
+    v << "// Generated by OpenCDC from a Vivado IP configuration (.xci): a CDC model, not a functional model.\n"
+      << "module " << info.instance << " (\n";
+    for (std::size_t i = 0; i < ports.size(); ++i)
+        v << "  " << (ports[i].dir == 2 ? "inout  wire " : ports[i].dir == 1 ? "output wire " : "input  wire ")
+          << (ports[i].isVec ? vec(ports[i].width) + " " : std::string()) << ports[i].name
+          << (i + 1 < ports.size() ? ",\n" : "\n");
+    v << ");\n";
+    // the system clock
+    v << "  wire oc_sys_clk;\n";
+    if (has("sys_clk_p") && has("sys_clk_n"))
+        v << "  IBUFDS oc_ibuf_sys (.I(sys_clk_p), .IB(sys_clk_n), .O(oc_sys_clk));\n";
+    else if (has("sys_clk_i"))
+        v << "  assign oc_sys_clk = sys_clk_i;\n";
+    else
+        return unsupportedMig("a configuration without a system clock port");
+    // derived clocks: a toggle register on the system clock carries the period
+    auto clockAttr = [&](const std::string& pin, double periodNs, const std::string& alias) {
+        std::string a = "(* OPENCDC_CLOCK_PIN = \"" + pin + "\"";
+        if (!alias.empty())
+            a += ", OPENCDC_CLOCK_ALIAS = \"" + alias + "\"";
+        if (inPeriodNs > 0)
+            a += ", OPENCDC_CLOCK_RATIO = " + fmtReal(periodNs / inPeriodNs) +
+                 ", OPENCDC_CLOCK_INPUT_PERIOD = " + fmtReal(inPeriodNs);
+        else
+            a += ", OPENCDC_CLOCK_PERIOD = " + fmtReal(periodNs);
+        return a + " *)";
+    };
+    auto derived = [&](const std::string& pin, double periodNs, const std::string& alias) {
+        v << "  " << clockAttr(pin, periodNs, alias) << "\n  reg oc_" << pin << "_q = 1'b0;\n"
+          << "  always @(posedge oc_sys_clk) oc_" << pin << "_q <= ~oc_" << pin << "_q;\n"
+          << "  assign " << pin << " = oc_" << pin << "_q;\n";
+    };
+    derived("ui_clk", uiPeriodNs, "clk_pll_i");
+    std::string extraSummary;
+    for (unsigned n = 0; n < 5; ++n) {
+        const std::string pin = "ui_addn_clk_" + std::to_string(n);
+        if (!has(pin))
+            continue;
+        double mhz = 0;
+        try {
+            mhz = std::stod(text(m, "MMCM_CLKOUT" + std::to_string(n) + "_FREQ", "0"));
+        }
+        catch (...) {
+        }
+        if (mhz <= 0)
+            return unsupportedMig("an additional clock without a frequency (MMCM_CLKOUT" + std::to_string(n) + "_FREQ)");
+        derived(pin, 1000.0 / mhz, "");
+        extraSummary += ", " + pin + " " + text(m, "MMCM_CLKOUT" + std::to_string(n) + "_FREQ", "?") + " MHz";
+    }
+    // the reset: asserted asynchronously, released synchronized to ui_clk
+    // (the IP's rstdiv0_sync_r in u_<ip>_mig/u_<mem>_infrastructure)
+    const std::string rstIn = has("sys_rst") ? (resetLow ? "~sys_rst" : "sys_rst") : "1'b0";
+    v << "  wire oc_ui_rst;\n"
+      << "  " << info.instance << "_mig u_" << info.instance << "_mig (.clk(ui_clk), .rst_async(" << rstIn
+      << "), .rst_sync(oc_ui_rst));\n";
+    // user interface: every input is sampled in ui_clk, every output is a
+    // ui_clk register that depends on the inputs (the controller and memory)
+    std::string inputs;
+    for (const auto& p : ports)
+        if (p.dir == 0 && p.name != "sys_clk_i" && p.name != "sys_clk_p" && p.name != "sys_clk_n" &&
+            !p.name.starts_with("clk_ref") && p.name != "sys_rst" && p.name != "device_temp_i")
+            inputs += (inputs.empty() ? "" : ", ") + p.name;
+    v << "  reg oc_mix = 1'b0;\n"
+      << "  always @(posedge ui_clk) oc_mix <= " << (inputs.empty() ? std::string("1'b0") : "^{" + inputs + "}")
+      << ";\n";
+    for (const auto& p : ports) {
+        if (p.dir != 1 || p.name == "ui_clk" || p.name.starts_with("ui_addn_clk_"))
+            continue;
+        const std::string zeros = p.isVec ? std::to_string(p.width) + "'b0" : "1'b0";
+        if (p.name == "ui_clk_sync_rst") {
+            v << "  assign " << p.name << " = oc_ui_rst;\n";
+            continue;
+        }
+        if (p.name == "mmcm_locked") {
+            v << "  assign " << p.name << " = ~oc_ui_rst;\n";
+            continue;
+        }
+        if (p.name.starts_with(memType + "_ck_")) { // memory clock pins
+            v << "  assign " << p.name << " = " << zeros << ";\n";
+            continue;
+        }
+        const std::string r = "oc_" + p.name;
+        v << "  reg " << (p.isVec ? vec(p.width) + " " : std::string()) << r << " = " << zeros << ";\n"
+          << "  always @(posedge ui_clk) if (oc_ui_rst) " << r << " <= " << zeros << "; else " << r << " <= {"
+          << p.width << "{oc_mix}};\n"
+          << "  assign " << p.name << " = " << r << ";\n";
+    }
+    v << "endmodule\n\n";
+    // reset synchronizer, named as in the IP so that constraints on it match
+    const std::string infra = info.instance + "_" + memType + "_infrastructure";
+    v << "module " << info.instance << "_mig (input wire clk, input wire rst_async, output wire rst_sync);\n"
+      << "  " << infra << " u_" << memType << "_infrastructure (.clk(clk), .rst_tmp(rst_async), .rstdiv0(rst_sync));\n"
+      << "endmodule\n\n"
+      << "module " << infra << " (input wire clk, input wire rst_tmp, output wire rstdiv0);\n"
+      << "  reg [8:0] rstdiv0_sync_r = 9'h1ff;\n"
+      << "  always @(posedge clk or posedge rst_tmp)\n"
+      << "    if (rst_tmp) rstdiv0_sync_r <= 9'h1ff;\n"
+      << "    else rstdiv0_sync_r <= {rstdiv0_sync_r[7:0], 1'b0};\n"
+      << "  assign rstdiv0 = rstdiv0_sync_r[8];\n"
+      << "endmodule\n";
+
+    XciModel out;
+    out.module = info.instance;
+    out.ip = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    out.verilog = v.str();
+    std::ostringstream sum;
+    sum.precision(6);
+    sum << (memType == "ddr2" ? "DDR2" : "DDR3") << " x" << dq << ", " << (axi ? "AXI4" : "native") << " interface, ui_clk "
+        << 1000.0 / uiPeriodNs << " MHz";
+    if (prj)
+        sum << " (memory clock " << 1e6 / prj->timePeriodPs << " MHz / " << prj->phyRatio << ", from input "
+            << prj->inputClkMHz << " MHz)";
+    out.summary = sum.str() + extraSummary;
+    if (!prj)
+        out.notes.push_back(
+            "the memory configuration '" + prjName +
+            "' was not found next to the .xci (or not readable): ui_clk keeps the configured period and is "
+            "related to the system clock, without a ratio to it");
+    out.notes.push_back("device_temp_i is not read: the controller filters the temperature on its own");
+    return out;
+}
+
 } // namespace
 
 bool isXciFile(const std::filesystem::path& file) {
     return lower(file.extension().string()) == ".xci";
 }
 
-Result<XciModel> modelFromXciText(std::string_view text) {
+namespace {
+
+Result<XciInfo> parseXci(std::string_view text) {
     std::string t(text);
     const auto first = t.find_first_not_of(" \t\r\n");
-    auto parsed = first != std::string::npos && t[first] == '{' ? parseJson(t) : parseXml(t);
-    if (!parsed)
-        return std::move(parsed).error();
-    const XciInfo& info = parsed.value();
+    return first != std::string::npos && t[first] == '{' ? parseJson(t) : parseXml(t);
+}
+
+/// `dir`: the folder of the .xci, where files the configuration refers to are
+/// looked up (the memory interface's XML_INPUT_FILE).
+Result<XciModel> dispatch(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
     if (info.name == "axis_data_fifo")
@@ -1464,6 +1819,14 @@ Result<XciModel> modelFromXciText(std::string_view text) {
         return clockingWizard(info);
     if (info.name == "blk_mem_gen")
         return blockMemory(info);
+    if (info.name == "mig_7series") {
+        const std::string prjName = text(info.user, "XML_INPUT_FILE", "mig_a.prj");
+        std::optional<std::string> prj;
+        if (dir)
+            if (auto t = readSourceText(*dir / std::filesystem::path(prjName)))
+                prj = t->utf8;
+        return memoryInterface(info, prj, prjName);
+    }
     static const std::set<std::string> kOneClock = {"cordic",      "floating_point", "div_gen",  "mult_gen",
                                                     "c_addsub",    "dds_compiler",   "fir_compiler", "cmpy",
                                                     "c_shift_ram", "c_counter_binary", "xbip_dsp48_macro",
@@ -1479,12 +1842,28 @@ Result<XciModel> modelFromXciText(std::string_view text) {
                             "blackbox"});
 }
 
+} // namespace
+
+Result<XciModel> modelFromXciText(std::string_view text) {
+    auto parsed = parseXci(text);
+    if (!parsed)
+        return std::move(parsed).error();
+    return dispatch(parsed.value(), nullptr);
+}
+
+Result<XciModel> modelFromXciText(std::string_view text, const std::filesystem::path& dir) {
+    auto parsed = parseXci(text);
+    if (!parsed)
+        return std::move(parsed).error();
+    return dispatch(parsed.value(), &dir);
+}
+
 Result<XciModel> modelFromXci(const std::filesystem::path& file) {
     auto text = readSourceText(file);
     if (!text)
         return Diagnostic{"FE-XCI-PARSE", Severity::Warning, "cannot read IP configuration file",
                           SourceLocation{toUtf8(file), 0, 0}, {}};
-    auto r = modelFromXciText(text->utf8);
+    auto r = modelFromXciText(text->utf8, file.parent_path());
     if (!r) {
         Diagnostic d = std::move(r).error();
         d.location.file = toUtf8(file);

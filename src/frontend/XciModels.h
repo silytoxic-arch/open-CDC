@@ -11,7 +11,9 @@
 // Supported: FIFO Generator (fifo_generator 12.x/13.x; native and AXI-Stream
 // interfaces, common or independent clocks) and AXI4-Stream Data FIFO
 // (axis_data_fifo 1.x/2.x), and the debug cores ILA (inputs only) and VIO
-// (outputs in the clk domain). Both the XML (IP-XACT, Vivado up to 2020.1) and
+// (outputs in the clk domain), Clocking Wizard, Block Memory Generator,
+// one-clock datapath IP and the 7-series memory interface (mig_7series,
+// DDR2/DDR3). Both the XML (IP-XACT, Vivado up to 2020.1) and
 // the JSON (Vivado 2020.2 and later) formats are read.
 
 #include "core/Result.h"
@@ -37,6 +39,9 @@ struct XciModel {
 /// Model of the IP configured by an .xci file's text. The error is a
 /// warning (FE-XCI-UNSUPPORTED or FE-XCI-PARSE) when the IP is not modelled.
 [[nodiscard]] Result<XciModel> modelFromXciText(std::string_view text);
+/// As above; files the configuration refers to (the memory interface's
+/// XML_INPUT_FILE, e.g. mig_a.prj) are looked up in `dir`.
+[[nodiscard]] Result<XciModel> modelFromXciText(std::string_view text, const std::filesystem::path& dir);
 
 /// As above, reading the file (locations of errors point to it).
 [[nodiscard]] Result<XciModel> modelFromXci(const std::filesystem::path& file);

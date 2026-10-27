@@ -591,3 +591,221 @@ TEST_CASE("XCI: one-clock datapath IP (CORDIC) and XADC", "[frontend][xci]") {
     REQUIRE(r2->cdc);
     CHECK(r2->cdc->stats.unsynchronized >= 1);
 }
+
+namespace {
+
+// Digilent Nexys-A7 OOB "ddr": DDR2 x16, 4:1, native interface, no input
+// buffer, active-low reset, temperature from outside (values from its .xci)
+std::vector<std::pair<std::string, std::string>> migDdr2Params() {
+    return {{"MEM_TYPE", "DDR2"}, {"NoOfControllers", "1"}, {"ECC", "OFF"}, {"USE_AXI", "0"},
+            {"FREQ_HZ", "75007501"}, {"SYSCLK_TYPE", "NOBUF"}, {"REFCLK_TYPE", "NONE"}, {"POLARITY", "ACTIVE_LOW"},
+            {"TEMP_MON_CONTROL", "EXTERNAL"}, {"UI_EXTRA_CLOCKS", "FALSE"}, {"DDR2_ADDR_WIDTH", "27"},
+            {"DDR2_BANK_WIDTH", "3"}, {"DDR2_CKE_WIDTH", "1"}, {"DDR2_CK_WIDTH", "1"}, {"DDR2_CS_WIDTH", "1"},
+            {"DDR2_DM_WIDTH", "2"}, {"DDR2_DQS_WIDTH", "2"}, {"DDR2_DQ_WIDTH", "16"}, {"DDR2_ODT_WIDTH", "1"},
+            {"DDR2_ROW_WIDTH", "13"}, {"DDR2_USE_CS_PORT", "1"}, {"DDR2_USE_DM_PORT", "1"}, {"DDR2_USE_ODT_PORT", "1"},
+            {"DDR2_nCK_PER_CLK", "4"}, {"DDR2_nCS_PER_RANK", "1"},
+            // the DDR3 values of an unused memory type are ignored
+            {"DDR3_DQ_WIDTH", "8"}, {"DDR3_nCK_PER_CLK", "2"}};
+}
+
+// user logic: a register on the system clock feeds the user interface; the
+// read data is captured on ui_clk, and on clk_b (an unrelated clock)
+std::string migTop(bool readOnB) {
+    return std::string("module top(input clk, input clk_b, input rst_n, input [7:0] d, output reg [7:0] q);\n"
+                       "  wire ui_clk, ui_rst, calib, rdy, wrdy, rvalid, rend;\n"
+                       "  wire [127:0] rdata; wire [15:0] dq; wire [1:0] dqs_p, dqs_n;\n"
+                       "  reg [26:0] addr; always @(posedge clk) addr <= {19'd0, d};\n"
+                       "  reg rst_q; always @(posedge clk) rst_q <= rst_n;\n"
+                       "  ddr u_ddr (.ddr2_dq(dq), .ddr2_dqs_p(dqs_p), .ddr2_dqs_n(dqs_n), .sys_clk_i(clk), .sys_rst(rst_q),\n"
+                       "    .app_addr(addr), .app_cmd(3'd1), .app_en(1'b1), .app_wdf_data(128'd0), .app_wdf_end(1'b0),\n"
+                       "    .app_wdf_mask(16'd0), .app_wdf_wren(1'b0), .app_rd_data(rdata), .app_rd_data_end(rend),\n"
+                       "    .app_rd_data_valid(rvalid), .app_rdy(rdy), .app_wdf_rdy(wrdy), .app_sr_req(1'b0),\n"
+                       "    .app_ref_req(1'b0), .app_zq_req(1'b0), .ui_clk(ui_clk), .ui_clk_sync_rst(ui_rst),\n"
+                       "    .device_temp_i(12'd0), .init_calib_complete(calib));\n"
+                       "  always @(posedge ") +
+           (readOnB ? "clk_b" : "ui_clk") +
+           ") q <= rdata[7:0];\n"
+           "endmodule\n";
+}
+
+engine::ProjectConfig migProject(const test::TempDir& dir, bool readOnB, const std::string& xdc,
+                                 const std::string& prj = {}) {
+    engine::ProjectConfig cfg;
+    cfg.name = "mig";
+    cfg.top = "top";
+    cfg.sources = {dir.write("top.v", migTop(readOnB)),
+                   dir.write("ip/ddr/ddr.xci", spirit("ddr", "mig_7series", "4.1", migDdr2Params(),
+                                                      {{"XML_INPUT_FILE", "mig_a.prj"}}))};
+    if (!prj.empty())
+        dir.write("ip/ddr/mig_a.prj", prj);
+    cfg.sourceLibraries = {"", ""};
+    cfg.constraints = {dir.write("c.xdc", xdc)};
+    return cfg;
+}
+
+const clock::Clock* clockWithAlias(const engine::AnalysisResult& r, const std::string& alias) {
+    for (const auto& c : r.clocks->clocks)
+        if (std::ranges::find(c.aliases, alias) != c.aliases.end())
+            return &c;
+    return nullptr;
+}
+
+constexpr const char* kMigXdc = "create_clock -name sys -period 5 [get_ports clk]\n"
+                                "create_clock -name b -period 7 [get_ports clk_b]\n"
+                                "set_clock_groups -asynchronous -group sys -group b\n";
+
+} // namespace
+
+TEST_CASE("XCI: memory interface (MIG) ports from the configuration", "[frontend][xci][mig]") {
+    auto m = frontend::modelFromXciText(spirit("ddr", "mig_7series", "4.1", migDdr2Params()));
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p :
+         {"inout  wire [15:0] ddr2_dq", "inout  wire [1:0] ddr2_dqs_p", "output wire [12:0] ddr2_addr",
+          "output wire [2:0] ddr2_ba", "output wire ddr2_ras_n", "output wire [0:0] ddr2_ck_p", "output wire [1:0] ddr2_dm",
+          "input  wire sys_clk_i", "input  wire sys_rst", "input  wire [26:0] app_addr", "input  wire [127:0] app_wdf_data",
+          "input  wire [15:0] app_wdf_mask", "output wire [127:0] app_rd_data", "output wire app_rdy",
+          "output wire ui_clk", "output wire ui_clk_sync_rst", "input  wire [11:0] device_temp_i",
+          "output wire init_calib_complete", "OPENCDC_CLOCK_PERIOD = 13.33199", "rstdiv0_sync_r", "~sys_rst"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: no DDR3 reset, no reference clock, no AXI, no extra clocks
+    for (const char* p : {"reset_n", "clk_ref", "s_axi", "ui_addn_clk", "mmcm_locked", "ddr3_"})
+        CHECK(v.find(p) == std::string::npos);
+    CHECK(m.value().summary.find("DDR2 x16, native interface, ui_clk 75.0075 MHz") != std::string::npos);
+    CHECK(std::ranges::any_of(m.value().notes, [](const std::string& n) { return n.find("mig_a.prj") != std::string::npos; }));
+
+    // DDR3 with an AXI4 interface, differential system and reference clocks, an extra clock
+    auto params = migDdr2Params();
+    for (auto& [k, val] : params) {
+        if (k == "MEM_TYPE")
+            val = "DDR3";
+        if (k == "USE_AXI")
+            val = "1";
+        if (k == "SYSCLK_TYPE")
+            val = "DIFFERENTIAL";
+        if (k == "REFCLK_TYPE")
+            val = "DIFFERENTIAL";
+        if (k == "POLARITY")
+            val = "ACTIVE_HIGH";
+        if (k == "TEMP_MON_CONTROL")
+            val = "INTERNAL";
+        if (k == "UI_EXTRA_CLOCKS")
+            val = "TRUE";
+        if (k == "DDR3_DQ_WIDTH")
+            val = "32";
+    }
+    params.push_back({"DDR3_nCK_PER_CLK", "4"});
+    params.push_back({"C_S_AXI_ADDR_WIDTH", "30"});
+    params.push_back({"C_S_AXI_DATA_WIDTH", "256"});
+    params.push_back({"C_S_AXI_ID_WIDTH", "4"});
+    params.push_back({"MMCM_CLKOUT0_EN", "TRUE"});
+    params.push_back({"MMCM_CLKOUT0_FREQ", "100"});
+    auto a = frontend::modelFromXciText(spirit("mig_axi", "mig_7series", "4.1", params));
+    REQUIRE(a);
+    const auto& va = a.value().verilog;
+    for (const char* p : {"inout  wire [31:0] ddr3_dq", "output wire ddr3_reset_n", "input  wire sys_clk_p",
+                          "input  wire sys_clk_n", "IBUFDS", "input  wire clk_ref_p", "input  wire [29:0] s_axi_awaddr",
+                          "input  wire [255:0] s_axi_wdata", "output wire [3:0] s_axi_bid", "output wire s_axi_rvalid",
+                          "output wire mmcm_locked", "input  wire aresetn", "output wire ui_addn_clk_0",
+                          "output wire [11:0] device_temp", "OPENCDC_CLOCK_PERIOD = 10.0"})
+        CHECK(va.find(p) != std::string::npos);
+    for (const char* p : {"app_addr", "app_wdf_data", "~sys_rst", "ddr2_"}) // negative: no native interface
+        CHECK(va.find(p) == std::string::npos);
+    CHECK(a.value().summary.find("DDR3 x32, AXI4 interface") != std::string::npos);
+    CHECK(a.value().summary.find("ui_addn_clk_0 100 MHz") != std::string::npos);
+
+    // not modelled: other memory types, several controllers
+    auto qdr = migDdr2Params();
+    qdr.front().second = "QDRIIP";
+    auto q = frontend::modelFromXciText(spirit("qdr", "mig_7series", "4.1", qdr));
+    REQUIRE_FALSE(q);
+    CHECK(q.error().code == "FE-XCI-UNSUPPORTED");
+    auto two = migDdr2Params();
+    two[1].second = "2";
+    auto t = frontend::modelFromXciText(spirit("two", "mig_7series", "4.1", two));
+    REQUIRE_FALSE(t);
+    CHECK(t.error().message.find("more than one controller") != std::string::npos);
+}
+
+TEST_CASE("XCI: memory interface ui_clk is related to the system clock", "[frontend][xci][mig]") {
+    test::TempDir dir;
+    auto r = run(migProject(dir, false, kMigXdc));
+    REQUIRE(r->clocks);
+    // Vivado's name and the user's net name
+    const auto* ui = clockWithAlias(*r, "clk_pll_i");
+    REQUIRE(ui);
+    CHECK(std::ranges::find(ui->aliases, std::string("ui_clk")) != ui->aliases.end());
+    REQUIRE(ui->periodNs);
+    CHECK((*ui->periodNs > 13.33 && *ui->periodNs < 13.34)); // 75.0075 MHz from FREQ_HZ
+    REQUIRE(r->cdc);
+    // negative: the system clock register into the user interface, and the
+    // reset, do not cross: ui_clk is derived from sys
+    CHECK(r->cdc->stats.paths == 0);
+    CHECK(count(*r, "FE-XCI-MODEL") == 1);
+
+    // positive: the read data captured on an unrelated clock crosses
+    test::TempDir d2;
+    auto rb = run(migProject(d2, true, kMigXdc));
+    REQUIRE(rb->cdc);
+    CHECK(rb->cdc->stats.unsynchronized >= 1);
+
+    // positive: the clocks declared asynchronous by Vivado's name: the user
+    // interface input and the reset (synchronized by rstdiv0_sync_r) cross
+    test::TempDir d3;
+    auto ra = run(migProject(d3, false, std::string(kMigXdc) + "set_clock_groups -asynchronous -group clk_pll_i -group sys\n"));
+    REQUIRE(ra->cdc);
+    CHECK(ra->cdc->stats.paths >= 2);
+    CHECK(ra->cdc->stats.unsynchronized >= 1);
+    CHECK(std::ranges::none_of(ra->diagnostics, [](const Diagnostic& d) { return d.code == "CON-UNMATCHED"; }));
+    CHECK(std::ranges::any_of(ra->cdc->structures, [](const auto& s) {
+        return s.type == cdc::SyncType::ResetSync && s.name.find("rstdiv0_sync_r") != std::string::npos;
+    }));
+    // a constraint on the IP's reset synchronizer matches the model
+    test::TempDir d4;
+    auto rf = run(migProject(d4, false, std::string(kMigXdc) +
+                                            "set_false_path -to [get_pins u_ddr/u_ddr_mig/u_ddr2_infrastructure/"
+                                            "rstdiv0_sync_r*/PRE]\n"));
+    CHECK(std::ranges::none_of(rf->diagnostics, [](const Diagnostic& d) { return d.code == "CON-UNMATCHED"; }));
+    // negative: a register the model does not have
+    test::TempDir d5;
+    auto rw = run(migProject(d5, false, std::string(kMigXdc) +
+                                            "set_false_path -to [get_pins u_ddr/u_ddr_mig/u_ddr3_infrastructure/"
+                                            "rstdiv0_sync_r*/PRE]\n"));
+    CHECK(std::ranges::any_of(rw->diagnostics, [](const Diagnostic& d) {
+        return d.code == "CON-UNMATCHED" && d.message.find("u_ddr3_infrastructure") != std::string::npos;
+    }));
+}
+
+TEST_CASE("XCI: memory interface clocking from its memory configuration (.prj)", "[frontend][xci][mig]") {
+    const std::string prj = "<?xml version='1.0' encoding='UTF-8'?>\n<Project NoOfControllers=\"1\" >\n"
+                            "  <Controller number=\"0\" >\n    <MemoryDevice>DDR2_SDRAM/Components/MT47H64M16HR-25E</MemoryDevice>\n"
+                            "    <TimePeriod>3333</TimePeriod>\n    <PHYRatio>4:1</PHYRatio>\n"
+                            "    <InputClkFreq>200</InputClkFreq>\n  </Controller>\n</Project>\n";
+    test::TempDir dir;
+    auto r = run(migProject(dir, false, kMigXdc, prj));
+    REQUIRE(r->clocks);
+    const auto* ui = clockWithAlias(*r, "clk_pll_i");
+    REQUIRE(ui);
+    REQUIRE(ui->periodNs);
+    CHECK((*ui->periodNs > 13.33 && *ui->periodNs < 13.34)); // 3.333 ns x 4
+    REQUIRE(ui->periodRatio);                                 // derived from the 5 ns input
+    CHECK((*ui->periodRatio > 2.666 && *ui->periodRatio < 2.667));
+    const auto* model = find(*r, "FE-XCI-MODEL");
+    REQUIRE(model);
+    CHECK(model->message.find("from input 200 MHz") != std::string::npos);
+    CHECK(std::ranges::none_of(model->notes, [](const std::string& n) { return n.find("was not found") != std::string::npos; }));
+    CHECK(count(*r, "CON-INPUT-PERIOD") == 0);
+
+    // the system clock is not the configured 200 MHz: ui_clk follows the input
+    test::TempDir d2;
+    auto slow = run(migProject(d2, false,
+                               "create_clock -name sys -period 10 [get_ports clk]\n"
+                               "create_clock -name b -period 7 [get_ports clk_b]\n"
+                               "set_clock_groups -asynchronous -group sys -group b\n",
+                               prj));
+    CHECK(count(*slow, "CON-INPUT-PERIOD") == 1);
+    const auto* ui2 = clockWithAlias(*slow, "clk_pll_i");
+    REQUIRE(ui2);
+    REQUIRE(ui2->periodNs);
+    CHECK((*ui2->periodNs > 26.66 && *ui2->periodNs < 26.67));
+}

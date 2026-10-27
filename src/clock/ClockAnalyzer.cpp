@@ -241,9 +241,20 @@ private:
                         }
             }
         }
+        // further names (an IP's own clock net, e.g. the memory interface's clk_pll_i)
+        if (const auto* al = net.findAttr("OPENCDC_CLOCK_ALIAS")) {
+            std::string v = al->value;
+            std::erase(v, '"');
+            if (!v.empty() && std::ranges::find(c.aliases, v) == c.aliases.end())
+                c.aliases.push_back(v);
+        }
+        // a period fixed by an IP configuration, whatever the input clock
+        const auto fixedPeriod = attrNumber("OPENCDC_CLOCK_PERIOD");
+        if (fixedPeriod && *fixedPeriod > 0)
+            c.periodNs = *fixedPeriod;
         const ClockId id = addClock(std::move(c));
         divider_.emplace(d.bit, id); // before tracing the master: breaks self-clocking loops
-        if (ratio && *ratio > 0)
+        if (ratio && *ratio > 0 && !(fixedPeriod && *fixedPeriod > 0))
             ratio_[id.value] = {*ratio, inPeriod && *inPeriod > 0 ? *inPeriod : 0.0};
 
         const auto& reg = view_.bodyOf(d.bit.inst).registers.at(d.index);
