@@ -1497,7 +1497,8 @@ Result<XciModel> memoryInterface(const XciInfo& info, const std::optional<std::s
                                  const std::string& prjName) {
     const auto& m = info.model;
     const auto unsupportedMig = [&](const std::string& why) {
-        return unsupported("IP '" + info.instance + "' (memory interface): " + why + " is not modelled",
+        return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
+                               info.version + "): " + why + " is not modelled",
                            {"add the IP's generated HDL to the sources instead, or set the project option "
                             "unknownModules to blackbox (its outputs then drive their signals)"});
     };
