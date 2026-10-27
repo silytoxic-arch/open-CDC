@@ -275,6 +275,7 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
                 readWaiverFile(f, waivers, sink);
             const std::size_t defined = waivers.size();
             rules::applyWaivers(std::move(waivers), *cdcResult, todayUtc(), sink);
+            rules::reportOutputCrossings(*cdcResult, sink);
             std::size_t expired = 0, unused = 0;
             for (const auto& w : cdcResult->waivers) {
                 expired += w.expired ? 1 : 0;

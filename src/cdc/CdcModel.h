@@ -199,12 +199,27 @@ struct WaiverRecord {
     std::size_t uses = 0;    ///< rule hits it covers
 };
 
+/// An output port timed against a clock (set_output_delay) but driven by
+/// registers or inputs of an asynchronous or unrelated clock: one record per
+/// constraint and driver clock. Reported as CDC-OUTPUT-CLOCK unless waived.
+struct OutputCrossing {
+    std::vector<std::string> ports;   ///< hierarchical port names
+    std::vector<std::string> sources; ///< driving registers / inputs
+    std::string outClock;             ///< the set_output_delay clock
+    std::string srcClock;             ///< the drivers' clock
+    clock::ClockRelation relation = clock::ClockRelation::Unknown;
+    SourceLocation loc;               ///< the set_output_delay command
+    std::string fingerprint;          ///< stable id: hash of first source, first port and clocks
+    std::string waiver;               ///< id of the waiver that covers it, empty if none
+};
+
 /// Result of CDC analysis; filled by the analyzer, then by the rule engine.
 struct CdcResult {
     std::vector<SourceNode> nodes;
     std::vector<CdcPath> paths;
     std::vector<SyncStructure> structures;
     std::vector<WaiverRecord> waivers; ///< waivers of the project, with their use counts
+    std::vector<OutputCrossing> outputs; ///< output ports driven asynchronously to their output delay clock
     CdcStats stats;
 };
 

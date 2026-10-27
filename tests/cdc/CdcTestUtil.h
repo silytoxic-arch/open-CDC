@@ -7,6 +7,7 @@
 #include "clock/ClockAnalyzer.h"
 #include "frontend/Frontend.h"
 #include "rules/RuleEngine.h"
+#include "rules/Waiver.h"
 
 #include "../DesignUtil.h"
 
@@ -91,6 +92,7 @@ inline CdcRun analyze(std::string_view verilog, std::string_view sdc = kAsync, C
     run.clocks = clock::analyzeClocks(*run.view, run.cons, sink);
     run.cdc = analyzeCdc(*run.view, *run.clocks, run.cons, opt, sink);
     rules::applyRules(rules::RuleRegistry::standard(), *run.cdc, *run.clocks, opt);
+    rules::reportOutputCrossings(*run.cdc, sink);
     run.diags = sink.take();
     for (const auto& d : run.diags)
         UNSCOPED_INFO(format(d));
@@ -122,6 +124,7 @@ inline CdcRun analyzeExample(const char* dirName, const std::vector<const char*>
     const CdcOptions opt;
     run.cdc = analyzeCdc(*run.view, *run.clocks, run.cons, opt, sink);
     rules::applyRules(rules::RuleRegistry::standard(), *run.cdc, *run.clocks, opt);
+    rules::reportOutputCrossings(*run.cdc, sink);
     run.diags = sink.take();
     for (const auto& p : run.cdc->paths)
         UNSCOPED_INFO("path " << p.srcName << " -> " << p.dstName << " sync=" << toString(p.syncType));

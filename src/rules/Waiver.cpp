@@ -78,11 +78,59 @@ void applyWaivers(std::vector<WaiverRecord> waivers, CdcResult& result, std::str
                 status = std::max(status, h.status);
         p.status = status;
     }
+    // output ports timed against an asynchronous clock (CDC-OUTPUT-CLOCK):
+    // a waiver covers a record when its source and destination globs match
+    // one of the drivers and one of the ports
+    for (auto& o : result.outputs) {
+        o.waiver.clear();
+        for (auto& w : waivers) {
+            if (w.expired || (!w.rule.empty() && !globMatch(w.rule, "CDC-OUTPUT-CLOCK")) ||
+                (!w.fingerprint.empty() && w.fingerprint != o.fingerprint) ||
+                (!w.source.empty() &&
+                 std::ranges::none_of(o.sources, [&](const std::string& n) { return globMatch(w.source, n); })) ||
+                (!w.destination.empty() &&
+                 std::ranges::none_of(o.ports, [&](const std::string& n) { return globMatch(w.destination, n); })))
+                continue;
+            o.waiver = w.id;
+            ++w.uses;
+            ++result.stats.waivedHits;
+            break;
+        }
+    }
     for (const auto& w : waivers)
         if (!w.expired && w.uses == 0)
             sink.report({"WAIVER-UNUSED", Severity::Warning,
                          "waiver '" + w.id + "' does not match any rule hit (stale or too narrow?)", w.loc, {}});
     result.waivers = std::move(waivers);
+}
+
+void reportOutputCrossings(CdcResult& result, DiagnosticSink& sink) {
+    auto listOf = [](const std::vector<std::string>& v) {
+        std::string t;
+        for (std::size_t i = 0; i < v.size() && i < 4; ++i)
+            t += (i ? ", " : "") + ("'" + v[i] + "'");
+        if (v.size() > 4)
+            t += " (+" + std::to_string(v.size() - 4) + " more)";
+        return t;
+    };
+    result.stats.outputCrossings = 0;
+    for (const auto& o : result.outputs) {
+        if (!o.waiver.empty())
+            continue;
+        ++result.stats.outputCrossings;
+        const bool unknown = o.relation == clock::ClockRelation::Unknown;
+        sink.report({"CDC-OUTPUT-CLOCK", Severity::Warning,
+                     "output " + listOf(o.ports) + " is timed against clock '" + o.outClock +
+                         "' (set_output_delay) but driven by " + listOf(o.sources) + " of clock '" + o.srcClock + "' (" +
+                         (unknown ? "relation unknown" : "asynchronous") +
+                         "): the receiver samples data that changes asynchronously to its clock",
+                     o.loc,
+                     {unknown ? "relate the clocks (create_generated_clock, set_clock_groups) if they are synchronous, "
+                                "or synchronize the output"
+                              : "drive the output from the clock it is timed against, or exempt it with set_false_path "
+                                "-to (or a waiver for rule CDC-OUTPUT-CLOCK) if the receiver synchronizes it",
+                      "fingerprint " + o.fingerprint}});
+    }
 }
 
 } // namespace opencdc::rules

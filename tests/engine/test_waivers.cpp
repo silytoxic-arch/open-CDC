@@ -1,5 +1,6 @@
 // Stage 7: waivers (matching, application, file format, session integration).
 
+#include "core/Progress.h"
 #include "engine/AnalysisSession.h"
 #include "engine/ProjectConfig.h"
 #include "engine/ResultJson.h"
@@ -184,4 +185,70 @@ TEST_CASE("Session applies the project's waivers (cdc_advanced_waived example)",
         for (const auto& h : p["ruleHits"])
             waivedHit = waivedHit || h["waiver"] == "W-CFG";
     CHECK(waivedHit);
+}
+
+TEST_CASE("Waivers cover output ports driven asynchronously (CDC-OUTPUT-CLOCK)", "[waiver][outputs]") {
+    constexpr const char* kOut = "module top(input clk_a, input clk_b, input d, output qa, output qb);\n"
+                                 "  reg ra, rb;\n"
+                                 "  always @(posedge clk_a) ra <= d;\n"
+                                 "  always @(posedge clk_b) rb <= d;\n"
+                                 "  assign qa = ra;\n"
+                                 "  assign qb = rb;\n"
+                                 "endmodule\n";
+    const std::string sdc = "create_clock -name a -period 10 [get_ports clk_a]\n"
+                            "create_clock -name b -period 7 [get_ports clk_b]\n"
+                            "create_clock -name c -period 9\n"
+                            "set_clock_groups -asynchronous -group a -group b -group c\n"
+                            "set_output_delay -clock c 1 [get_ports {qa qb}]\n";
+    auto r = test::cdc::analyze(kOut, sdc);
+    REQUIRE(r.cdc->outputs.size() == 2); // drivers of clock a and of clock b
+    CHECK(countCode(r.diags, "CDC-OUTPUT-CLOCK") == 2);
+    for (const auto& o : r.cdc->outputs)
+        CHECK(o.fingerprint.size() == 16);
+
+    // a waiver by destination port covers the record of clock b only
+    CollectingDiagnosticSink sink;
+    WaiverRecord w = waiver("W-OUT", "CDC-OUTPUT-CLOCK");
+    w.destination = "top.qb";
+    WaiverRecord other = waiver("W-RULE", "CDC-001"); // negative: another rule covers nothing here
+    applyWaivers({w, other}, *r.cdc, "2026-10-27", sink);
+    rules::reportOutputCrossings(*r.cdc, sink);
+    const auto diags = sink.take();
+    CHECK(countCode(diags, "CDC-OUTPUT-CLOCK") == 1);
+    CHECK(countCode(diags, "WAIVER-UNUSED") == 1); // W-RULE
+    CHECK(r.cdc->stats.outputCrossings == 1);
+    REQUIRE(r.cdc->waivers.size() == 2);
+    CHECK(r.cdc->waivers[0].uses == 1);
+    const auto waived = std::ranges::count_if(r.cdc->outputs, [](const OutputCrossing& o) { return o.waiver == "W-OUT"; });
+    CHECK(waived == 1);
+    // by fingerprint
+    auto r2 = test::cdc::analyze(kOut, sdc);
+    WaiverRecord f = waiver("W-FP", "");
+    f.fingerprint = r2.cdc->outputs.front().fingerprint;
+    CollectingDiagnosticSink s2;
+    applyWaivers({f}, *r2.cdc, "2026-10-27", s2);
+    rules::reportOutputCrossings(*r2.cdc, s2);
+    CHECK(countCode(s2.take(), "CDC-OUTPUT-CLOCK") == 1);
+    // through a session: the records are in the JSON result, the waived one with its waiver
+    test::TempDir dir;
+    engine::ProjectConfig cfg;
+    cfg.name = "out";
+    cfg.top = "top";
+    cfg.sources = {dir.write("t.v", kOut)};
+    cfg.sourceLibraries = {""};
+    cfg.constraints = {dir.write("c.sdc", sdc)};
+    cfg.waivers = {dir.write("w.json", "{\"format\": \"opencdc-waivers\", \"version\": 1, \"waivers\": [{\"id\": "
+                                       "\"W-OUT\", \"rule\": \"CDC-OUTPUT-CLOCK\", \"destination\": \"top.qb\", "
+                                       "\"reason\": \"receiver synchronizes\"}]}")};
+    engine::AnalysisSession session;
+    NullProgressSink progress;
+    CancellationToken cancel;
+    auto res = session.run(cfg, progress, cancel);
+    REQUIRE(res);
+    CHECK(countCode(res->diagnostics, "CDC-OUTPUT-CLOCK") == 1);
+    CHECK(countCode(res->diagnostics, "WAIVER-UNUSED") == 0);
+    const auto j = nlohmann::json::parse(engine::toJson(*res));
+    REQUIRE(j["cdc"].contains("outputCrossings"));
+    CHECK(j["cdc"]["outputCrossings"].size() == 2);
+    CHECK(j["cdc"]["stats"]["outputCrossings"] == 1);
 }

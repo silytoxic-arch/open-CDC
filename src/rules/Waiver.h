@@ -26,4 +26,9 @@ namespace opencdc::rules {
 void applyWaivers(std::vector<cdc::WaiverRecord> waivers, cdc::CdcResult& result, std::string_view today,
                   DiagnosticSink& sink);
 
+/// Reports the output crossings that no waiver covers (CDC-OUTPUT-CLOCK,
+/// warning) and counts them in result.stats.outputCrossings. Call after
+/// applyWaivers (or after the analysis when there are no waivers).
+void reportOutputCrossings(cdc::CdcResult& result, DiagnosticSink& sink);
+
 } // namespace opencdc::rules

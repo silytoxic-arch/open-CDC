@@ -55,6 +55,7 @@ In globs, `*` matches any sequence of characters (including `.`), and `?` matche
 - For each hit, the waivers are tried in file order, and files are tried in project order. The first matching waiver that has not expired covers the hit.
 - The path's status is recomputed from the hits that are not waived. A path whose hits are all waived is marked "waived" and becomes safe.
 - Waivers are applied after the rule checks, in the "Waiver application" stage. The stage's detail line reports how many hits were waived.
+- Output ports driven asynchronously to their `set_output_delay` clock (`CDC-OUTPUT-CLOCK`) can be waived as well: use `"rule": "CDC-OUTPUT-CLOCK"` (or a glob that matches it). `source` is matched against the driving registers, `destination` against the output ports (one match among them is enough), and `fingerprint` against the fingerprint printed in the warning. A waived output crossing is not reported; the JSON result and the HTML report list it with the waiver's id.
 
 ## Diagnostics
 

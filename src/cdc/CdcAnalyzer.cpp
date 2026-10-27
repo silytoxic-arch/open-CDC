@@ -272,27 +272,16 @@ private:
                     if (std::ranges::find(ports, p) == ports.end())
                         ports.push_back(p);
             }
-            auto listOf = [](const std::vector<std::string>& v) {
-                std::string t;
-                for (std::size_t i = 0; i < v.size() && i < 4; ++i)
-                    t += (i ? ", " : "") + ("'" + v[i] + "'");
-                if (v.size() > 4)
-                    t += " (+" + std::to_string(v.size() - 4) + " more)";
-                return t;
-            };
             const Group& g = *gs.front();
-            const bool unknown = g.relation == ClockRelation::Unknown;
-            ++st_.result->stats.outputCrossings;
-            st_.sink.report({"CDC-OUTPUT-CLOCK", Severity::Warning,
-                             "output " + listOf(ports) + " is timed against clock '" + g.outClock +
-                                 "' (set_output_delay) but driven by " + listOf(sources) + " of clock '" + g.srcClock +
-                                 "' (" + (unknown ? "relation unknown" : "asynchronous") +
-                                 "): the receiver samples data that changes asynchronously to its clock",
-                             g.loc,
-                             {unknown ? "relate the clocks (create_generated_clock, set_clock_groups) if they are "
-                                        "synchronous, or synchronize the output"
-                                      : "drive the output from the clock it is timed against, or exempt it with "
-                                        "set_false_path -to if the receiver synchronizes it"}});
+            OutputCrossing oc;
+            oc.ports = ports;
+            oc.sources = sources;
+            oc.outClock = g.outClock;
+            oc.srcClock = g.srcClock;
+            oc.relation = g.relation;
+            oc.loc = g.loc;
+            oc.fingerprint = fingerprintOf(sources.front(), ports.front(), g.srcClock + ">" + g.outClock);
+            st_.result->outputs.push_back(std::move(oc));
         }
         // nodes created by the queries above (inputs reaching only outputs)
         for (std::size_t n = st_.domain.size(); n < st_.sg.nodes().size(); ++n)

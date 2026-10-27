@@ -379,6 +379,18 @@ json cdcSmall(const cdc::CdcResult& c) {
                            {"expired", w.expired},
                            {"uses", w.uses}});
     j["waivers"] = std::move(waivers);
+
+    json outputs = json::array();
+    for (const auto& o : c.outputs)
+        outputs.push_back({{"ports", o.ports},
+                           {"sources", o.sources},
+                           {"outputClock", o.outClock},
+                           {"sourceClock", o.srcClock},
+                           {"relation", std::string(clock::toString(o.relation))},
+                           {"location", locationJson(o.loc)},
+                           {"fingerprint", o.fingerprint},
+                           {"waiver", o.waiver.empty() ? json(nullptr) : json(o.waiver)}});
+    j["outputCrossings"] = std::move(outputs);
     return j;
 }
 
@@ -388,6 +400,7 @@ void writeCdc(JsonWriter& w, int level, const cdc::CdcResult& c) {
     w.object(level, {
         {"clockPairs", member("clockPairs")},
         {"hitsByRule", member("hitsByRule")},
+        {"outputCrossings", member("outputCrossings")},
         {"paths",
          [&](int l) {
              w.array(l, [&](const JsonWriter::Emit& emit) {

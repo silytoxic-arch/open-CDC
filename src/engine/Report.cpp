@@ -305,6 +305,24 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
             o << "</table>\n";
         }
 
+        // ---- Output ports (set_output_delay) ----
+        if (!c.outputs.empty()) {
+            o << "<h2 id=\"outputs\">Output ports driven asynchronously to their output delay clock</h2>\n"
+                 "<table><tr><th>Ports</th><th>Output clock</th><th>Drivers</th><th>Driver clock</th>"
+                 "<th>Relation</th><th>Constraint</th><th>Waiver</th></tr>\n";
+            for (const auto& oc : c.outputs) {
+                o << "<tr><td class=\"mono\">";
+                for (const auto& p : oc.ports)
+                    o << esc(p) << "<br>";
+                o << "</td><td>" << esc(oc.outClock) << "</td><td class=\"mono\">";
+                for (const auto& s : oc.sources)
+                    o << esc(s) << "<br>";
+                o << "</td><td>" << esc(oc.srcClock) << "</td><td>" << clock::toString(oc.relation) << "</td><td>"
+                  << esc(toString(oc.loc)) << "</td><td>" << esc(oc.waiver) << "</td></tr>\n";
+            }
+            o << "</table>\n";
+        }
+
         // ---- Path details ----
         o << "<h2 id=\"details\">Path details</h2>\n";
         const bool drawSchematics = opt.schematics && shown.size() <= opt.maxSchematics;

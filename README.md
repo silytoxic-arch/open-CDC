@@ -179,7 +179,7 @@ Different clock names alone never make two clocks asynchronous.
 
 `options.reconvergenceDepth` (default 2, range 0–8) is the number of register levels after synchronizer outputs that CDC-005 searches for reconvergence.
 
-Output ports are checked when `set_output_delay -clock <clk>` names the clock the receiver samples them with: every register or input with a clock domain that drives the port must be synchronous to that clock (`CDC-OUTPUT-CLOCK` otherwise, one warning per constraint and driver clock). `set_false_path -to [get_ports …]` exempts a port (with `-from [get_clocks …]`, only the drivers of those clocks).
+Output ports are checked when `set_output_delay -clock <clk>` names the clock the receiver samples them with: every register or input with a clock domain that drives the port must be synchronous to that clock (`CDC-OUTPUT-CLOCK` otherwise, one warning per constraint and driver clock). `set_false_path -to [get_ports …]` exempts a port (with `-from [get_clocks …]`, only the drivers of those clocks); a waiver for rule `CDC-OUTPUT-CLOCK` covers a reviewed one (see [docs/waivers.md](docs/waivers.md)). The JSON result (`cdc.outputCrossings`) and the HTML report list them.
 
 Input ports take part in CDC analysis only when `set_input_delay -clock <clk>` assigns them a clock domain. Otherwise they are listed as `CDC-NO-DOMAIN`. Asynchronous resets are the exception: an input without a clock domain that drives asynchronous reset pins is asynchronous to every clock, and its release is checked by CDC-006. Declare a reset that is synchronized outside the design with `set_input_delay -clock`.
 
