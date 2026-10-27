@@ -160,6 +160,7 @@ TEST_CASE("projectToJson round-trips through parseProjectJson", "[engine][projec
         "constraints": ["c/clk.sdc"],
         "waivers": ["../w.json"],
         "tclSourceDirs": ["syn/quartus"],
+        "ipRepositories": ["../ip_repo"],
         "options": {"unknownClockRelation": "assume_async", "minSyncStages": 3, "unknownModules": "blackbox"}
     })", kBase);
     REQUIRE(r.ok());
@@ -182,6 +183,10 @@ TEST_CASE("projectToJson round-trips through parseProjectJson", "[engine][projec
     REQUIRE(a.tclSourceDirs.size() == 1);
     CHECK(a.tclSourceDirs[0] == (kBase / "syn/quartus").lexically_normal());
     CHECK(b.tclSourceDirs == a.tclSourceDirs);
+    REQUIRE(a.ipRepositories.size() == 1);
+    CHECK(a.ipRepositories[0] == (kBase / "../ip_repo").lexically_normal());
+    CHECK(b.ipRepositories == a.ipRepositories);
+    CHECK(a.toFrontendInput().ipRepositories == a.ipRepositories);
     CHECK(b.parameters == a.parameters);
     REQUIRE(b.defines.size() == a.defines.size());
     for (std::size_t i = 0; i < a.defines.size(); ++i) {

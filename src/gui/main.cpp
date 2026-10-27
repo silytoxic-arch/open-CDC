@@ -9,6 +9,8 @@
 #include "gui/ClockView.h"
 #include "gui/MainWindow.h"
 #include "gui/ProjectEditor.h"
+
+#include <QDir>
 #include "core/PathUtil.h"
 #include "frontend/Frontend.h"
 #include "gui/SchematicView.h"
@@ -354,6 +356,7 @@ int runEditTest(MainWindow& window, const QString& project) {
         same.top != orig.top || same.language != orig.language || same.constraints != orig.constraints ||
         same.parameters != orig.parameters || same.includeDirs != orig.includeDirs ||
         same.waivers != orig.waivers || same.vivadoClockReports != orig.vivadoClockReports ||
+        same.ipRepositories != orig.ipRepositories || same.tclSourceDirs != orig.tclSourceDirs ||
         same.defines.size() != orig.defines.size() ||
         same.options.minSyncStages != orig.options.minSyncStages)
         return fail("project editor changes a project it did not edit");
@@ -372,7 +375,16 @@ int runEditTest(MainWindow& window, const QString& project) {
     editor.moveSource(0, -1);             // no-op
     if (!orig.constraints.empty())
         editor.addConstraints({QString::fromStdString(opencdc::toUtf8(orig.constraints.front()))}); // duplicate
+    // an IP repository is added once (a duplicate is ignored) and saved with the project
+    const QString repo = QDir::tempPath();
+    editor.addIpRepository(repo);
+    editor.addIpRepository(repo);
+    if (editor.ipRepositoryList()->count() != static_cast<int>(orig.ipRepositories.size()) + 1)
+        return fail("IP repository list is wrong");
     auto edited = editor.config();
+    if (edited.ipRepositories.size() != orig.ipRepositories.size() + 1)
+        return fail("IP repositories are not reflected in the configuration");
+    edited.ipRepositories = orig.ipRepositories;
     if (edited.sources != orig.sources || edited.sourceLibraries.back() != "edit_lib" ||
         edited.constraints != orig.constraints || edited.parameters.size() != orig.parameters.size() + 1)
         return fail("edits are not reflected in the configuration");

@@ -2,7 +2,9 @@
 // Each test elaborates a small Verilog snippet and checks the extracted
 // structure through the stable IR dump format (one line per object).
 
+#include "cdc/SeqGraph.h"
 #include "frontend/Frontend.h"
+#include "graph/DesignView.h"
 #include "ir/Dump.h"
 
 #include "../TestUtil.h"
@@ -294,6 +296,38 @@ TEST_CASE("Combinational always @* fully assigned", "[extract][comb]") {
     CHECK(e.contains("= mux(A=a, B=b, S=s)"));
     CHECK(e.design->stats().latches == 0);
     CHECK(e.countCode("IR-LATCH-INFERRED") == 0);
+}
+
+TEST_CASE("Blocking and non-blocking assignments mixed in a combinational block", "[extract][comb]") {
+    // Digilent PWM_AXI: the default branch of a read multiplexer uses '<='
+    auto e = extract("module m(input clk, input [1:0] s, input [7:0] a, input [7:0] b, output reg [7:0] q);\n"
+                     "  reg [7:0] y;\n"
+                     "  always @(posedge clk) q <= y;\n"
+                     "  always @(*)\n"
+                     "    case (s)\n"
+                     "      2'd0: y = a;\n"
+                     "      2'd1: begin y = 0; if (b[0]) y = b; end\n"
+                     "      default: y <= 0;\n"
+                     "    endcase\n"
+                     "endmodule\n");
+    CHECK(e.countCode("IR-MIXED-ASSIGN") == 1);
+    CHECK(e.design->stats().latches == 0);       // every path assigns y
+    CHECK(e.countCode("IR-LATCH-INFERRED") == 0);
+    graph::DesignView view(*e.design);
+    CollectingDiagnosticSink sink;
+    cdc::SeqGraph sg(view, sink);
+    CHECK(sg.combLoops() == 0);                  // not y depending on itself
+    // negative: only non-blocking assignments in a combinational block keep their meaning
+    auto n = extract("module m(input s, input [7:0] a, output reg [7:0] y);\n"
+                     "  always @(*) if (s) y <= a; else y <= 0;\n"
+                     "endmodule\n");
+    CHECK(n.countCode("IR-MIXED-ASSIGN") == 0);
+    CHECK(n.design->stats().latches == 0);
+    // negative: a clocked block mixing both keeps its register behaviour (and the warning)
+    auto c = extract("module m(input clk, input [7:0] a, output reg [7:0] y);\n"
+                     "  always @(posedge clk) begin y = 0; y <= a; end\n"
+                     "endmodule\n");
+    CHECK(c.countCode("IR-MIXED-ASSIGN") >= 1);
 }
 
 TEST_CASE("Incomplete combinational assignment infers a latch", "[extract][latch]") {

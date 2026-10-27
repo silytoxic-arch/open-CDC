@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
+#include <mutex>
 #include <map>
 #include <set>
 #include <optional>
@@ -2011,6 +2013,205 @@ Result<XciModel> memoryInterface(const XciInfo& info, const std::optional<std::s
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// IP from an IP repository (component.xml): the IP's own HDL with a wrapper
+// that has the instance name and passes the configured parameters
+// ---------------------------------------------------------------------------
+
+struct ComponentEntry {
+    std::filesystem::path file; ///< component.xml
+    std::string vendor, library, name, version;
+};
+
+std::string firstTag(const std::string& text, const char* tag) {
+    const std::regex re(std::string("<spirit:") + tag + R"(>\s*([^<]*?)\s*</spirit:)" + tag + ">");
+    std::smatch m;
+    return std::regex_search(text, m, re) ? m[1].str() : std::string();
+}
+
+/// component.xml files under the repositories (cached per repository).
+std::vector<ComponentEntry> componentsIn(const std::vector<std::filesystem::path>& repos) {
+    static std::mutex mutex;
+    static std::map<std::string, std::vector<ComponentEntry>> cache;
+    std::vector<ComponentEntry> all;
+    for (const auto& repo : repos) {
+        std::error_code ec;
+        const std::string key = std::filesystem::weakly_canonical(repo, ec).string();
+        std::vector<ComponentEntry> found;
+        bool cached = false;
+        {
+            std::lock_guard lock(mutex);
+            if (auto it = cache.find(key); it != cache.end()) {
+                found = it->second;
+                cached = true;
+            }
+        }
+        if (!cached) {
+            std::filesystem::recursive_directory_iterator it(repo, std::filesystem::directory_options::skip_permission_denied, ec),
+                end;
+            for (; !ec && it != end; it.increment(ec)) {
+                if (it.depth() > 8) {
+                    it.disable_recursion_pending();
+                    continue;
+                }
+                if (it->path().filename() != "component.xml" || !it->is_regular_file(ec))
+                    continue;
+                auto t = readSourceText(it->path());
+                if (!t)
+                    continue;
+                // the component's own VLNV: before the first bus interface or model
+                const std::string head = t->utf8.substr(0, t->utf8.find("<spirit:busInterfaces"));
+                ComponentEntry e{it->path(), firstTag(head, "vendor"), firstTag(head, "library"), firstTag(head, "name"),
+                                 firstTag(head, "version")};
+                if (!e.name.empty())
+                    found.push_back(std::move(e));
+            }
+            std::lock_guard lock(mutex);
+            cache[key] = found;
+        }
+        all.insert(all.end(), found.begin(), found.end());
+    }
+    return all;
+}
+
+/// A parameter value from the .xci as a Verilog expression, by the type the
+/// component declares.
+std::string parameterValue(std::string value, const std::string& dataType) {
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+        value = value.substr(1, value.size() - 2);
+    const std::string t = lower(dataType);
+    const std::map<std::string, std::string> one = {{"v", value}};
+    if (t == "string")
+        return "\"" + value + "\"";
+    if (t == "boolean" || t == "bool") {
+        const std::string l = lower(value);
+        return l == "true" || l == "1" ? "1'b1" : "1'b0";
+    }
+    if (t == "reg" || t == "std_logic" || t == "std_logic_vector" || t == "bit" || t == "bitstring") {
+        if (!value.empty() && std::ranges::all_of(value, [](char c) { return c == '0' || c == '1'; }))
+            return std::to_string(value.size()) + "'b" + value;
+    }
+    const long long n = num(one, "v", std::numeric_limits<long long>::min());
+    if (n != std::numeric_limits<long long>::min())
+        return std::to_string(n);
+    return "\"" + value + "\"";
+}
+
+Result<XciModel> userIp(const XciInfo& info, const ComponentEntry& comp) {
+    const auto text = readSourceText(comp.file);
+    if (!text)
+        return unsupported("IP '" + info.instance + "': cannot read " + toUtf8(comp.file));
+    const std::string& c = text->utf8;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    // the synthesis view: its top module and file set
+    static const std::regex viewRe(R"(<spirit:view>([\s\S]*?)</spirit:view>)");
+    std::string modelName, fileSet;
+    int best = -1;
+    for (auto it = std::sregex_iterator(c.begin(), c.end(), viewRe); it != std::sregex_iterator(); ++it) {
+        const std::string v = (*it)[1].str();
+        const std::string env = firstTag(v, "envIdentifier");
+        if (env.find("synthesis") == std::string::npos)
+            continue;
+        const std::string name = firstTag(v, "name");
+        const int rank = name.find("anylanguage") != std::string::npos ? 3
+                         : name.find("verilog") != std::string::npos ? 2 : 1;
+        const std::string mn = firstTag(v, "modelName");
+        if (mn.empty() || rank <= best)
+            continue;
+        best = rank;
+        modelName = mn;
+        fileSet = firstTag(v, "localName");
+    }
+    if (modelName.empty())
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): its component file " + toUtf8(comp.file) +
+                           " has no synthesis view with a top module");
+    if (info.ports.empty())
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): found in the IP repository (" +
+                               toUtf8(comp.file) + "), but its ports are only known from a JSON .xci or the component "
+                               "file next to an XML .xci (" + info.instance + ".xml)",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    XciModel out;
+    // HDL files of the file set
+    static const std::regex fileSetRe(R"(<spirit:fileSet>([\s\S]*?)</spirit:fileSet>)");
+    static const std::regex fileRe(R"(<spirit:file>([\s\S]*?)</spirit:file>)");
+    const auto base = comp.file.parent_path();
+    for (auto it = std::sregex_iterator(c.begin(), c.end(), fileSetRe); it != std::sregex_iterator(); ++it) {
+        const std::string fs = (*it)[1].str();
+        if (firstTag(fs, "name") != fileSet)
+            continue;
+        for (auto f = std::sregex_iterator(fs.begin(), fs.end(), fileRe); f != std::sregex_iterator(); ++f) {
+            const std::string body = (*f)[1].str();
+            const std::string type = firstTag(body, "fileType");
+            const std::string name = firstTag(body, "name");
+            if (name.empty() || firstTag(body, "isIncludeFile") == "true")
+                continue;
+            const bool hdl = type == "verilogSource" || type == "systemVerilogSource" || type == "vhdlSource" ||
+                             lower(std::filesystem::path(name).extension().string()) == ".xci";
+            if (!hdl)
+                continue;
+            out.extraSources.push_back((base / std::filesystem::path(name)).lexically_normal());
+            out.extraLibraries.push_back(type == "vhdlSource" ? firstTag(body, "logicalName") : std::string());
+        }
+    }
+    if (out.extraSources.empty())
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): the synthesis file set of " + toUtf8(comp.file) +
+                           " lists no HDL file");
+    // parameters: the configured MODELPARAM values the component declares
+    static const std::regex paramRe(R"(<spirit:modelParameter\b([^>]*)>([\s\S]*?)</spirit:modelParameter>)");
+    static const std::regex typeRe(R"re(spirit:dataType="([^"]*)")re");
+    std::ostringstream params;
+    for (auto it = std::sregex_iterator(c.begin(), c.end(), paramRe); it != std::sregex_iterator(); ++it) {
+        const std::string attrs = (*it)[1].str();
+        const std::string name = firstTag((*it)[2].str(), "name");
+        auto v = info.model.find(name);
+        if (name.empty() || v == info.model.end())
+            continue;
+        std::smatch tm;
+        const std::string type = std::regex_search(attrs, tm, typeRe) ? tm[1].str() : std::string();
+        params << (params.tellp() > 0 ? ", " : "") << "." << name << "(" << parameterValue(v->second, type) << ")";
+    }
+    const auto ports = boundaryPorts(info);
+    std::ostringstream w;
+    emitHeader(w, info.instance, ports);
+    w << "  " << modelName;
+    if (params.tellp() > 0)
+        w << " #(" << params.str() << ")";
+    w << " inst (";
+    for (std::size_t i = 0; i < ports.size(); ++i)
+        w << (i ? ", " : "") << "." << ports[i].name << "(" << ports[i].name << ")";
+    // ports of the top module that this configuration disables: inputs get
+    // their default value (as Vivado's wrapper ties them), outputs stay open
+    static const std::regex portRe(R"(<spirit:port>([\s\S]*?)</spirit:port>)");
+    static const std::regex defRe(R"(<spirit:defaultValue\b[^>]*>\s*([^<\s]*)\s*</spirit:defaultValue>)");
+    const auto modelEnd = c.find("</spirit:ports>");
+    const std::string portsText = c.substr(0, modelEnd == std::string::npos ? c.size() : modelEnd);
+    for (auto it = std::sregex_iterator(portsText.begin(), portsText.end(), portRe); it != std::sregex_iterator(); ++it) {
+        const std::string body = (*it)[1].str();
+        const std::string name = firstTag(body, "name");
+        const std::string dir = firstTag(body, "direction");
+        if (name.empty() || std::ranges::any_of(ports, [&](const SimplePort& sp) { return sp.name == name; }))
+            continue;
+        if (dir == "in") {
+            std::smatch dm;
+            std::string def = std::regex_search(body, dm, defRe) ? dm[1].str() : "0";
+            const std::map<std::string, std::string> one = {{"v", def}};
+            const long long dv = num(one, "v", 0);
+            w << ", ." << name << "(" << (dv < 0 ? 0 : dv) << ")";
+        }
+        else {
+            w << ", ." << name << "()";
+        }
+    }
+    w << ");\nendmodule\n";
+    out.module = info.instance;
+    out.ip = vlnv;
+    out.verilog = w.str();
+    out.summary = "from the IP repository (" + toUtf8(comp.file) + "): top module '" + modelName + "', " +
+                  std::to_string(out.extraSources.size()) + " HDL file(s)";
+    return out;
+}
+
 } // namespace
 
 bool isXciFile(const std::filesystem::path& file) {
@@ -2027,12 +2228,26 @@ Result<XciInfo> parseXci(std::string_view text) {
 
 /// `dir`: the folder of the .xci, where files the configuration refers to are
 /// looked up (the memory interface's XML_INPUT_FILE).
-Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir) {
+Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir);
+
+Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const XciContext* context = nullptr) {
     // XML .xci: the port list from the component file next to it, when present
     if (!info.json && info.ports.empty() && dir)
         if (auto t = readSourceText(*dir / (info.instance + ".xml")))
             if (auto ports = parseComponentPorts(t->utf8))
                 info.ports = std::move(*ports);
+    auto r = dispatchModelled(info, dir);
+    if (r || !context || context->ipRepositories.empty() || r.error().code != "FE-XCI-UNSUPPORTED")
+        return r;
+    // not modelled: the IP itself, from an IP repository
+    for (const auto& comp : componentsIn(context->ipRepositories))
+        if (lower(comp.vendor) == lower(info.vendor) && lower(comp.library) == lower(info.library) &&
+            comp.name == info.name && comp.version == info.version)
+            return userIp(info, comp);
+    return r;
+}
+
+Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
     if (info.name == "axis_data_fifo")
@@ -2093,6 +2308,22 @@ Result<XciModel> modelFromXciText(std::string_view text, const std::filesystem::
     if (!parsed)
         return std::move(parsed).error();
     return dispatch(parsed.value(), &dir);
+}
+
+Result<XciModel> modelFromXci(const std::filesystem::path& file, const XciContext& context) {
+    auto text = readSourceText(file);
+    if (!text)
+        return Diagnostic{"FE-XCI-PARSE", Severity::Warning, "cannot read IP configuration file",
+                          SourceLocation{toUtf8(file), 0, 0}, {}};
+    auto parsed = parseXci(text->utf8);
+    const auto dir = file.parent_path();
+    Result<XciModel> r = parsed ? dispatch(parsed.value(), &dir, &context) : Result<XciModel>(std::move(parsed).error());
+    if (!r) {
+        Diagnostic d = std::move(r).error();
+        d.location.file = toUtf8(file);
+        return d;
+    }
+    return r;
 }
 
 Result<XciModel> modelFromXci(const std::filesystem::path& file) {

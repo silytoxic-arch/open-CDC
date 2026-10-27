@@ -50,6 +50,8 @@ struct AnalysisOptions {
 ///   "vivadoClockReports": ["impl/clocks.rpt"],  (optional; Vivado report_clocks output, see engine/VivadoClocks.h)
 ///   "tclSourceDirs": ["syn/quartus"],           (optional; directories searched for relative Tcl `source`
 ///                                                paths, e.g. the directory Quartus/Vivado runs the scripts from)
+///   "ipRepositories": ["../vivado-library"],    (optional; Vivado IP repositories: an IP given as .xci that
+///                                                OpenCDC does not model is taken from its component.xml and HDL)
 ///   "options":     {"unknownClockRelation": "report",   (optional; report | assume_async | assume_sync)
 ///                   "minSyncStages": 2,                 (optional; 1..8)
 ///                   "reconvergenceDepth": 2,            (optional; 0..8)
@@ -75,6 +77,9 @@ struct ProjectConfig {
     /// Directories searched for relative `source` paths in constraint
     /// scripts, after the directory of the sourcing file (absolute).
     std::vector<std::filesystem::path> tclSourceDirs;
+    /// IP repositories (Vivado ip_repo_paths): directories searched for the
+    /// component.xml of an IP given as .xci that OpenCDC does not model (absolute).
+    std::vector<std::filesystem::path> ipRepositories;
     AnalysisOptions options;
 
     [[nodiscard]] frontend::FrontendInput toFrontendInput() const;

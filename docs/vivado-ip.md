@@ -45,6 +45,33 @@ expression is not guessed: the IP is then not modelled from the port list.
 | ILA (`xilinx.com:ip:ila`) | Inputs only (`clk`, `probe<i>`); `trig_out` and `trig_in_ack` are in the `clk` domain. Constraints that refer to the inside of debug cores (`*ila_core_inst/*`, `dbg_hub`) are noted (`CON-UNMATCHED` info), not warned. |
 | VIO (`xilinx.com:ip:vio`) | `probe_out<i>` are registers in the `clk` domain with their initial value: VIO synchronizes the values set over JTAG to `clk`. `probe_in<i>` are inputs only. |
 
+## IP from an IP repository
+
+IP that OpenCDC does not model, for example your own IP or a board vendor's
+(Digilent's `pmod_bridge`, `PWM`), can come from its IP repository, as in
+Vivado (`ip_repo_paths`). List the repository directories in the project:
+
+```json
+"ipRepositories": ["../vivado-library/ip"]
+```
+
+The directories are searched (8 levels deep) for the `component.xml` whose
+vendor, library, name and version are those of the `.xci`. From it:
+- the top module of the synthesis view (`xilinx_anylanguagesynthesis`, else a
+  Verilog or VHDL synthesis view), and the HDL files of its file set (Verilog,
+  SystemVerilog, VHDL with its library; constraint and other files are left
+  out; a `.xci` in the file set is modelled in turn). SystemVerilog files
+  switch the analysis to SystemVerilog;
+- the model parameters it declares, with the values configured in the `.xci`
+  (string, integer, `reg`/`std_logic_vector` bit strings, boolean).
+
+A wrapper module with the instance name instantiates the top module with these
+parameters. Its ports are those of the instance (from a JSON `.xci` or the
+component file next to an XML `.xci`); ports the configuration disables are
+tied to their default value (inputs) or left open (outputs), as in Vivado's
+wrapper. The model is reported as `FE-XCI-MODEL` with the repository file.
+Without the instance's port list the IP is not modelled (`FE-XCI-UNSUPPORTED`).
+
 ## Not supported
 
 The following IP gets an `FE-XCI-UNSUPPORTED` warning:
@@ -52,7 +79,7 @@ The following IP gets an `FE-XCI-UNSUPPORTED` warning:
 - ILA in AXI monitor mode from an XML file;
 - the one-clock datapath IP and AXI peripherals above (except CORDIC) from an XML file without its component file;
 - the memory interface with another memory type (QDR II+, RLDRAM, LPDDR2), with ECC or with several controllers;
-- any other IP, for example the UltraScale memory interface (`ddr4`), DMA and the AXI interconnect.
+- any other IP that is not in a listed IP repository, for example the UltraScale memory interface (`ddr4`), DMA and the AXI interconnect.
 
 The IP then stays an unknown module. Add its generated HDL, or set the
 project option `unknownModules` to `blackbox`. `.xcix` files (compressed IP

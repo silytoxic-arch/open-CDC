@@ -40,6 +40,8 @@ public:
     void addWaivers(const QStringList& files);
     void addVivadoReports(const QStringList& files);
     void addTclSourceDir(const QString& dir);
+    void addIpRepository(const QString& dir);
+    [[nodiscard]] QListWidget* ipRepositoryList() const { return ipRepos_; }
     void setParameter(const QString& name, const QString& value);
     void setDefine(const QString& name, const QString& value, bool hasValue);
 
@@ -66,6 +68,7 @@ private:
     QListWidget* waivers_;
     QListWidget* vivadoReports_;
     QListWidget* tclSourceDirs_;
+    QListWidget* ipRepos_ = nullptr;
     QComboBox* unknownClock_;
     QSpinBox* minStages_;
     QSpinBox* reconvDepth_;

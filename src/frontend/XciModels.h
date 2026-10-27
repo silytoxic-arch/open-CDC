@@ -33,6 +33,17 @@ struct XciModel {
     std::string summary; ///< "independent clocks, 32 x 16, first-word fall-through, native"
     std::string verilog; ///< model source
     std::vector<std::string> notes; ///< e.g. outputs driven with a constant
+    /// HDL files of the IP itself (an IP found in an IP repository: its
+    /// synthesis file set; may contain further .xci), with their VHDL library.
+    std::vector<std::filesystem::path> extraSources;
+    std::vector<std::string> extraLibraries;
+};
+
+/// Where IP that OpenCDC does not model is looked up: IP repositories
+/// (directories searched for the IP's component.xml, as Vivado's
+/// ip_repo_paths).
+struct XciContext {
+    std::vector<std::filesystem::path> ipRepositories;
 };
 
 /// True for .xci files.
@@ -47,5 +58,9 @@ struct XciModel {
 
 /// As above, reading the file (locations of errors point to it).
 [[nodiscard]] Result<XciModel> modelFromXci(const std::filesystem::path& file);
+/// As above; an IP without a model of its own is looked up in the IP
+/// repositories: its HDL (synthesis file set) is added and a wrapper with the
+/// instance name passes the configured parameters (MODELPARAM values).
+[[nodiscard]] Result<XciModel> modelFromXci(const std::filesystem::path& file, const XciContext& context);
 
 } // namespace opencdc::frontend

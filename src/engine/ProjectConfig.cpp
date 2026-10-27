@@ -66,6 +66,7 @@ frontend::FrontendInput ProjectConfig::toFrontendInput() const {
     in.sourceLibraries = sourceLibraries;
     in.topParameters = parameters;
     in.blackBoxUnknownModules = options.blackBoxUnknownModules;
+    in.ipRepositories = ipRepositories;
     return in;
 }
 
@@ -163,6 +164,8 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
     if (auto err = readPathArray(root, "tclSourceDirs", baseDir, cfg.tclSourceDirs, false); !err.empty())
         return projectError("PRJ-SCHEMA", err);
     if (auto err = readPathArray(root, "vivadoClockReports", baseDir, cfg.vivadoClockReports, false); !err.empty())
+        return projectError("PRJ-SCHEMA", err);
+    if (auto err = readPathArray(root, "ipRepositories", baseDir, cfg.ipRepositories, false); !err.empty())
         return projectError("PRJ-SCHEMA", err);
 
     if (auto it = root.find("defines"); it != root.end()) {
@@ -333,6 +336,7 @@ std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path&
     paths("waivers", cfg.waivers);
     paths("vivadoClockReports", cfg.vivadoClockReports);
     paths("tclSourceDirs", cfg.tclSourceDirs);
+    paths("ipRepositories", cfg.ipRepositories);
     const AnalysisOptions defaults;
     if (cfg.options.unknownClockRelation != defaults.unknownClockRelation ||
         cfg.options.minSyncStages != defaults.minSyncStages ||

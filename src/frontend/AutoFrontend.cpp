@@ -802,15 +802,29 @@ public:
         if (std::ranges::any_of(input.sourceFiles, isXciFile)) {
             input.sourceFiles.clear();
             input.sourceLibraries.clear();
-            for (std::size_t i = 0; i < original.sourceFiles.size(); ++i) {
-                const auto& f = original.sourceFiles[i];
-                const std::string lib = i < original.sourceLibraries.size() ? original.sourceLibraries[i] : std::string();
+            XciContext context;
+            context.ipRepositories = original.ipRepositories;
+            // sources in order; an IP from a repository adds its own files
+            // (which may contain further .xci) right after its configuration
+            std::vector<std::pair<std::filesystem::path, std::string>> queue;
+            for (std::size_t i = 0; i < original.sourceFiles.size(); ++i)
+                queue.emplace_back(original.sourceFiles[i],
+                                   i < original.sourceLibraries.size() ? original.sourceLibraries[i] : std::string());
+            std::set<std::string> seen;
+            for (std::size_t q = 0; q < queue.size(); ++q) {
+                const auto [f, lib] = queue[q];
+                std::error_code ec;
+                if (!seen.insert(std::filesystem::weakly_canonical(f, ec).string()).second)
+                    continue; // the same file listed twice (an IP used by several others)
                 if (!isXciFile(f)) {
                     input.sourceFiles.push_back(f);
                     input.sourceLibraries.push_back(lib);
+                    if (const auto ext = f.extension().string(); (ext == ".sv" || ext == ".svh") &&
+                                                                 input.language != LanguageStd::SystemVerilog2017)
+                        input.language = LanguageStd::SystemVerilog2017; // an IP's SystemVerilog sources
                     continue;
                 }
-                auto model = modelFromXci(f);
+                auto model = modelFromXci(f, context);
                 if (!model) {
                     sink.report(std::move(model).error()); // the IP stays an unknown module
                     continue;
@@ -821,6 +835,9 @@ public:
                 writeIfChanged(path, mv.verilog);
                 input.sourceFiles.push_back(path);
                 input.sourceLibraries.push_back(std::string());
+                for (std::size_t k = 0; k < mv.extraSources.size(); ++k)
+                    queue.insert(queue.begin() + static_cast<std::ptrdiff_t>(q + 1 + k),
+                                 {mv.extraSources[k], k < mv.extraLibraries.size() ? mv.extraLibraries[k] : std::string()});
                 Diagnostic d{"FE-XCI-MODEL", Severity::Info,
                              "IP '" + mv.module + "' (" + mv.ip + ") modelled from its configuration: " + mv.summary,
                              SourceLocation{toUtf8(f), 0, 0}, mv.notes};

@@ -160,12 +160,25 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
     connect(downSrc, &QPushButton::clicked, this, [this] { moveSource(selectedRow(sources_), +1); });
     auto* srcPage = new QWidget(tabs);
     auto* srcLayout = new QVBoxLayout(srcPage);
-    srcLayout->addWidget(withButtons(sources_, {addSrc, rmSrc, upSrc, downSrc}, srcPage));
+    srcLayout->addWidget(withButtons(sources_, {addSrc, rmSrc, upSrc, downSrc}, srcPage), 3);
     auto* hint = new QLabel(tr("Order matters for Verilog compilation units. The library column applies to "
                                "VHDL files (empty = work)."),
                             srcPage);
     hint->setWordWrap(true);
     srcLayout->addWidget(hint);
+    ipRepos_ = makePathList(config.ipRepositories);
+    auto* addRepo = button(tr("Add..."), this);
+    auto* rmRepo = button(tr("Remove"), this);
+    connect(addRepo, &QPushButton::clicked, this, [this] {
+        const QString dir = QFileDialog::getExistingDirectory(this, tr("Add IP repository"), baseDir_);
+        if (!dir.isEmpty())
+            addIpRepository(dir);
+    });
+    connect(rmRepo, &QPushButton::clicked, this, [this] { delete ipRepos_->currentItem(); });
+    srcLayout->addWidget(new QLabel(tr("IP repositories (Vivado ip_repo_paths: an IP given as .xci that OpenCDC "
+                                       "does not model is taken from its component.xml and HDL):"),
+                                    srcPage));
+    srcLayout->addWidget(withButtons(ipRepos_, {addRepo, rmRepo}, srcPage), 1);
     tabs->addTab(srcPage, tr("Sources"));
 
     // Constraints and waivers
@@ -332,6 +345,8 @@ void ProjectEditor::addWaivers(const QStringList& files) { addPathItems(waivers_
 void ProjectEditor::addVivadoReports(const QStringList& files) { addPathItems(vivadoReports_, files); }
 void ProjectEditor::addTclSourceDir(const QString& dir) { addPathItems(tclSourceDirs_, {dir}); }
 
+void ProjectEditor::addIpRepository(const QString& dir) { addPathItems(ipRepos_, {dir}); }
+
 void ProjectEditor::setParameter(const QString& name, const QString& value) {
     for (int r = 0; r < parameters_->rowCount(); ++r)
         if (cell(parameters_, r, 0) == name) {
@@ -380,6 +395,7 @@ engine::ProjectConfig ProjectEditor::config() const {
     c.waivers = listPaths(waivers_);
     c.vivadoClockReports = listPaths(vivadoReports_);
     c.tclSourceDirs = listPaths(tclSourceDirs_);
+    c.ipRepositories = listPaths(ipRepos_);
     c.options.unknownClockRelation = static_cast<engine::UnknownClockPolicy>(unknownClock_->currentData().toInt());
     c.options.minSyncStages = static_cast<std::uint32_t>(minStages_->value());
     c.options.reconvergenceDepth = static_cast<std::uint32_t>(reconvDepth_->value());

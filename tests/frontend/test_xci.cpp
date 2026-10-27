@@ -987,3 +987,131 @@ TEST_CASE("XCI: AXI Quad SPI sides and their asynchronous FIFOs", "[frontend][xc
     CHECK(direct->cdc->stats.unsynchronized >= 1);
     CHECK(std::ranges::none_of(direct->cdc->structures, [](const auto& s) { return s.type == cdc::SyncType::AsyncFifo; }));
 }
+
+namespace {
+
+// An IP of one's own in an IP repository: component.xml with a synthesis view,
+// its HDL, and model parameters of three types; port `test_i` is disabled in
+// the instance below and has the default value 1.
+void writeUserIpRepo(const test::TempDir& dir, const std::string& version = "1.0", bool withFifo = false) {
+    std::string files = "<spirit:file><spirit:name>hdl/blinker.v</spirit:name><spirit:fileType>verilogSource"
+                        "</spirit:fileType></spirit:file>\n"
+                        "<spirit:file><spirit:name>hdl/blinker_ooc.xdc</spirit:name><spirit:fileType>xdc"
+                        "</spirit:fileType></spirit:file>\n";
+    if (withFifo)
+        files += "<spirit:file><spirit:name>hdl/bfifo/bfifo.xci</spirit:name><spirit:userFileType>xci"
+                 "</spirit:userFileType></spirit:file>\n";
+    dir.write("repo/blinker_1.0/component.xml",
+              "<?xml version=\"1.0\"?>\n<spirit:component xmlns:spirit=\"http://www.spiritconsortium.org/XMLSchema/SPIRIT/"
+              "1685-2009\">\n<spirit:vendor>example.com</spirit:vendor><spirit:library>user</spirit:library>"
+              "<spirit:name>blinker</spirit:name><spirit:version>" + version + "</spirit:version>\n"
+              "<spirit:busInterfaces><spirit:busInterface><spirit:name>other</spirit:name></spirit:busInterface>"
+              "</spirit:busInterfaces>\n<spirit:model><spirit:views>\n"
+              "<spirit:view><spirit:name>xilinx_anylanguagesynthesis</spirit:name><spirit:envIdentifier>:vivado.xilinx.com:"
+              "synthesis</spirit:envIdentifier><spirit:modelName>blinker_top</spirit:modelName><spirit:fileSetRef>"
+              "<spirit:localName>synth_fs</spirit:localName></spirit:fileSetRef></spirit:view>\n"
+              "<spirit:view><spirit:name>xilinx_anylanguagebehavioralsimulation</spirit:name><spirit:envIdentifier>:vivado."
+              "xilinx.com:simulation</spirit:envIdentifier><spirit:modelName>blinker_sim</spirit:modelName>"
+              "<spirit:fileSetRef><spirit:localName>sim_fs</spirit:localName></spirit:fileSetRef></spirit:view>\n"
+              "</spirit:views><spirit:ports>\n"
+              "<spirit:port><spirit:name>clk</spirit:name><spirit:wire><spirit:direction>in</spirit:direction></spirit:wire></spirit:port>\n"
+              "<spirit:port><spirit:name>d</spirit:name><spirit:wire><spirit:direction>in</spirit:direction></spirit:wire></spirit:port>\n"
+              "<spirit:port><spirit:name>q</spirit:name><spirit:wire><spirit:direction>out</spirit:direction></spirit:wire></spirit:port>\n"
+              "<spirit:port><spirit:name>test_i</spirit:name><spirit:wire><spirit:direction>in</spirit:direction>"
+              "<spirit:driver><spirit:defaultValue spirit:format=\"long\">1</spirit:defaultValue></spirit:driver></spirit:wire></spirit:port>\n"
+              "<spirit:port><spirit:name>test_o</spirit:name><spirit:wire><spirit:direction>out</spirit:direction></spirit:wire></spirit:port>\n"
+              "</spirit:ports><spirit:modelParameters>\n"
+              "<spirit:modelParameter spirit:dataType=\"string\"><spirit:name>MODE</spirit:name><spirit:value>A</spirit:value></spirit:modelParameter>\n"
+              "<spirit:modelParameter spirit:dataType=\"integer\"><spirit:name>STAGES</spirit:name><spirit:value>1</spirit:value></spirit:modelParameter>\n"
+              "<spirit:modelParameter spirit:dataType=\"reg\"><spirit:name>POLARITY</spirit:name><spirit:value>0</spirit:value></spirit:modelParameter>\n"
+              "</spirit:modelParameters></spirit:model>\n<spirit:fileSets>\n"
+              "<spirit:fileSet><spirit:name>sim_fs</spirit:name><spirit:file><spirit:name>hdl/blinker_sim.v</spirit:name>"
+              "<spirit:fileType>verilogSource</spirit:fileType></spirit:file></spirit:fileSet>\n"
+              "<spirit:fileSet><spirit:name>synth_fs</spirit:name>" + files + "</spirit:fileSet>\n"
+              "</spirit:fileSets>\n</spirit:component>\n");
+    // MODE "B" and POLARITY 1'b1 select the registered path; test_i must be 1 to pass d
+    dir.write("repo/blinker_1.0/hdl/blinker.v",
+              "module blinker_top #(parameter MODE = \"A\", parameter integer STAGES = 1, parameter POLARITY = 1'b0)\n"
+              "  (input clk, input d, output q, input test_i, output test_o);\n"
+              "  reg [STAGES-1:0] r = 0;\n"
+              "  always @(posedge clk) r <= {r, d & test_i};\n"
+              "  assign q = (MODE == \"B\" && POLARITY == 1'b1) ? r[STAGES-1] : 1'b0;\n"
+              "  assign test_o = r[0];\n"
+              "endmodule\n");
+    dir.write("repo/blinker_1.0/hdl/blinker_ooc.xdc", "create_clock -period 10 [get_ports clk]\n");
+    if (withFifo)
+        dir.write("repo/blinker_1.0/hdl/bfifo/bfifo.xci", jsonFifo("bfifo"));
+}
+
+std::string blinkerInstance() {
+    return spirit("u_blink_0", "blinker", "1.0", {{"MODE", "B"}, {"STAGES", "3"}, {"POLARITY", "&quot;1&quot;"}});
+}
+
+} // namespace
+
+TEST_CASE("XCI: an IP of one's own from an IP repository", "[frontend][xci][iprepo]") {
+    test::TempDir dir;
+    writeUserIpRepo(dir);
+    std::string xci = blinkerInstance();
+    xci.replace(xci.find("spirit:vendor=\"xilinx.com\" spirit:library=\"ip\""), 46,
+                "spirit:vendor=\"example.com\" spirit:library=\"user\"");
+    dir.write("bd/u_blink_0/u_blink_0.xml", component({{"clk", "in", -1, true}, {"d", "in", -1, true},
+                                                       {"q", "out", -1, true}, {"test_i", "in", -1, false},
+                                                       {"test_o", "out", -1, false}}));
+    frontend::XciContext ctx;
+    ctx.ipRepositories = {dir.path() / "repo"};
+    auto m = frontend::modelFromXci(dir.write("bd/u_blink_0/u_blink_0.xci", xci), ctx);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p : {"module u_blink_0", "blinker_top #(.MODE(\"B\"), .STAGES(3), .POLARITY(1'b1)) inst",
+                          ".clk(clk), .d(d), .q(q), .test_i(1), .test_o()"})
+        CHECK(v.find(p) != std::string::npos);
+    CHECK(v.find("blinker_sim") == std::string::npos); // the synthesis view, not the simulation one
+    REQUIRE(m.value().extraSources.size() == 1);        // the HDL, not the .xdc
+    CHECK(m.value().extraSources[0].filename() == "blinker.v");
+    CHECK(m.value().ip == "example.com:user:blinker:1.0");
+
+    // negative: no repository, another version, no instance component file
+    auto none = frontend::modelFromXci(dir.path() / "bd/u_blink_0/u_blink_0.xci");
+    REQUIRE_FALSE(none);
+    CHECK(none.error().code == "FE-XCI-UNSUPPORTED");
+    test::TempDir d2;
+    writeUserIpRepo(d2, "2.0");
+    frontend::XciContext ctx2;
+    ctx2.ipRepositories = {d2.path() / "repo"};
+    CHECK_FALSE(frontend::modelFromXci(dir.path() / "bd/u_blink_0/u_blink_0.xci", ctx2));
+    test::TempDir d3;
+    auto noPorts = frontend::modelFromXci(d3.write("u_blink_0.xci", xci), ctx);
+    REQUIRE_FALSE(noPorts);
+    CHECK(noPorts.error().message.find("found in the IP repository") != std::string::npos);
+
+    // end to end: the IP's registers are analyzed; its output read on another clock crosses
+    auto e2e = [&](const std::string& readClk, bool withFifo) {
+        test::TempDir p;
+        writeUserIpRepo(p, "1.0", withFifo);
+        p.write("bd/u_blink_0/u_blink_0.xml", component({{"clk", "in", -1, true}, {"d", "in", -1, true},
+                                                         {"q", "out", -1, true}, {"test_i", "in", -1, false},
+                                                         {"test_o", "out", -1, false}}));
+        engine::ProjectConfig cfg = project(p,
+                                            "module top(input clk_a, input clk_b, input [7:0] d, input we, input re,\n"
+                                            "           output reg [7:0] q, output reg [11:0] level);\n"
+                                            "  wire b;\n"
+                                            "  u_blink_0 u (.clk(clk_a), .d(we), .q(b));\n"
+                                            "  always @(posedge " + readClk + ") q <= {7'd0, b};\n"
+                                            "endmodule\n",
+                                            {p.write("bd/u_blink_0/u_blink_0.xci", xci)});
+        cfg.ipRepositories = {p.path() / "repo"};
+        return run(cfg);
+    };
+    auto same = e2e("clk_a", false);
+    REQUIRE(same->cdc);
+    CHECK(same->cdc->stats.paths == 0);
+    CHECK(count(*same, "FE-XCI-MODEL") == 1);
+    CHECK(count(*same, "FE-UNCONNECTED-PORTS") == 0); // the disabled ports are tied in the wrapper
+    auto other = e2e("clk_b", false);
+    REQUIRE(other->cdc);
+    CHECK(other->cdc->stats.unsynchronized == 1); // r[2] of the IP read on clk_b
+    // an IP whose file set holds a further .xci: that one is modelled too
+    auto nested = e2e("clk_a", true);
+    CHECK(count(*nested, "FE-XCI-MODEL") == 2);
+}

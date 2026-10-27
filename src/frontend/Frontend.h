@@ -47,6 +47,9 @@ struct FrontendInput {
     /// not in the sources) are analyzed as black boxes (warning) instead of
     /// being errors.
     bool blackBoxUnknownModules = false;
+    /// Directories searched for the component.xml of IP given as .xci that
+    /// OpenCDC does not model (Vivado's ip_repo_paths): the IP's HDL is used.
+    std::vector<std::filesystem::path> ipRepositories;
 };
 
 /// A module (or primitive/interface/program) definition found in the sources.

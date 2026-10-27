@@ -127,6 +127,7 @@ void BodyBuilder::assignTargets(const std::vector<LTarget>& targets, const SigSp
         pos += t.width;
         if (t.width == 0)
             continue;
+        const bool nb = nonBlocking && !nbaAsBlocking_.contains(t.sym);
 
         if (!proc_) {
             // Continuous assignment: a static slice of a module net.
@@ -143,7 +144,7 @@ void BodyBuilder::assignTargets(const std::vector<LTarget>& targets, const SigSp
         ProcState& st = *proc_;
         const std::uint32_t W = widthOf(*t.sym);
         SigSpec base;
-        if (nonBlocking)
+        if (nb)
             base = nbaBase(st, *t.sym);
         else if (const auto* cur = st.cur.find(t.sym))
             base = *cur;
@@ -189,7 +190,7 @@ void BodyBuilder::assignTargets(const std::vector<LTarget>& targets, const SigSp
             markBits(st.any[t.sym], W, t.offset, t.regionWidth); // not "all": only one element is written
             (void)st.all[t.sym];
         }
-        if (nonBlocking) {
+        if (nb) {
             st.nba[t.sym] = std::move(next);
             st.nbaWritten.insert(t.sym);
         }
@@ -703,6 +704,19 @@ void BodyBuilder::lowerInitial(const sast::Statement& body, slang::SourceLocatio
 void BodyBuilder::lowerComb(const sast::Statement& body, bool intendedLatch, slang::SourceLocation l) {
     ProcState st;
     exec(body, st);
+    // A variable assigned both ways (`x = a; ... x <= 0;`): lower its
+    // non-blocking assignments as blocking, as synthesis does. Keeping them
+    // apart would make the paths without one hold the old value: a loop.
+    std::unordered_set<const sast::ValueSymbol*> mixed;
+    for (const auto& [s, mask] : st.any)
+        if (st.nbaWritten.contains(s) && st.blockingWritten.contains(s))
+            mixed.insert(s);
+    if (!mixed.empty()) {
+        nbaAsBlocking_ = mixed;
+        st = ProcState{};
+        exec(body, st);
+        nbaAsBlocking_.clear();
+    }
 
     for (const auto& [s, anyMask] : st.any) {
         const SigSpec* nbaV = st.nba.find(s);
@@ -715,9 +729,12 @@ void BodyBuilder::lowerComb(const sast::Statement& body, bool intendedLatch, sla
         auto net = netFor(*s);
         if (!net)
             continue;
-        if (st.nbaWritten.contains(s) && st.blockingWritten.contains(s))
+        if (mixed.contains(s))
             warn("IR-MIXED-ASSIGN", Severity::Warning,
-                 "'" + body_.net(*net).name + "' uses both blocking and non-blocking assignments", l);
+                 "'" + body_.net(*net).name +
+                     "' uses both blocking and non-blocking assignments in a combinational block; the non-blocking "
+                     "ones are taken as blocking",
+                 l);
 
         const BitMask* allMask = st.all.find(s);
         const auto W = body_.net(*net).width;

@@ -196,6 +196,9 @@ private:
     std::unordered_map<const sast::Symbol*, ir::NetId> netOf_;
     ir::BodyEditor ed_{body_}; ///< cell creation, control extraction, cleanup (shared with the VHDL frontend)
     std::unordered_set<const sast::ValueSymbol*> loopVars_;     ///< variables used as for-loop indices
+    /// Combinational block: variables assigned both ways, whose non-blocking
+    /// assignments are lowered as blocking ones (synthesis semantics)
+    std::unordered_set<const sast::ValueSymbol*> nbaAsBlocking_;
     ProcState* proc_ = nullptr;                                 ///< non-null inside procedural code
     int inlineDepth_ = 0;
     const sast::ValueSymbol* retVar_ = nullptr;                 ///< return variable of the function being inlined
