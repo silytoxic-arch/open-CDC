@@ -158,8 +158,8 @@ TEST_CASE("Errors, unsupported and ignored commands are reported", "[constraints
                    "create_clock -period abc -name y\n"                   // bad period
                    "set_clock_groups -group a -group b\n"                 // missing kind
                    "set_false_path -through [get_ports clk]\n"            // ignored (args not evaluated)
-                   "set_output_delay 1 -clock x [get_ports rst_n]\n"
-                   "set_output_delay 2 -clock x [get_ports rst_n]\n"
+                   "set_multicycle_path 2 -to [get_ports rst_n]\n"
+                   "set_multicycle_path 3 -to [get_ports rst_n]\n"
                    "namespace eval ns { puts x }\n"                       // unsupported Tcl
                    "frobnicate 1 2\n"                                     // unknown
                    "get_ports -filter {NAME =~ clk*} clk\n"              // unsupported option
@@ -172,7 +172,7 @@ TEST_CASE("Errors, unsupported and ignored commands are reported", "[constraints
     CHECK(p.countCode("CON-UNKNOWN-COMMAND") == 1);
     CHECK(p.countCode("CON-UNSUPPORTED-OPTION") == 1);
     CHECK(p.countCode("CON-IGNORED") == 1);
-    CHECK(p.set.ignoredCommands.at("set_output_delay") == 2);
+    CHECK(p.set.ignoredCommands.at("set_multicycle_path") == 2);
     CHECK(p.set.ignoredCommands.at("set_false_path") == 1);
     // Arguments of ignored commands are not evaluated (no get_ports query for them).
     CHECK(std::ranges::count(r.queries, std::string("ports:clk")) == 1);
@@ -190,6 +190,21 @@ TEST_CASE("set_input_delay -clock assigns ports to a clock", "[constraints]") {
     CHECK(p.set.inputDelays[1].clock == "clk_b");
     CHECK(p.set.inputDelays[1].clockFall);
     CHECK(p.set.ignoredCommands.at("set_input_delay (without -clock)") == 1);
+}
+
+TEST_CASE("set_output_delay -clock names the clock outputs are sampled with", "[constraints]") {
+    FakeResolver r;
+    auto p = parse("set_output_delay -clock [get_clocks clk] -max 1 [get_ports {data[0] data[1]}]\n"
+                   "set_output_delay -add_delay -clock clk_b -clock_fall -min -1 [get_ports rst_n]\n"
+                   "set_output_delay 0 [get_ports clk]\n", // no clock: nothing to check
+                   r);
+    REQUIRE(p.set.outputDelays.size() == 2);
+    CHECK(p.set.outputDelays[0].clock == "clk");
+    CHECK(p.set.outputDelays[0].bits.size() == 2);
+    CHECK(p.set.outputDelays[1].clock == "clk_b");
+    CHECK(p.set.outputDelays[1].clockFall);
+    CHECK(p.set.inputDelays.empty());
+    CHECK(p.set.ignoredCommands.at("set_output_delay (without -clock)") == 1);
 }
 
 TEST_CASE("Redefinition replaces a clock unless -add", "[constraints]") {

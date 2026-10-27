@@ -86,6 +86,7 @@ public:
         assignDomains();
         detail::findResetSynchronizers(st_);
         findCrossings();
+        checkOutputs();
         reportSourceSynchronous();
         buildChains();
         classify();
@@ -112,7 +113,7 @@ private:
                 st_.domain[g] = rc.clocks;
         }
         // Inputs: set_input_delay -clock assigns a domain.
-        std::unordered_map<BitRef, std::vector<ClockEdge>, graph::BitRefHash> inputClock;
+        auto& inputClock = inputClock_;
         for (std::size_t di = 0; di < st_.cons.inputDelays.size(); ++di) {
             const auto& d = st_.cons.inputDelays[di];
             std::optional<clock::ClockId> id;
@@ -144,6 +145,166 @@ private:
                 continue;
             if (auto it = inputClock.find(nodes[n].first); it != inputClock.end())
                 st_.domain[n] = it->second;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Output ports (set_output_delay)
+    // ------------------------------------------------------------------
+
+    /// The clock of set_output_delay -clock (a name, or get_clocks -of_objects).
+    std::optional<clock::ClockId> outputDelayClock(const constraints::OutputDelay& d) const {
+        if (d.clockBits.empty())
+            return st_.clocks.find(d.clock);
+        for (const auto& b : d.clockBits) {
+            const BitRef drv = st_.view.driver(b).bit;
+            for (std::size_t i = 0; i < st_.clocks.clocks.size(); ++i) {
+                const auto& c = st_.clocks.clocks[i];
+                if (c.source.valid() && (c.source == b || c.source == drv || st_.view.driver(c.source).bit == drv))
+                    return clock::ClockId{static_cast<std::uint32_t>(i)};
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// Clock domains of a source node (registers, and inputs with set_input_delay).
+    std::vector<ClockEdge> domainOfNode(std::uint32_t n) const {
+        if (n < st_.domain.size() && !st_.domain[n].empty())
+            return st_.domain[n];
+        const auto& nodes = st_.sg.nodes();
+        if (n < nodes.size() && nodes[n].kind == SourceKind::PrimaryInput)
+            if (auto it = inputClock_.find(nodes[n].first); it != inputClock_.end())
+                return it->second;
+        return {};
+    }
+
+    /// An output port sampled outside with clock C (set_output_delay -clock C)
+    /// must be driven by logic synchronous to C. A driver of an asynchronous
+    /// (or unrelated) clock changes the port at any time relative to C: the
+    /// receiver sees a clock domain crossing. A virtual clock with the period
+    /// of the driver's clock is the source-synchronous idiom (timed by STA).
+    void checkOutputs() {
+        struct Group {
+            std::string outClock, srcClock, firstSource;
+            ClockRelation relation = ClockRelation::Unknown;
+            std::vector<std::string> ports;
+            SourceLocation loc;
+        };
+        std::map<std::tuple<std::size_t, std::uint32_t, std::uint32_t>, Group> groups;
+        std::set<std::pair<std::uint32_t, std::uint32_t>> virtualPairs;
+        for (std::size_t di = 0; di < st_.cons.outputDelays.size(); ++di) {
+            const auto& d = st_.cons.outputDelays[di];
+            const auto out = outputDelayClock(d);
+            if (!out) {
+                st_.sink.report({"CDC-OUTPUT-CLOCK", Severity::Warning,
+                                 "set_output_delay refers to unknown clock '" + d.clock + "'; the ports are not checked",
+                                 d.loc, {}});
+                continue;
+            }
+            const auto& oc = st_.clocks.clock(*out);
+            for (const auto& b : d.bits) {
+                // set_false_path -to the port (from everything, or from the source clock below)
+                std::vector<const constraints::PathException*> excepts;
+                for (const auto& e : st_.cons.pathExceptions)
+                    if (std::ranges::any_of(e.to, [&](const constraints::PathEndpoint& t) { return t.bit == b; }))
+                        excepts.push_back(&e);
+                if (std::ranges::any_of(excepts, [](const constraints::PathException* e) {
+                        return e->from.empty() && e->fromClocks.empty() && e->fromClockBits.empty();
+                    }))
+                    continue;
+                const BitInput bi = st_.sg.inputOf(b);
+                ConeEntry scratch;
+                for (const auto& ce : st_.sg.entries(bi, scratch)) {
+                    const auto& node = st_.sg.nodes().at(ce.node);
+                    if (std::ranges::any_of(excepts, [&](const constraints::PathException* e) {
+                            return std::ranges::any_of(e->from, [&](const BitRef& f) {
+                                return f.inst == node.first.inst && f.net == node.first.net;
+                            });
+                        }))
+                        continue;
+                    for (const auto& se : domainOfNode(ce.node)) {
+                        ClockRelation rel = st_.clocks.relation(se.clock, *out);
+                        if (rel == ClockRelation::Same || rel == ClockRelation::Synchronous ||
+                            rel == ClockRelation::Exclusive)
+                            continue;
+                        const auto& sc = st_.clocks.clock(se.clock);
+                        if (std::ranges::any_of(excepts, [&](const constraints::PathException* e) {
+                                return std::ranges::any_of(e->fromClocks,
+                                                           [&](const std::string& p) { return clock::clockMatches(p, sc); });
+                            }))
+                            continue;
+                        if (rel == ClockRelation::Unknown) {
+                            if (st_.opt.unknownRelation == UnknownRelationPolicy::AssumeSync)
+                                continue;
+                            // a virtual clock of the same period: timed by STA as one clock
+                            if (oc.kind == clock::ClockKind::Constraint && !oc.source.valid() && oc.periodNs &&
+                                sc.periodNs &&
+                                std::abs(*oc.periodNs - *sc.periodNs) <= 1e-6 * std::max(1.0, *sc.periodNs)) {
+                                virtualPairs.emplace(out->value, se.clock.value);
+                                continue;
+                            }
+                        }
+                        auto& g = groups[{di, se.clock.value, ce.node}];
+                        if (g.ports.empty()) {
+                            g.outClock = oc.name;
+                            g.srcClock = sc.name;
+                            g.firstSource = node.name;
+                            g.relation = rel;
+                            g.loc = d.loc;
+                        }
+                        const std::string pn = st_.view.name(b);
+                        if (std::ranges::find(g.ports, pn) == g.ports.end())
+                            g.ports.push_back(pn);
+                    }
+                }
+            }
+        }
+        // one message per (constraint, source clock): the sources and ports listed
+        std::map<std::pair<std::size_t, std::uint32_t>, std::vector<const Group*>> byClock;
+        for (const auto& [k, g] : groups)
+            byClock[{std::get<0>(k), std::get<1>(k)}].push_back(&g);
+        for (const auto& [k, gs] : byClock) {
+            std::vector<std::string> ports, sources;
+            for (const auto* g : gs) {
+                if (std::ranges::find(sources, g->firstSource) == sources.end())
+                    sources.push_back(g->firstSource);
+                for (const auto& p : g->ports)
+                    if (std::ranges::find(ports, p) == ports.end())
+                        ports.push_back(p);
+            }
+            auto listOf = [](const std::vector<std::string>& v) {
+                std::string t;
+                for (std::size_t i = 0; i < v.size() && i < 4; ++i)
+                    t += (i ? ", " : "") + ("'" + v[i] + "'");
+                if (v.size() > 4)
+                    t += " (+" + std::to_string(v.size() - 4) + " more)";
+                return t;
+            };
+            const Group& g = *gs.front();
+            const bool unknown = g.relation == ClockRelation::Unknown;
+            ++st_.result->stats.outputCrossings;
+            st_.sink.report({"CDC-OUTPUT-CLOCK", Severity::Warning,
+                             "output " + listOf(ports) + " is timed against clock '" + g.outClock +
+                                 "' (set_output_delay) but driven by " + listOf(sources) + " of clock '" + g.srcClock +
+                                 "' (" + (unknown ? "relation unknown" : "asynchronous") +
+                                 "): the receiver samples data that changes asynchronously to its clock",
+                             g.loc,
+                             {unknown ? "relate the clocks (create_generated_clock, set_clock_groups) if they are "
+                                        "synchronous, or synchronize the output"
+                                      : "drive the output from the clock it is timed against, or exempt it with "
+                                        "set_false_path -to if the receiver synchronizes it"}});
+        }
+        // nodes created by the queries above (inputs reaching only outputs)
+        for (std::size_t n = st_.domain.size(); n < st_.sg.nodes().size(); ++n)
+            st_.domain.push_back(domainOfNode(static_cast<std::uint32_t>(n)));
+        for (const auto& [o, c] : virtualPairs) {
+            const auto& vc = st_.clocks.clock(clock::ClockId{o});
+            const auto& cc = st_.clocks.clock(clock::ClockId{c});
+            st_.sink.report({"CDC-SOURCE-SYNC", Severity::Info,
+                             "outputs timed against virtual clock '" + vc.name + "' (set_output_delay) are driven by '" +
+                                 cc.name + "' with the same period: treated as one clock timed by STA, not as a "
+                                 "crossing; relate or separate the clocks with set_clock_groups to override",
+                             vc.definedAt, {}});
         }
     }
 
@@ -944,6 +1105,7 @@ private:
     };
     std::vector<Exception> exceptions_;
     mutable std::set<std::pair<std::uint32_t, std::uint32_t>> sourceSyncPairs_; ///< (virtual, capture) clocks
+    std::unordered_map<BitRef, std::vector<ClockEdge>, graph::BitRefHash> inputClock_; ///< set_input_delay domains
     bool exceptionsBuilt_ = false;
 };
 

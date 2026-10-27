@@ -1189,3 +1189,20 @@ TEST_CASE("Frontend: a net used before its declaration is accepted (as by Vivado
     CHECK(run->count("FE-SLANG-UsedBeforeDeclared") == 0);
     CHECK(run->path("top.a", "top.q") != nullptr);
 }
+
+TEST_CASE("Primitives: Intel megafunction parameters in another case", "[primitives][intel]") {
+    // Quartus takes .WIDTH for `width` (verilog-ethernet's oddr.v writes it so)
+    auto bits = [](const std::string& params) {
+        auto run = analyze("t.v",
+                           "module top(input clk, input [4:0] a, input [4:0] b, output [4:0] q);\n"
+                           "  altddio_out #(" + params + ") u (.aset(1'b0), .datain_h(a), .datain_l(b),\n"
+                           "    .outclocken(1'b1), .outclock(clk), .aclr(1'b0), .dataout(q));\n"
+                           "endmodule\n",
+                           "top", "");
+        REQUIRE(run->r->design);
+        return run->r->design->stats().registerBits;
+    };
+    CHECK(bits(".WIDTH(5), .POWER_UP_HIGH(\"OFF\"), .OE_REG(\"UNUSED\")") == 10); // two 5-bit registers
+    CHECK(bits(".width(5)") == 10);                                                // the declared spelling
+    CHECK(bits(".NOT_A_PARAMETER(5)") == 2);                                       // negative: no such parameter
+}

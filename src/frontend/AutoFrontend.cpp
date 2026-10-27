@@ -353,13 +353,13 @@ public:
         std::shared_ptr<const ir::Design> lastDesign; ///< last converged round, also with errors
         bool converged = false;
         for (int round = 0; round < kMaxRounds && !converged; ++round) {
+            const std::string wrapperUsed = wrapperText();
             writeWrapper(wrapperPath);
             vin.sourceFiles = userVerilog;
             vin.sourceFiles.push_back(wrapperPath);
             std::string modelSignature;
             for (const auto& m : models_) {
-                const std::string text =
-                    prims.isClockGenerator(m) ? prims.generatorModel(m, generatorParams_[m]) : prims.verilogModel(m);
+                const std::string text = modelText(prims, m);
                 // generator models depend on the parameters in use: one file per variant
                 const auto path = primitiveDir() / (m + "_" + std::to_string(std::hash<std::string>{}(text) % 100000) + ".v");
                 writeIfChanged(path, text);
@@ -499,12 +499,23 @@ public:
                         if (!p.name.empty())
                             generatorParams_[it->second].insert(p.name);
                 }
+            // parameters written in another case than the model declares them
+            // (Intel megafunctions: Quartus takes .WIDTH for `width`)
+            static const std::regex noParamRe("parameter '([^']+)' does not exist in '([^']+)'$");
+            for (const auto& d : rs.diags) {
+                std::smatch pm;
+                if (d.code == "FE-SLANG-ParameterDoesNotExist" && std::regex_search(d.message, pm, noParamRe) &&
+                    models_.contains(pm[2].str()))
+                    paramAliases_[pm[2].str()].insert(pm[1].str());
+            }
             std::string nextSignature;
             for (const auto& m : models_)
-                nextSignature += prims.isClockGenerator(m) ? prims.generatorModel(m, generatorParams_[m])
-                                                           : prims.verilogModel(m);
+                nextSignature += modelText(prims, m);
             lastDiags = std::move(rs.diags);
-            if (requests_.size() == knownRequests && nextSignature == modelSignature) {
+            // the parameter names of a request take the module's spelling once
+            // its parameters are known (Intel megafunctions: .WIDTH for
+            // `width`): the wrapper must be the one this round used
+            if (requests_.size() == knownRequests && nextSignature == modelSignature && wrapperText() == wrapperUsed) {
                 converged = true;
                 const bool errors =
                     std::ranges::any_of(lastDiags, [](const Diagnostic& d) { return d.isError(); });
@@ -712,13 +723,64 @@ private:
         return text.empty() ? std::string() : "#(" + text + ")";
     }
 
-    void writeWrapper(const std::filesystem::path& path) const {
-        std::ofstream out(path, std::ios::binary);
+    /// The model of a vendor primitive, with the parameter spellings the
+    /// design uses in another case declared as aliases of the model's
+    /// parameters: `parameter WIDTH = 1, parameter width = WIDTH`.
+    std::string modelText(const PrimitiveLibrary& prims, const std::string& m) {
+        std::string text = prims.isClockGenerator(m) ? prims.generatorModel(m, generatorParams_[m]) : prims.verilogModel(m);
+        const auto it = paramAliases_.find(m);
+        if (it == paramAliases_.end())
+            return text;
+        for (const auto& alias : it->second) {
+            // the declaration of the parameter with the same name in another case
+            static const std::regex declRe(R"(parameter\s+((?:integer\s+|real\s+|string\s+)?)([A-Za-z_][A-Za-z0-9_$]*)\s*=)");
+            for (auto d = std::sregex_iterator(text.begin(), text.end(), declRe); d != std::sregex_iterator(); ++d) {
+                const std::string name = (*d)[2].str();
+                if (name == alias || lower(name) != lower(alias))
+                    continue;
+                const std::string type = (*d)[1].str();
+                const auto pos = static_cast<std::size_t>(d->position(0));
+                const auto eq = pos + static_cast<std::size_t>(d->length(0));
+                // default value: up to the next ',' or ')' at depth 0
+                std::size_t e = eq;
+                int depth = 0;
+                bool str = false;
+                for (; e < text.size(); ++e) {
+                    const char c = text[e];
+                    if (c == '"')
+                        str = !str;
+                    else if (!str && (c == '(' || c == '{'))
+                        ++depth;
+                    else if (!str && (c == ')' || c == '}')) {
+                        if (depth == 0)
+                            break;
+                        --depth;
+                    }
+                    else if (!str && c == ',' && depth == 0)
+                        break;
+                }
+                const std::string def = text.substr(eq, e - eq);
+                text.replace(pos, e - pos, "parameter " + type + alias + " =" + def + ", parameter " + type + name +
+                                               " = " + alias);
+                break;
+            }
+        }
+        return text;
+    }
+
+    [[nodiscard]] std::string wrapperText() const {
+        std::ostringstream out;
         out << "// generated by OpenCDC: Verilog modules instantiated from VHDL\n";
         out << "module " << kWrapper << ";\n";
         for (std::size_t k = 0; k < requests_.size(); ++k)
             out << "  " << requests_[k].module << " " << paramText(requests_[k]) << " r" << k << " ();\n";
         out << "endmodule\n";
+        return out.str();
+    }
+
+    void writeWrapper(const std::filesystem::path& path) const {
+        std::ofstream out(path, std::ios::binary);
+        out << wrapperText();
     }
 
     /// Binds the unresolved child `ci` of body `b` to VHDL body `id`.
@@ -786,6 +848,7 @@ private:
     std::vector<ir::ModuleId> resolved_;
     std::map<std::string, std::string> verilogModules_; ///< lower-case -> as written
     std::map<std::string, std::vector<std::string>> verilogParams_;
+    std::map<std::string, std::set<std::string>> paramAliases_; ///< model -> parameter spellings of the design
     std::vector<DefinitionInfo> verilogDefs_;
     std::vector<std::filesystem::path> parsedVerilog_;
     std::map<std::string, std::string> primitiveModules_; ///< modelled primitives: lower-case -> name

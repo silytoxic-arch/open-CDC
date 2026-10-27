@@ -1208,7 +1208,7 @@ std::optional<double> toNumber(std::string_view s) {
 
 const std::set<std::string, std::less<>>& knownCommands() {
     static const std::set<std::string, std::less<>> cmds = {
-        "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "get_ports", "get_pins", "get_nets",
+        "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "set_output_delay", "get_ports", "get_pins", "get_nets",
         "get_clocks", "all_clocks", "get_cells", "all_inputs", "all_outputs", "all_registers", "expr", "if",
         "foreach", "for", "while", "break", "continue", "incr", "llength", "lindex", "lappend", "puts",
         "get_property", "list", "concat", "proc", "return", "global", "source", "get_registers", "get_keepers",
@@ -1220,7 +1220,7 @@ const std::set<std::string, std::less<>>& knownCommands() {
 /// Commands that are valid SDC/XDC but not used by clock analysis yet.
 bool isTimingOrMiscCommand(std::string_view c) {
     static const std::set<std::string, std::less<>> cmds = {
-        "set_output_delay", "set_false_path", "set_max_delay", "set_min_delay",
+        "set_false_path", "set_max_delay", "set_min_delay",
         "set_multicycle_path", "set_clock_uncertainty", "set_clock_latency", "set_input_jitter",
         "set_system_jitter", "set_clock_sense", "set_case_analysis", "set_property", "set_load",
         "set_drive", "set_driving_cell", "set_input_transition", "set_disable_timing", "set_units",
@@ -1712,14 +1712,17 @@ private:
         return Value{name, {{ObjectKind::Clock, name, {}}}, true};
     }
 
-    Value setInputDelay(const Command& cmd) {
-        Args a = parseArgs(cmd, "set_input_delay",
+    Value setInputDelay(const Command& cmd) { return setPortDelay(cmd, "set_input_delay", out_.inputDelays); }
+
+    /// set_input_delay / set_output_delay -clock <clk> <delay> <ports>
+    Value setPortDelay(const Command& cmd, const std::string& name, std::vector<InputDelay>& out) {
+        Args a = parseArgs(cmd, name,
                            {{"-clock", true}, {"-clock_fall", false}, {"-max", false}, {"-min", false}, {"-add_delay", false},
                             {"-rise", false}, {"-fall", false}, {"-network_latency_included", false},
                             {"-source_latency_included", false}, {"-reference_pin", true}});
         if (!a.opts.contains("-clock")) {
             // A delay without a clock does not assign a domain.
-            ++ignored_["set_input_delay (without -clock)"];
+            ++ignored_[name + " (without -clock)"];
             return {};
         }
         InputDelay d;
@@ -1735,7 +1738,7 @@ private:
             if (!pv.hasObjects && toNumber(pv.text))
                 continue;
             portsGiven = true;
-            auto objs = objectsOf(pv, cmd, "set_input_delay");
+            auto objs = objectsOf(pv, cmd, name);
             for (const auto& o : objs) {
                 d.portNames.push_back(o.name);
                 d.bits.insert(d.bits.end(), o.bits.begin(), o.bits.end());
@@ -1743,10 +1746,10 @@ private:
         }
         if (d.bits.empty()) {
             if (!portsGiven) // ports that match nothing are reported by their query
-                diag("CON-PARSE", Severity::Warning, "set_input_delay: no port given", cmd.line);
+                diag("CON-PARSE", Severity::Warning, name + ": no port given", cmd.line);
             return {};
         }
-        out_.inputDelays.push_back(std::move(d));
+        out.push_back(std::move(d));
         return {};
     }
 
@@ -3316,6 +3319,8 @@ private:
             return createGeneratedClock(cmd);
         if (name == "set_input_delay")
             return setInputDelay(cmd);
+        if (name == "set_output_delay")
+            return setPortDelay(cmd, name, out_.outputDelays);
         if (name == "set_clock_groups")
             return setClockGroups(cmd);
         if (name == "get_ports" || name == "get_pins" || name == "get_nets" || name == "get_clocks")

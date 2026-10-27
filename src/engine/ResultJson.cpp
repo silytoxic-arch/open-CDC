@@ -240,6 +240,7 @@ json clocksJson(const clock::ClockModel& m, const constraints::ConstraintSet* co
                             {"clockDefinitions", cons->clocks.size()},
                             {"clockGroups", cons->groups.size()},
                             {"inputDelays", cons->inputDelays.size()},
+                            {"outputDelays", cons->outputDelays.size()},
                             {"clockExceptions", cons->clockExceptions.size()},
                             {"pathExceptions", cons->pathExceptions.size()},
                             {"ignoredCommands", cons->ignoredCommands}};
@@ -321,7 +322,8 @@ json cdcSmall(const cdc::CdcResult& c) {
                   {"resetSynchronizers", st.resetSynchronizers},
                   {"reconvergencePoints", st.reconvergencePoints},
                   {"waivedHits", st.waivedHits},
-                  {"combLoops", st.combLoops}};
+                  {"combLoops", st.combLoops},
+                  {"outputCrossings", st.outputCrossings}};
     json byRule = json::object();
     for (const auto& [id, n] : rules::countHits(c))
         byRule[id] = n;

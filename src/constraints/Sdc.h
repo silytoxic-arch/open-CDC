@@ -261,11 +261,17 @@ struct InputDelay {
     SourceLocation loc;
 };
 
+/// set_output_delay -clock <clk> <ports>: the clock the receiver of these
+/// output ports samples them with (delay values are not used). The drivers
+/// of the ports must be synchronous to it.
+using OutputDelay = InputDelay;
+
 /// The subset of SDC/XDC that clock and CDC analysis use.
 struct ConstraintSet {
     std::vector<ClockDef> clocks;
     std::vector<ClockGroups> groups;
     std::vector<InputDelay> inputDelays;
+    std::vector<OutputDelay> outputDelays;
     std::vector<ClockException> clockExceptions;
     std::vector<PathException> pathExceptions;
     std::map<std::string, int> ignoredCommands; ///< command -> occurrences (reported, not applied)

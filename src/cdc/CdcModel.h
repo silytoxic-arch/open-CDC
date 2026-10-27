@@ -167,6 +167,7 @@ struct CdcStats {
     std::size_t reconvergencePoints = 0;       ///< registers where synchronized signals reconverge
     std::size_t waivedHits = 0;                ///< rule hits covered by a waiver
     std::size_t combLoops = 0;
+    std::size_t outputCrossings = 0;           ///< output ports driven asynchronously to their set_output_delay clock
 };
 
 /// A recognized synchronizer structure, possibly spanning several paths

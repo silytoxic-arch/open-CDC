@@ -918,3 +918,92 @@ TEST_CASE("Source-synchronous inputs: a virtual clock with the capture clock's p
     CHECK(async.countCode("CDC-SOURCE-SYNC") == 0);
 }
 
+
+// ---------------------------------------------------------------------------
+// Output ports timed against a clock (set_output_delay)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr const char* kOutputs = "module top(input clk_a, input clk_b, input d, input din_b,\n"
+                                 "           output reg qa, output qb, output qc, output fwd, output feed);\n"
+                                 "  reg rb; always @(posedge clk_b) rb <= d;\n"
+                                 "  always @(posedge clk_a) qa <= d;\n"
+                                 "  assign qb = rb;\n"
+                                 "  assign qc = qa ^ rb;\n"
+                                 "  assign fwd = clk_a;\n"
+                                 "  assign feed = din_b;\n"
+                                 "endmodule\n";
+
+std::string outputSdc(const std::string& extra) {
+    return "create_clock -name a -period 10 [get_ports clk_a]\n"
+           "create_clock -name b -period 7 [get_ports clk_b]\n"
+           "set_clock_groups -asynchronous -group a -group b\n" +
+           extra;
+}
+
+std::size_t outputHits(const CdcRun& r) { return r.countCode("CDC-OUTPUT-CLOCK"); }
+
+bool outputNamed(const CdcRun& r, std::string_view port) {
+    return std::ranges::any_of(r.diags, [&](const Diagnostic& d) {
+        return d.code == "CDC-OUTPUT-CLOCK" && d.message.find(port) != std::string::npos;
+    });
+}
+
+} // namespace
+
+TEST_CASE("Output ports driven by the clock they are timed against", "[cdc][outputs]") {
+    // negative: qa is a register of clk_a, timed against a
+    auto same = analyze(kOutputs, outputSdc("set_output_delay -clock a 1 [get_ports qa]\n"));
+    CHECK(outputHits(same) == 0);
+    // negative: a clock forwarded on a port (generated from clk_a) times data of clk_a
+    auto fwd = analyze(kOutputs, outputSdc("create_generated_clock -name tx -source [get_ports clk_a] [get_ports fwd]\n"
+                                           "set_output_delay -clock tx 1 [get_ports qa]\n"
+                                           "set_output_delay -clock tx -clock_fall 1 [get_ports qa]\n"));
+    CHECK(outputHits(fwd) == 0);
+    // negative: a virtual clock with the period of the driver's clock (timed by STA as one clock)
+    auto virt = analyze(kOutputs, outputSdc("create_clock -name va -period 10\n"
+                                            "set_output_delay -clock va 1 [get_ports qa]\n"));
+    CHECK(outputHits(virt) == 0);
+    CHECK(virt.countCode("CDC-SOURCE-SYNC") == 1);
+    // negative: exempted by set_false_path -to the port, or from the driver's clock
+    auto fp = analyze(kOutputs, outputSdc("set_output_delay -clock a 1 [get_ports {qb qc}]\n"
+                                          "set_false_path -to [get_ports qb]\n"
+                                          "set_false_path -from [get_clocks b] -to [get_ports qc]\n"));
+    CHECK(outputHits(fp) == 0);
+}
+
+TEST_CASE("Output ports driven asynchronously to their output delay clock", "[cdc][outputs]") {
+    // positive: qb is a register of clk_b timed against a; qc mixes both clocks
+    auto r = analyze(kOutputs, outputSdc("set_output_delay -clock a 1 [get_ports {qa qb qc}]\n"));
+    CHECK(outputHits(r) == 1); // one message for the clock pair b -> a
+    CHECK(outputNamed(r, "'top.qb'"));
+    CHECK(outputNamed(r, "'top.qc'"));
+    CHECK_FALSE(outputNamed(r, "'top.qa'"));
+    CHECK(outputNamed(r, "(asynchronous)"));
+    CHECK(r.cdc->stats.outputCrossings == 1);
+    // positive: an input timed against b passed straight to an output timed against a
+    auto feed = analyze(kOutputs, outputSdc("set_input_delay -clock b 1 [get_ports din_b]\n"
+                                            "set_output_delay -clock a 1 [get_ports feed]\n"));
+    CHECK(outputNamed(feed, "'top.feed'"));
+    // negative: the same input without a clock domain is not checked
+    auto nodom = analyze(kOutputs, outputSdc("set_output_delay -clock a 1 [get_ports feed]\n"));
+    CHECK(outputHits(nodom) == 0);
+    // positive: unrelated clocks (no constraint relates them) are reported as such
+    auto unknown = analyze(kOutputs, "create_clock -name a -period 10 [get_ports clk_a]\n"
+                                     "create_clock -name b -period 7 [get_ports clk_b]\n"
+                                     "set_output_delay -clock a 1 [get_ports qb]\n");
+    CHECK(outputNamed(unknown, "relation unknown"));
+    // negative: ... unless unknown relations are assumed synchronous
+    CdcOptions sync;
+    sync.unknownRelation = UnknownRelationPolicy::AssumeSync;
+    auto assumed = analyze(kOutputs,
+                           "create_clock -name a -period 10 [get_ports clk_a]\n"
+                           "create_clock -name b -period 7 [get_ports clk_b]\n"
+                           "set_output_delay -clock a 1 [get_ports qb]\n",
+                           sync);
+    CHECK(outputHits(assumed) == 0);
+    // a clock that does not exist
+    auto missing = analyze(kOutputs, outputSdc("set_output_delay -clock nope 1 [get_ports qa]\n"));
+    CHECK(outputNamed(missing, "unknown clock 'nope'"));
+}
