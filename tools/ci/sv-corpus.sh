@@ -226,7 +226,9 @@ fail=0
 check() { # project expected-regex
     local out
     out=$("$BIN/opencdc" analyze "$1" -q 2>&1 || true)
-    if echo "$out" | tr '\n' ' ' | grep -Eq "$2"; then
+    # grep reads a here-string: with pipefail, `echo | grep -q` fails when grep
+    # stops reading early (SIGPIPE in echo), which made matching runs fail
+    if grep -Eq "$2" <<<"${out//$'\n'/ }"; then
         echo "ok   $1: $(echo "$out" | grep -E '^CDC     :')"
     else
         echo "::error::$1 does not match '$2'"; echo "$out" | tail -30; fail=1

@@ -280,7 +280,9 @@ EOF
 check() { # project expected-regex
     local out
     out=$("$BIN/opencdc" analyze "$1" -q 2>&1 || true)
-    if echo "$out" | tr '\n' ' ' | grep -Eq "$2"; then
+    # grep reads a here-string: with pipefail, `echo | grep -q` fails when grep
+    # stops reading early (SIGPIPE in echo), which made matching runs fail
+    if grep -Eq "$2" <<<"${out//$'\n'/ }"; then
         echo "ok   $1: $(echo "$out" | grep -E '^CDC     :')"
     else
         echo "::error::$1 does not match '$2'"; echo "$out" | tail -30; fail=1
@@ -315,9 +317,9 @@ n=$(cat dl_fifo_count.txt)
 [ "$n" = 13 ] || { echo "::error::expected 13 FIFO .xci files in vivado-library, found $n"; fail=1; }
 for f in dl_fifo_*.ocdc.json; do
     out=$("$BIN/opencdc" analyze "$f" -q 2>&1 || true)
-    if ! echo "$out" | grep -q "FE-XCI-MODEL" || ! echo "$out" | grep -q "Summary : 0 error"; then
+    if ! grep -q "FE-XCI-MODEL" <<<"$out" || ! grep -q "Summary : 0 error" <<<"$out"; then
         echo "::error::$f: FIFO .xci not modelled"; echo "$out" | tail -10; fail=1
-    elif echo "$out" | grep -q "independent clocks" && ! echo "$out" | grep -q "async-fifo x1"; then
+    elif grep -q "independent clocks" <<<"$out" && ! grep -q "async-fifo x1" <<<"$out"; then
         echo "::error::$f: independent-clock FIFO not recognized as an asynchronous FIFO"; fail=1
     fi
 done
