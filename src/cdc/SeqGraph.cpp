@@ -719,12 +719,11 @@ std::vector<SeqGraph::Fact> SeqGraph::implied(const BitRef& b, bool value, int d
 }
 
 bool SeqGraph::atMostOneHot(std::size_t globalReg) const {
-    if (globalReg >= regLocal_.size())
-        return false;
-    const auto [inst0, r] = regLocal_[globalReg];
-    const auto& reg = view_.bodyOf(inst0).registers[r];
-    if (reg.q.width() < 2)
-        return false;
+    // Registers being checked (a copy from a register that is itself being
+    // checked is assumed one-hot: the induction over clock cycles holds when
+    // every register on the cycle keeps the property).
+    std::vector<std::size_t> active;
+    std::function<bool(std::size_t)> regOneHot;
     auto oneHotConst = [](const ConstBits& k) {
         unsigned ones = 0;
         for (const auto b : k.bits()) {
@@ -734,61 +733,167 @@ bool SeqGraph::atMostOneHot(std::size_t globalReg) const {
         }
         return ones <= 1;
     };
-    for (const auto& rs : reg.asyncResets) {
-        const auto k = rs.value.asConst();
-        if (!k || !oneHotConst(*k))
-            return false;
-    }
-    if (reg.syncReset) {
-        const auto k = reg.syncReset->value.asConst();
-        if (!k || !oneHotConst(*k))
-            return false;
-    }
-    const auto w = reg.q.width();
-    std::function<bool(InstanceId, const SigSpec&, int)> values = [&](InstanceId inst, const SigSpec& sig, int depth) {
-        if (depth > 32 || sig.width() != w)
-            return false;
-        if (const auto k = sig.asConst())
-            return oneHotConst(*k);
-        // the register's own value (hold)
-        bool hold = true;
-        for (std::uint32_t i = 0; i < w && hold; ++i) {
-            const auto b = view_.bitOf(inst, sig, i);
-            if (!b) {
-                hold = false;
-                break;
-            }
-            const Driver d = view_.driver(*b);
-            hold = d.kind == DriverKind::Register && view_.globalRegister(d.bit.inst, d.index) == globalReg &&
-                   d.bit.bit - nodes_[globalReg].first.bit == i;
-        }
-        if (hold)
-            return true;
-        // one multiplexer choosing between candidates
-        const auto b0 = view_.bitOf(inst, sig, 0);
-        if (!b0)
-            return false;
-        const Driver d0 = view_.driver(*b0);
-        if (d0.kind != DriverKind::Cell)
-            return false;
-        const Cell& c = view_.bodyOf(d0.bit.inst).cells[d0.index];
-        if (c.kind != CellKind::Mux || c.inputs.size() != 3)
-            return false;
-        const std::uint32_t off = d0.bit.bit;
-        if (off + w > c.width)
-            return false;
-        for (std::uint32_t i = 1; i < w; ++i) {
-            const auto bi = view_.bitOf(inst, sig, i);
-            if (!bi)
-                return false;
-            const Driver di = view_.driver(*bi);
-            if (di.kind != DriverKind::Cell || di.bit.inst != d0.bit.inst || di.index != d0.index || di.bit.bit != off + i)
-                return false;
-        }
-        return values(d0.bit.inst, c.inputs[0].extract(off, w), depth + 1) &&
-               values(d0.bit.inst, c.inputs[1].extract(off, w), depth + 1);
+    auto regWidth = [&](std::size_t g) {
+        const auto [inst, r] = regLocal_[g];
+        return view_.bodyOf(inst).registers[r].q.width();
     };
-    return values(inst0, reg.d, 0);
+    // Same clock net and edge: a register sampled in another clock can be
+    // caught between two one-hot values (old and new bit both set).
+    auto sameClock = [&](std::size_t a, std::size_t b) {
+        auto key = [&](std::size_t g) -> std::optional<std::pair<graph::BitRef, Edge>> {
+            const auto [inst, r] = regLocal_[g];
+            const auto& ck = view_.bodyOf(inst).registers[r].clock;
+            const auto bit = view_.bitOf(inst, ck.signal, 0);
+            if (!bit)
+                return std::nullopt;
+            return std::pair{view_.driver(*bit).bit, ck.edge};
+        };
+        const auto ka = key(a);
+        const auto kb = key(b);
+        return ka && kb && ka->first == kb->first && ka->second == kb->second;
+    };
+    regOneHot = [&](std::size_t g) -> bool {
+        if (g >= regLocal_.size())
+            return false;
+        if (std::find(active.begin(), active.end(), g) != active.end())
+            return true;
+        if (active.size() > 8)
+            return false;
+        const auto [inst0, r] = regLocal_[g];
+        const auto& reg = view_.bodyOf(inst0).registers[r];
+        const auto w = reg.q.width();
+        if (w < 2)
+            return false;
+        for (const auto& rs : reg.asyncResets) {
+            const auto k = rs.value.asConst();
+            if (!k || !oneHotConst(*k))
+                return false;
+        }
+        if (reg.syncReset) {
+            const auto k = reg.syncReset->value.asConst();
+            if (!k || !oneHotConst(*k))
+                return false;
+        }
+        // the power-up value (declaration initializer; bits without one start at 0)
+        {
+            unsigned ones = 0;
+            for (std::uint32_t i = 0; i < w; ++i) {
+                const auto b = view_.bitOf(inst0, reg.q, i);
+                if (!b)
+                    return false;
+                const auto& net = view_.bodyOf(b->inst).net(b->net);
+                if (net.init && b->bit < net.init->bits().size() && net.init->bits()[b->bit] == Logic::L1)
+                    ++ones;
+            }
+            if (ones > 1)
+                return false;
+        }
+        active.push_back(g);
+        std::function<bool(InstanceId, const SigSpec&, int)> values = [&](InstanceId inst, const SigSpec& sig,
+                                                                          int depth) -> bool {
+            if (depth > 32 || sig.width() == 0)
+                return false;
+            const auto sw = sig.width();
+            if (const auto k = sig.asConst())
+                return oneHotConst(*k);
+            // Every bit is a constant 0 or a bit of one register, no register
+            // bit used twice: a copy, rotation or shift of a one-hot register.
+            {
+                std::optional<std::size_t> src;
+                std::vector<bool> used;
+                bool copy = true;
+                for (std::uint32_t i = 0; i < sw && copy; ++i) {
+                    const auto b = view_.bitOf(inst, sig, i);
+                    if (!b) {
+                        copy = graph::DesignView::constBit(sig, i) == Logic::L0;
+                        continue;
+                    }
+                    const Driver d = view_.driver(*b);
+                    if (d.kind == DriverKind::Constant) {
+                        copy = d.constant == Logic::L0;
+                        continue;
+                    }
+                    if (d.kind != DriverKind::Register) {
+                        copy = false;
+                        break;
+                    }
+                    const auto rg = view_.globalRegister(d.bit.inst, d.index);
+                    if (src && *src != rg) {
+                        copy = false;
+                        break;
+                    }
+                    if (!src) {
+                        src = rg;
+                        used.assign(regWidth(rg), false);
+                    }
+                    const auto pos = d.bit.bit - nodes_[rg].first.bit;
+                    if (pos >= used.size() || used[pos]) {
+                        copy = false;
+                        break;
+                    }
+                    used[pos] = true;
+                }
+                if (copy)
+                    return !src || *src == g || (sameClock(*src, g) && regOneHot(*src));
+            }
+            // one cell over the whole width
+            const auto b0 = view_.bitOf(inst, sig, 0);
+            if (!b0)
+                return false;
+            const Driver d0 = view_.driver(*b0);
+            if (d0.kind != DriverKind::Cell)
+                return false;
+            const Cell& c = view_.bodyOf(d0.bit.inst).cells[d0.index];
+            const std::uint32_t off = d0.bit.bit;
+            if (off + sw > c.width)
+                return false;
+            for (std::uint32_t i = 1; i < sw; ++i) {
+                const auto bi = view_.bitOf(inst, sig, i);
+                if (!bi)
+                    return false;
+                const Driver di = view_.driver(*bi);
+                if (di.kind != DriverKind::Cell || di.bit.inst != d0.bit.inst || di.index != d0.index ||
+                    di.bit.bit != off + i)
+                    return false;
+            }
+            switch (c.kind) {
+                case CellKind::Mux:
+                    return c.inputs.size() == 3 && values(d0.bit.inst, c.inputs[0].extract(off, sw), depth + 1) &&
+                           values(d0.bit.inst, c.inputs[1].extract(off, sw), depth + 1);
+                case CellKind::Shl:
+                case CellKind::Shr:
+                    // a one-hot value shifted by any amount (decoder: 1 << idx)
+                    return c.inputs.size() == 2 &&
+                           values(d0.bit.inst, c.inputs[0], depth + 1);
+                case CellKind::Sshr: {
+                    // arithmetic shift: sign copies are set only for a set MSB
+                    if (c.inputs.size() != 2)
+                        return false;
+                    const auto& a = c.inputs[0];
+                    if (c.isSigned && graph::DesignView::constBit(a, a.width() - 1) != Logic::L0)
+                        return false;
+                    return values(d0.bit.inst, a, depth + 1);
+                }
+                case CellKind::DynInsert: {
+                    // zeros with one element replaced: x = 0; x[idx] = d
+                    if (c.inputs.size() != 3)
+                        return false;
+                    const auto base = c.inputs[0].asConst();
+                    if (!base || !oneHotConst(*base))
+                        return false;
+                    for (const auto bit : base->bits())
+                        if (bit != Logic::L0)
+                            return false;
+                    return values(d0.bit.inst, c.inputs[2], depth + 1);
+                }
+                default: return false;
+            }
+        };
+        const bool ok = values(inst0, reg.d, 0);
+        active.pop_back();
+        return ok;
+    };
+    return regOneHot(globalReg);
 }
 
 std::optional<std::vector<SeqGraph::Fact>> SeqGraph::syncResetFacts(std::size_t globalReg, bool active) const {

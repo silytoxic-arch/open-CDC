@@ -80,6 +80,72 @@ TEST_CASE("SeqGraph: direct, inverted, logic and select sources", "[cdc][seqgrap
     CHECK_FALSE(wRec.direct);
 }
 
+TEST_CASE("SeqGraph: registers that hold at most one set bit", "[cdc][seqgraph][CDC-005]") {
+    auto b = test::buildDesign(
+        "module top(input clk, input clk2, input [1:0] op, input [1:0] raw, input [1:0] idx, output [76:0] y);\n"
+        "  reg [3:0] fsm = 4'b0001;  // constants and hold\n"
+        "  always @(posedge clk) case (op) 2'd1: fsm <= 4'b0010; 2'd2: fsm <= 4'b0100; default: ; endcase\n"
+        "  reg [3:0] ring = 4'b0001; // rotation\n"
+        "  always @(posedge clk) if (op[0]) ring <= {ring[2:0], ring[3]};\n"
+        "  reg [3:0] shift = 4'b1000; // shift with zero fill\n"
+        "  always @(posedge clk) shift <= op[1] ? 4'b1000 : {1'b0, shift[3:1]};\n"
+        "  reg [3:0] dec = 0;         // decoder\n"
+        "  always @(posedge clk) dec <= 4'd1 << idx;\n"
+        "  reg [3:0] dec2 = 0;        // arithmetic shift of a positive value\n"
+        "  always @(posedge clk) dec2 <= $signed(4'sb0100) >>> idx;\n"
+        "  reg [3:0] ins = 0; reg [3:0] n;  // zeros with one bit set\n"
+        "  always @* begin n = 4'b0000; n[idx] = 1'b1; end\n"
+        "  always @(posedge clk) ins <= n;\n"
+        "  reg [3:0] cp = 0;          // copy of a one-hot register, same clock\n"
+        "  always @(posedge clk) cp <= ring;\n"
+        "  reg [3:0] ring2 = 4'b0001; // ring through a second register\n"
+        "  reg [3:0] mid = 4'b0000;\n"
+        "  always @(posedge clk) begin mid <= ring2; ring2 <= {mid[2:0], mid[3]}; end\n"
+        // not one-hot
+        "  reg [3:0] data = 0;        // input data\n"
+        "  always @(posedge clk) data <= {raw, raw};\n"
+        "  reg [3:0] two = 4'b0001;   // a constant with two bits set\n"
+        "  always @(posedge clk) if (op[0]) two <= 4'b0011;\n"
+        "  reg [3:0] dup = 4'b0001;   // a bit used twice\n"
+        "  always @(posedge clk) dup <= {dup[0], dup[0], 2'b00};\n"
+        "  reg [3:0] fill = 4'b0001;  // shift filling with ones\n"
+        "  always @(posedge clk) fill <= {1'b1, fill[3:1]};\n"
+        "  reg [3:0] decw = 0;        // decoding a value with two bits set\n"
+        "  always @(posedge clk) decw <= 4'd3 << idx;\n"
+        "  reg [3:0] neg = 0;         // arithmetic shift of a negative value\n"
+        "  always @(posedge clk) neg <= $signed(4'sb1000) >>> idx;\n"
+        "  reg [3:0] ins1 = 0; reg [3:0] m;  // one bit set on top of a set bit\n"
+        "  always @* begin m = 4'b0001; m[idx] = 1'b1; end\n"
+        "  always @(posedge clk) ins1 <= m;\n"
+        "  reg [3:0] oc = 0;          // copy of a one-hot register of another clock\n"
+        "  always @(posedge clk2) oc <= ring;\n"
+        "  reg [3:0] rst2 = 4'b0011;  // power-up value with two bits set\n"
+        "  always @(posedge clk) rst2 <= op[0] ? 4'b0001 : rst2;\n"
+        "  reg bit1 = 0;              // a single bit is not a one-hot vector\n"
+        "  always @(posedge clk) bit1 <= op[0];\n"
+        "  assign y = {fsm, ring, shift, dec, dec2, ins, cp, ring2, mid, data, two, dup, fill, decw, neg, ins1, oc,\n"
+        "              rst2, bit1};\n"
+        "endmodule\n",
+        "top");
+    graph::DesignView view(*b.design);
+    CollectingDiagnosticSink sink;
+    SeqGraph sg(view, sink);
+    auto oneHot = [&](std::string_view name) {
+        auto [inst, r] = test::findRegister(*b.design, name);
+        return sg.atMostOneHot(view.globalRegister(inst, r));
+    };
+    for (const char* name : {"top.fsm", "top.ring", "top.shift", "top.dec", "top.dec2", "top.ins", "top.cp",
+                             "top.ring2", "top.mid"}) {
+        INFO(name);
+        CHECK(oneHot(name));
+    }
+    for (const char* name : {"top.data", "top.two", "top.dup", "top.fill", "top.decw", "top.neg", "top.ins1",
+                             "top.oc", "top.rst2", "top.bit1"}) {
+        INFO(name);
+        CHECK_FALSE(oneHot(name));
+    }
+}
+
 TEST_CASE("SeqGraph cuts combinational loops", "[cdc][seqgraph]") {
     auto b = test::buildDesign("module top(input clk, input i, output reg q);\n"
                                "  wire x, y;\n"

@@ -542,6 +542,65 @@ TEST_CASE("CDC-005 positive: AND-OR multiplexer whose select can have two bits s
     CHECK(analyze(andOrSelect(kOneHotSel, "(sel[0] & a2) | (sel[1] & b2) | (a2 & b2)"), kAsync3).hits("CDC-005") == 2);
 }
 
+TEST_CASE("CDC-005 negative: one-hot selects computed by rotation, decoding or copying", "[CDC-005]") {
+    // a ring: the single set bit moves on each enabled cycle
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b01;\n"
+                              "  always @(posedge clk_b) if (op[0]) sel <= {sel[0], sel[1]};\n"),
+                  kAsync3)
+              .hits("CDC-005") == 0);
+    // shifting the bit out leaves zeros
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b01;\n"
+                              "  always @(posedge clk_b) sel <= op[1] ? 2'b01 : {sel[0], 1'b0};\n"),
+                  kAsync3)
+              .hits("CDC-005") == 0);
+    // a decoder: 1 << index
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b00;\n"
+                              "  always @(posedge clk_b) sel <= 2'b01 << op[0];\n"),
+                  kAsync3)
+              .hits("CDC-005") == 0);
+    // zeros with one bit set by index
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b00; reg [1:0] n;\n"
+                              "  always @* begin n = 2'b00; n[op[0]] = 1'b1; end\n"
+                              "  always @(posedge clk_b) sel <= n;\n"),
+                  kAsync3)
+              .hits("CDC-005") == 0);
+    // a copy of a one-hot register of the same clock
+    std::string copy = kOneHotSel;
+    copy.replace(copy.find("reg [1:0] sel"), 13, "reg [1:0] oh");
+    for (auto pos = copy.find("sel <="); pos != std::string::npos; pos = copy.find("sel <="))
+        copy.replace(pos, 6, "oh <=");
+    copy += "  reg [1:0] sel = 2'b00; always @(posedge clk_b) sel <= oh;\n";
+    CHECK(analyze(andOrSelect(copy), kAsync3).hits("CDC-005") == 0);
+}
+
+TEST_CASE("CDC-005 positive: computed selects that can have two bits set", "[CDC-005]") {
+    // a data bit shifted in next to the old bit
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b01;\n"
+                              "  always @(posedge clk_b) sel <= {sel[0], raw[0]};\n"),
+                  kAsync3)
+              .hits("CDC-005") == 2);
+    // a "rotation" that duplicates the bit
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b01;\n"
+                              "  always @(posedge clk_b) if (op[0]) sel <= {sel[0], sel[0]};\n"),
+                  kAsync3)
+              .hits("CDC-005") == 2);
+    // decoding a value with two bits set
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b00;\n"
+                              "  always @(posedge clk_b) sel <= 2'b11 << op[0];\n"),
+                  kAsync3)
+              .hits("CDC-005") == 2);
+    // a one-hot select whose power-up value has two bits set
+    std::string init = kOneHotSel;
+    init.replace(init.find("sel = 2'b00"), 11, "sel = 2'b11");
+    CHECK(analyze(andOrSelect(init), kAsync3).hits("CDC-005") == 2);
+    // one bit set by index on top of a bit that is already set
+    CHECK(analyze(andOrSelect("  reg [1:0] sel = 2'b00; reg [1:0] n;\n"
+                              "  always @* begin n = 2'b01; n[op[0]] = 1'b1; end\n"
+                              "  always @(posedge clk_b) sel <= n;\n"),
+                  kAsync3)
+              .hits("CDC-005") == 2);
+}
+
 // ===========================================================================
 // CDC-006 asynchronous reset release
 // ===========================================================================
