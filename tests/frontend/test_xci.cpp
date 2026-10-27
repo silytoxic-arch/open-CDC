@@ -1115,3 +1115,57 @@ TEST_CASE("XCI: an IP of one's own from an IP repository", "[frontend][xci][ipre
     auto nested = e2e("clk_a", true);
     CHECK(count(*nested, "FE-XCI-MODEL") == 2);
 }
+
+TEST_CASE("XCI: XADC Wizard, DRP interface in dclk_in", "[frontend][xci][xadc]") {
+    // Digilent Arty A7 XADC demo: DRP, reset, VP/VN, VAUX4 and VAUX12, two alarms
+    const std::vector<std::pair<std::string, std::string>> params = {
+        {"C_HAS_AXI", "0"},        {"C_HAS_AXI4STREAM", "0"},   {"C_HAS_DRP", "1"},     {"C_HAS_DCLK", "1"},
+        {"C_HAS_RESET", "1"},      {"C_HAS_VP", "1"},           {"C_HAS_VN", "1"},      {"C_VAUX4", "1"},
+        {"C_VAUX12", "1"},         {"C_VAUX3", "0"},            {"C_HAS_VCCAUX_ALARM", "1"},
+        {"C_HAS_VCCINT_ALARM", "1"}, {"C_HAS_OT_ALARM", "0"},   {"C_HAS_CHANNEL", "1"}, {"C_HAS_EOC", "1"},
+        {"C_HAS_EOS", "1"},        {"C_HAS_BUSY", "1"},         {"C_HAS_CONVST", "0"},  {"C_DCLK_FREQUENCY", "100"}};
+    auto m = frontend::modelFromXciText(spirit("xadc_wiz_0", "xadc_wiz", "3.3", params));
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    for (const char* p : {"input  wire [15:0] di_in", "input  wire [6:0] daddr_in", "input  wire den_in",
+                          "output wire drdy_out", "output wire [15:0] do_out", "input  wire dclk_in",
+                          "input  wire reset_in", "input  wire vp_in", "input  wire vauxp4", "input  wire vauxn12",
+                          "output wire vccaux_alarm_out", "output wire vccint_alarm_out", "output wire [4:0] channel_out",
+                          "output wire eoc_out", "output wire alarm_out", "output wire busy_out",
+                          "always @(posedge dclk_in) oc_do_out"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: disabled channels and alarms; the analog inputs are not read
+    for (const char* p : {"vauxp3", "ot_out", "convst_in", "user_temp_alarm_out", "^{di_in, daddr_in, den_in, vp_in"})
+        CHECK(v.find(p) == std::string::npos);
+    CHECK(m.value().summary.find("100 MHz") != std::string::npos);
+    // not modelled: AXI4-Stream output; AXI4-Lite without a port list (XML)
+    auto stream = params;
+    stream[1].second = "1";
+    CHECK_FALSE(frontend::modelFromXciText(spirit("x1", "xadc_wiz", "3.3", stream)));
+    auto lite = params;
+    lite[0].second = "1";
+    auto l = frontend::modelFromXciText(spirit("x2", "xadc_wiz", "3.3", lite));
+    REQUIRE_FALSE(l);
+    CHECK(l.error().message.find("component file") != std::string::npos);
+
+    // end to end: DRP data read on dclk_in does not cross, on another clock it does
+    auto e2e = [&](const std::string& readClk) {
+        test::TempDir dir;
+        return run(project(dir,
+                           "module top(input clk_a, input clk_b, input [7:0] d, input we, input re, output reg [7:0] q,\n"
+                           "           output reg [11:0] level);\n"
+                           "  wire [15:0] dout; wire rdy, eoc;\n"
+                           "  xadc_wiz_0 u (.dclk_in(clk_a), .daddr_in(7'h16), .den_in(eoc), .di_in(16'd0), .dwe_in(1'b0),\n"
+                           "    .reset_in(1'b0), .vp_in(1'b0), .vn_in(1'b0), .vauxp4(1'b0), .vauxn4(1'b0), .vauxp12(1'b0),\n"
+                           "    .vauxn12(1'b0), .do_out(dout), .drdy_out(rdy), .eoc_out(eoc));\n"
+                           "  always @(posedge " + readClk + ") if (rdy) level <= dout[15:4];\n"
+                           "endmodule\n",
+                           {dir.write("xadc_wiz_0.xci", spirit("xadc_wiz_0", "xadc_wiz", "3.3", params))}));
+    };
+    auto same = e2e("clk_a");
+    REQUIRE(same->cdc);
+    CHECK(same->cdc->stats.paths == 0);
+    auto other = e2e("clk_b");
+    REQUIRE(other->cdc);
+    CHECK(other->cdc->stats.unsynchronized >= 1);
+}

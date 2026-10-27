@@ -1405,6 +1405,144 @@ Result<XciModel> blockMemory(const XciInfo& info) {
 }
 
 // ---------------------------------------------------------------------------
+// XADC Wizard (xadc_wiz), DRP interface: the dynamic reconfiguration port and
+// the status outputs belong to dclk_in, as on the XADC primitive; the analog
+// inputs are not read. With the AXI4-Lite interface: one clock, s_axi_aclk.
+// ---------------------------------------------------------------------------
+
+Result<XciModel> oneClockIp(const XciInfo& info);
+
+Result<XciModel> xadcWizard(const XciInfo& info) {
+    const auto& m = info.model;
+    if (num(m, "C_HAS_AXI", 0) != 0 || num(m, "C_HAS_AXI4STREAM", 0) != 0) {
+        if (num(m, "C_HAS_AXI4STREAM", 0) != 0)
+            return unsupported("IP '" + info.instance + "' (XADC Wizard) with an AXI4-Stream output is not modelled",
+                               {"add the IP's generated HDL to the sources instead, or set the project option "
+                                "unknownModules to blackbox"});
+        auto r = oneClockIp(info);
+        if (r) {
+            XciModel out = std::move(r).value();
+            out.summary = "AXI4-Lite interface: one clock 's_axi_aclk'; every output is registered";
+            return out;
+        }
+        return r;
+    }
+    std::vector<SimplePort> ports;
+    if (!info.ports.empty()) {
+        ports = boundaryPorts(info);
+    }
+    else {
+        auto add = [&](std::string n, bool out, unsigned w, bool isVec) { ports.push_back({std::move(n), out, w, isVec}); };
+        auto has = [&](const char* key) { return num(m, key, 0) != 0; };
+        if (has("C_HAS_DRP")) {
+            add("di_in", false, 16, true);
+            add("daddr_in", false, 7, true);
+            add("den_in", false, 1, false);
+            add("dwe_in", false, 1, false);
+            add("drdy_out", true, 1, false);
+            add("do_out", true, 16, true);
+        }
+        if (has("C_HAS_DCLK"))
+            add("dclk_in", false, 1, false);
+        if (has("C_HAS_RESET"))
+            add("reset_in", false, 1, false);
+        if (has("C_HAS_CONVST"))
+            add("convst_in", false, 1, false);
+        if (has("C_HAS_CONVSTCLK"))
+            add("convstclk_in", false, 1, false);
+        if (has("C_HAS_VP"))
+            add("vp_in", false, 1, false);
+        if (has("C_HAS_VN"))
+            add("vn_in", false, 1, false);
+        for (int n = 0; n < 16; ++n)
+            if (num(m, "C_VAUX" + std::to_string(n), 0) != 0) {
+                add("vauxp" + std::to_string(n), false, 1, false);
+                add("vauxn" + std::to_string(n), false, 1, false);
+            }
+        if (has("C_HAS_USER_TEMP_ALARM"))
+            add("user_temp_alarm_out", true, 1, false);
+        if (has("C_HAS_VCCINT_ALARM"))
+            add("vccint_alarm_out", true, 1, false);
+        if (has("C_HAS_VCCAUX_ALARM"))
+            add("vccaux_alarm_out", true, 1, false);
+        if (has("C_HAS_VBRAM_ALARM"))
+            add("vbram_alarm_out", true, 1, false);
+        if (has("C_HAS_VCCPINT_ALARM"))
+            add("vccpint_alarm_out", true, 1, false);
+        if (has("C_HAS_VCCPAUX_ALARM"))
+            add("vccpaux_alarm_out", true, 1, false);
+        if (has("C_HAS_VCCDDRO_ALARM"))
+            add("vccddro_alarm_out", true, 1, false);
+        if (has("C_HAS_OT_ALARM"))
+            add("ot_out", true, 1, false);
+        if (has("C_HAS_CHANNEL"))
+            add("channel_out", true, 5, true);
+        if (has("C_HAS_EXTERNAL_MUX") || has("C_EXTERNAL_MUXADDR_ENABLE"))
+            add("muxaddr_out", true, 5, true);
+        if (has("C_HAS_EOC"))
+            add("eoc_out", true, 1, false);
+        add("alarm_out", true, 1, false); // the OR of the alarms: always there (low without alarms)
+        if (has("C_HAS_EOS"))
+            add("eos_out", true, 1, false);
+        if (has("C_HAS_BUSY"))
+            add("busy_out", true, 1, false);
+        if (has("C_HAS_TEMP_BUS"))
+            add("temp_out", true, 12, true);
+        if (has("C_HAS_JTAGBUSY"))
+            add("jtagbusy_out", true, 1, false);
+        if (has("C_HAS_JTAGLOCKED"))
+            add("jtaglocked_out", true, 1, false);
+        if (has("C_HAS_JTAGMODIFIED"))
+            add("jtagmodified_out", true, 1, false);
+    }
+    const bool hasDclk = std::ranges::any_of(ports, [](const SimplePort& p) { return p.name == "dclk_in" && !p.output; });
+    if (!hasDclk)
+        return unsupported("IP '" + info.instance + "' (XADC Wizard) without dclk_in is not modelled",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    auto analog = [](const std::string& n) {
+        return n == "vp_in" || n == "vn_in" || n.starts_with("vauxp") || n.starts_with("vauxn");
+    };
+    std::ostringstream v;
+    emitHeader(v, info.instance, ports);
+    std::string inputs;
+    for (const auto& p : ports)
+        if (!p.output && p.name != "dclk_in" && !analog(p.name))
+            inputs += (inputs.empty() ? "" : ", ") + p.name;
+    v << "  reg oc_mix = 1'b0;\n"
+      << "  always @(posedge dclk_in) oc_mix <= " << (inputs.empty() ? std::string("1'b0") : "^{" + inputs + "}")
+      << ";\n";
+    std::vector<std::string> noDomain;
+    for (const auto& p : ports) {
+        if (!p.output)
+            continue;
+        if (p.name.starts_with("jtag")) { // set over JTAG: no clock domain
+            v << "  assign " << p.name << " = " << (p.isVec ? std::to_string(p.width) + "'b0" : "1'b0") << ";\n";
+            noDomain.push_back(p.name);
+            continue;
+        }
+        const std::string r = "oc_" + p.name;
+        v << "  reg " << (p.isVec ? vec(p.width) + " " : std::string()) << r << " = 0;\n"
+          << "  always @(posedge dclk_in) " << r << " <= {" << p.width << "{oc_mix}};\n"
+          << "  assign " << p.name << " = " << r << ";\n";
+    }
+    v << "endmodule\n";
+    XciModel out;
+    out.module = info.instance;
+    out.ip = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    out.verilog = v.str();
+    out.summary = "DRP interface: the dynamic reconfiguration port and the status outputs in 'dclk_in' (" +
+                  text(m, "C_DCLK_FREQUENCY", "?") + " MHz configured)";
+    if (!noDomain.empty()) {
+        std::string list;
+        for (const auto& n : noDomain)
+            list += (list.empty() ? "" : ", ") + n;
+        out.notes.push_back("JTAG status outputs are driven with 0: " + list);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Block design glue: Slice, Concat, Constant (combinational wiring)
 // ---------------------------------------------------------------------------
 
@@ -2283,6 +2421,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
     }
     if (info.name == "axi_quad_spi")
         return quadSpi(info);
+    if (info.name == "xadc_wiz")
+        return xadcWizard(info);
     if (info.name == "xlslice" || info.name == "xlconcat" || info.name == "xlconstant")
         return wiringIp(info);
     if (info.name == "ila" || info.name == "vio")

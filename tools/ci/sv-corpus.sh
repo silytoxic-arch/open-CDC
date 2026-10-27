@@ -33,6 +33,9 @@ fetch axi          https://github.com/pulp-platform/axi          39f5f2d51c5e524
 fetch common_cells https://github.com/pulp-platform/common_cells c27bce39ebb2e6bae52f60960814a2afca7bd4cb
 fetch verilog-ethernet https://github.com/alexforencich/verilog-ethernet 77320a9471d19c7dd383914bc049e02d9f4f1ffb
 fetch adi-hdl      https://github.com/analogdevicesinc/hdl       c9a501d87a420d2e28aa9d931557bdb4122f3c4f
+fetch arty-xadc    https://github.com/Digilent/Arty-A7-100-XADC  2511692cc01c8b38cb8aa7d492b4e6dda97eb3c9
+fetch basys3-xadc  https://github.com/Digilent/Basys-3-XADC      fdfff92eca14c9e4df1ccc38317411e62a2f05d0
+fetch zybo-xadc    https://github.com/Digilent/Zybo-Z7-10-XADC   a55ca0d6f669d84bf1061d7b3e5a439397698634
 
 cat > axi_cdc_top.sv <<'SV'
 module top (input logic src_clk, input logic src_rst_n, input logic dst_clk, input logic dst_rst_n);
@@ -235,4 +238,18 @@ check arty_eth.ocdc.json "608/608 registers resolved.*Summary : 0 error\(s\), 9 
 check de2_115.ocdc.json "Clocks  : 13 \(618/618 registers resolved\).*enet0_tx_clk_125m  \[generated\] source=fpga.ENET0_GTX_CLK master=fpga.altpll_component.clk\[0\].*CDC-SOURCE-SYNC.*Summary : 0 error\(s\), 18 warning\(s\).*CDC     : 16 crossing path\(s\), 16 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 2 path\(s\) at potential risk, 0 path\(s\) need review"
 check nexys_video.ocdc.json "Clocks  : 4 \(645/645 registers resolved\).*built-in models used for vendor primitives: BUFG, BUFIO, BUFR, IBUFG, IDDR, IDELAYCTRL, IDELAYE2, MMCME2_BASE, ODDR.*Summary : 0 error\(s\), 9 warning\(s\).*CDC     : 16 crossing path\(s\), 16 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 2 path\(s\) at potential risk, 0 path\(s\) need review"
 check fmcomms2.ocdc.json "Clocks  : 3 \(1667/1667 registers resolved\).*built-in models used for vendor primitives: BUFG, DSP48E1, IBUFDS, IBUFGDS, IDELAYCTRL, MULT_MACRO, OBUF, OBUFDS.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 78 crossing path\(s\), 77 synchronized, 1 unsynchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 21 path\(s\) at potential risk, 0 path\(s\) need review"
+# Digilent XADC demos: XADC Wizard given as .xci (DRP in dclk_in)
+for p in "arty_xadc XADCdemo arty-xadc" "basys3_xadc XADCdemo basys3-xadc" "zybo_xadc top zybo-xadc"; do
+    set -- $p
+    python3 - "$1" "$2" "$3" <<'PY'
+import glob, json, sys
+name, top, d = sys.argv[1:]
+json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": top,
+           "sources": sorted(glob.glob(d + "/src/hdl/*.v")) + sorted(glob.glob(d + "/src/ip/*/*.xci")),
+           "constraints": sorted(glob.glob(d + "/src/constraints/*.xdc"))}, open(name + ".ocdc.json", "w"))
+PY
+done
+check arty_xadc.ocdc.json "Clocks  : 1 \(14/14 registers resolved\).*IP 'xadc_wiz_0' \(xilinx.com:ip:xadc_wiz:3.3\) modelled.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check basys3_xadc.ocdc.json "Clocks  : 2 \(24/24 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 0 crossing path"
 exit $fail
