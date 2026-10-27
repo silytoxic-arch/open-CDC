@@ -95,6 +95,9 @@ public:
     /// Pin properties: NAME, REF_PIN_NAME, DIRECTION, IS_LEAF, IS_CLOCK,
     /// IS_ENABLE, IS_PRESET, IS_CLEAR, IS_SET, IS_RESET.
     virtual bool pinPropertyKnown(std::string_view /*prop*/) { return false; }
+    /// Definition names of the top-level modules (scoped constraints may be
+    /// scoped to the top).
+    virtual std::vector<std::string> topModules() { return {}; }
     virtual std::optional<std::string> pinProperty(const Object& /*pin*/, std::string_view /*prop*/) {
         return std::nullopt;
     }
@@ -123,6 +126,7 @@ public:
     bool pinPropertyKnown(std::string_view prop) override;
     std::optional<std::string> pinProperty(const Object& pin, std::string_view prop) override;
     std::vector<Object> nets(std::string_view pattern, bool hierarchical, bool nocase) override;
+    std::vector<std::string> topModules() override;
 
 private:
     struct CellInfo {
@@ -303,6 +307,10 @@ public:
     void parse(std::string_view text, const std::string& fileName);
     /// Reads and interprets a file. Returns false if it cannot be read.
     bool readFile(const std::filesystem::path& file);
+    /// Reads a scoped constraint file (Vivado read_xdc -ref <module>): it is
+    /// run once in every instance of `scopeRef`, with names relative to the
+    /// instance; get_ports names the instance's ports.
+    bool readFile(const std::filesystem::path& file, const std::string& scopeRef);
 
 private:
     struct Impl;

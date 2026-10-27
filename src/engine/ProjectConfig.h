@@ -45,7 +45,9 @@ struct AnalysisOptions {
 ///   "includeDirs": ["rtl/include"],             (optional)
 ///   "defines":     {"WIDTH": "8", "USE_FIFO": null},  (optional; null = define without value)
 ///   "parameters":  {"DEPTH": 16, "MODE": "\"FAST\""},  (optional; top-level parameter / generic overrides)
-///   "constraints": ["constraints/clocks.sdc"],  (optional; SDC/XDC subset)
+///   "constraints": ["constraints/clocks.sdc",   (optional; SDC/XDC subset)
+///                   {"file": "olo_base_cc_bits.tcl", "ref": "olo_base_cc_bits"}],
+///                  (a file scoped to a module, as Vivado's read_xdc -ref: run in every instance of it)
 ///   "waivers":     ["waivers.json"],            (optional; see engine/WaiverFile.h)
 ///   "vivadoClockReports": ["impl/clocks.rpt"],  (optional; Vivado report_clocks output, see engine/VivadoClocks.h)
 ///   "tclSourceDirs": ["syn/quartus"],           (optional; directories searched for relative Tcl `source`
@@ -70,6 +72,9 @@ struct ProjectConfig {
     /// Top-level parameter (Verilog) / generic (VHDL) overrides, value in HDL syntax.
     std::vector<std::pair<std::string, std::string>> parameters;
     std::vector<std::filesystem::path> constraints; ///< absolute
+    /// Scoped constraints (Vivado read_xdc -ref): the module each constraint
+    /// file is scoped to ("" = the whole design), parallel to constraints.
+    std::vector<std::string> constraintScopes;
     std::vector<std::filesystem::path> waivers;     ///< absolute
     /// Vivado `report_clocks` outputs whose periods are compared with the
     /// clock model (absolute).

@@ -28,6 +28,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Tcl procedures (`proc` with default and `args` parameters, `return`, `global`) and `source` (relative to the sourcing file, then the project's `tclSourceDirs`); all constraint files of an analysis share one interpreter, as in Vivado and Quartus | ✅ |
 | Quartus SDC: `get_registers`/`get_keepers`/`get_nodes` and `get_cells`/`get_pins` with `|`-separated names (registers named after their HDL signal), `get_collection_size`, `foreach_in_collection`, `get_node_info -name`; pin paths into IP internals (`pll|auto_generated|pll1|clk[0]`) resolved to the IP's port; periods with units (`"40.000 ns"`, `{125 MHz}`); `derive_pll_clocks`; register-to-register `set_max_delay` and `-from *`. Verified with the Quartus scripts of verilog-ethernet's DE2-115 example; full names with `entity:instance` levels (`*altera_std_synchronizer:*|din_s1`) | ✅ |
 | Source-synchronous inputs: an input timed against a virtual clock (`set_input_delay`) and captured by a clock of the same period is timed by STA, not a crossing (noted as `CDC-SOURCE-SYNC`) | ✅ |
+| Scoped constraints (Vivado `read_xdc -ref <module>` / `SCOPED_TO_REF`): a constraint file run once in every instance of a module, with names relative to the instance and `get_ports` naming the instance's ports — as IP libraries ship them (open-logic, hdl-modules). From a script (`read_xdc -ref`, also `-cells`) or in the project (`{"file": "x.tcl", "ref": "module"}`). Abbreviated queries (`get_cell`, `get_pin`, …) are accepted, as in Vivado | ✅ |
 | Output ports: an output timed against a clock (`set_output_delay -clock`) must be driven by registers (or inputs) of a clock synchronous to it; a driver of an asynchronous or unrelated clock is reported as `CDC-OUTPUT-CLOCK`. Forwarded clocks (`create_generated_clock` on the output port) and virtual clocks of the driver's period are synchronous; `set_false_path -to` the port exempts it | ✅ |
 | Suggested constraints (`--suggest-sdc`, GUI *Export Suggested Constraints*, HTML report section): `create_clock` for clock inputs and GT/black-box clock pins without a constraint, `create_generated_clock` for fabric dividers, `set_clock_groups` for clock families whose relation is unknown — every guess marked TODO or VERIFY | ✅ |
 | Constraint consistency checks: a generator configured for another input period (`CON-INPUT-PERIOD`), a constraint on a generator output that disagrees with the generator (`CON-PERIOD-MISMATCH`), overlapping clock groups or related clocks declared asynchronous (`CON-GROUP-*`); a single `-group` makes its clocks asynchronous to all others, as in SDC | ✅ |
@@ -149,7 +150,7 @@ In the HTML report, a design with more than 5000 paths lists only the paths that
   "sources": ["rtl/sync_2ff.v", "rtl/top.v"],
   "includeDirs": ["rtl/include"],
   "defines": {"WIDTH": "8", "USE_FIFO": null},
-  "constraints": ["constraints/clocks.sdc"],
+  "constraints": ["constraints/clocks.sdc", {"file": "lib/olo_base_cc_bits.tcl", "ref": "olo_base_cc_bits"}],
   "options": {"unknownClockRelation": "report", "minSyncStages": 2, "reconvergenceDepth": 2},
   "waivers": ["waivers.json"],
   "vivadoClockReports": ["impl/clocks.rpt"],
@@ -172,6 +173,8 @@ Different clock names alone never make two clocks asynchronous.
 `vivadoClockReports` (optional) lists outputs of Vivado `report_clocks` (or `report_timing_summary`). Their clocks are matched to the clock model by source pin or name, and differing periods are reported as `VIV-PERIOD-MISMATCH`. The CLI option `--vivado-clocks <file>` adds a report for one run.
 
 `tclSourceDirs` (optional) lists directories searched for relative `source` paths in constraint scripts, after the directory of the sourcing file. Set it to the directory Quartus or Vivado runs the scripts from when the scripts are written relative to it (e.g. `source ../lib/eth/syn/quartus/eth_mac_1g_rgmii.sdc`). All constraint files of a project share one Tcl interpreter, so procedures defined in one file can be called in the files listed after it.
+
+A `constraints` entry `{"file": …, "ref": "<module>"}` is a scoped constraint file, as Vivado's `read_xdc -ref`: it is run once in every instance of the module (or for the top module itself), each run with its own Tcl variables, with object names relative to the instance (`get_cells s1_reg`), `get_ports` naming the instance's ports, and `-hierarchical` searching below the instance only. A module the design does not instantiate is noted (`CON-UNMATCHED`, info). The GUI keeps the module of such entries.
 
 `ipRepositories` (optional) lists Vivado IP repositories (`ip_repo_paths`). An IP given as `.xci` that OpenCDC does not model is looked up there by its `component.xml`, and its HDL is analyzed (see [docs/vivado-ip.md](docs/vivado-ip.md)).
 

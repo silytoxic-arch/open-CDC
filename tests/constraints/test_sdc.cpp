@@ -1,4 +1,5 @@
 #include "constraints/Sdc.h"
+#include "core/PathUtil.h"
 
 #include "../DesignUtil.h"
 #include "../TestUtil.h"
@@ -644,4 +645,63 @@ TEST_CASE("Vivado names leave unnamed generate blocks out (genblk)", "[constrain
     // negative: a wrong level still matches nothing
     CHECK(r.cells("g[0]", false, false).empty());
     CHECK(r.cells("u", false, false).empty());
+}
+
+TEST_CASE("Scoped constraints run in every instance of their module (read_xdc -ref)", "[constraints][scoped]") {
+    auto b = test::buildDesign("module sync2(input clk_in, input clk_out, input d, output q);\n"
+                               "  reg d_q, s1, s2;\n"
+                               "  always @(posedge clk_in) d_q <= d;\n"
+                               "  always @(posedge clk_out) begin s1 <= d_q; s2 <= s1; end\n"
+                               "  assign q = s2;\n"
+                               "endmodule\n"
+                               "module top(input clk_a, input clk_b, input d, output q0, output q1);\n"
+                               "  sync2 u0 (.clk_in(clk_a), .clk_out(clk_b), .d(d), .q(q0));\n"
+                               "  sync2 u1 (.clk_in(clk_b), .clk_out(clk_a), .d(d), .q(q1));\n"
+                               "endmodule\n",
+                               "top");
+    graph::DesignView view(*b.design);
+    DesignObjectResolver r(view);
+    test::TempDir dir;
+    // as hdl-modules / open-logic write them: names relative to the instance,
+    // get_ports for the instance's ports, abbreviated get_cell
+    const auto scoped = dir.write("sync2.tcl",
+                                  "set clk_in [get_clocks -quiet -of_objects [get_ports clk_in]]\n"
+                                  "set first [get_cell s1_reg]\n"
+                                  "set_max_delay -datapath_only -from $clk_in -to $first 5\n"
+                                  "set n [llength [get_cells -hier *s?_reg]]\n"
+                                  "if {$n != 2} { create_clock -name wrong_scope -period 1 }\n");
+    auto p = parse("create_clock -name a -period 10 [get_ports clk_a]\n"
+                   "create_clock -name b -period 7 [get_ports clk_b]\n"
+                   "read_xdc -quiet -ref sync2 " + toUtf8(scoped) + " -unmanaged\n",
+                   r);
+    CHECK(p.countCode("CON-UNMATCHED") == 0);
+    CHECK(p.countCode("CON-UNKNOWN-COMMAND") == 0);
+    // one exception per instance, to that instance's first stage
+    REQUIRE(p.set.pathExceptions.size() == 2);
+    std::vector<std::string> to;
+    for (const auto& e : p.set.pathExceptions) {
+        REQUIRE(e.to.size() == 1);
+        to.push_back(view.name(e.to.front().bit));
+        CHECK(e.fromClockBits.size() == 1); // the clock on the instance's clk_in pin
+    }
+    std::ranges::sort(to);
+    CHECK(to == std::vector<std::string>{"top.u0.s1", "top.u1.s1"});
+    // -hierarchical searches below the instance only (2 stages, not 4)
+    CHECK(std::ranges::none_of(p.set.clocks, [](const ClockDef& c) { return c.name == "wrong_scope"; }));
+    // each instance run has its own variables; the outer script keeps its own
+    CHECK(p.set.files.size() == 1);
+
+    // negative: a module the design does not have
+    auto none = parse("read_xdc -ref nosuch " + toUtf8(scoped) + "\n", r);
+    CHECK(none.countCode("CON-UNMATCHED") == 1);
+    CHECK(none.set.pathExceptions.empty());
+
+    // scoped to the top: names as they are
+    const auto topScoped = dir.write("top.tcl", "set_false_path -to [get_cells u0/s1_reg]\n");
+    auto t = parse("read_xdc -ref top " + toUtf8(topScoped) + "\n", r);
+    CHECK(t.set.pathExceptions.size() == 1);
+
+    // without -ref: a plain constraint file
+    auto plain = parse("read_xdc " + toUtf8(topScoped) + "\n", r);
+    CHECK(plain.set.pathExceptions.size() == 1);
 }

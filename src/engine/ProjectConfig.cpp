@@ -157,8 +157,24 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
         return projectError("PRJ-SCHEMA", "field 'sources' must list at least one file");
     if (auto err = readPathArray(root, "includeDirs", baseDir, cfg.includeDirs, false); !err.empty())
         return projectError("PRJ-SCHEMA", err);
-    if (auto err = readPathArray(root, "constraints", baseDir, cfg.constraints, false); !err.empty())
-        return projectError("PRJ-SCHEMA", err);
+    if (auto it = root.find("constraints"); it != root.end()) {
+        if (!it->is_array())
+            return projectError("PRJ-SCHEMA", "field 'constraints' must be an array");
+        // "x.xdc" or {"file": "x.tcl", "ref": "module"} (scoped constraints)
+        for (const auto& item : *it) {
+            if (item.is_string()) {
+                cfg.constraints.push_back(resolve(baseDir, item.get<std::string>()));
+                cfg.constraintScopes.emplace_back();
+                continue;
+            }
+            if (!item.is_object() || !item.contains("file") || !item["file"].is_string() ||
+                (item.contains("ref") && !item["ref"].is_string()))
+                return projectError("PRJ-SCHEMA",
+                                    "entries of 'constraints' must be strings or objects {\"file\": ..., \"ref\": ...}");
+            cfg.constraints.push_back(resolve(baseDir, item["file"].get<std::string>()));
+            cfg.constraintScopes.push_back(item.contains("ref") ? item["ref"].get<std::string>() : std::string());
+        }
+    }
     if (auto err = readPathArray(root, "waivers", baseDir, cfg.waivers, false); !err.empty())
         return projectError("PRJ-SCHEMA", err);
     if (auto err = readPathArray(root, "tclSourceDirs", baseDir, cfg.tclSourceDirs, false); !err.empty())
@@ -332,7 +348,18 @@ std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path&
             d[name] = value;
         j["parameters"] = std::move(d);
     }
-    paths("constraints", cfg.constraints);
+    if (!cfg.constraints.empty()) {
+        auto a = nlohmann::ordered_json::array();
+        for (std::size_t i = 0; i < cfg.constraints.size(); ++i) {
+            const std::string file = relativeText(cfg.constraints[i], baseDir);
+            const std::string ref = i < cfg.constraintScopes.size() ? cfg.constraintScopes[i] : std::string();
+            if (ref.empty())
+                a.push_back(file);
+            else
+                a.push_back({{"file", file}, {"ref", ref}});
+        }
+        j["constraints"] = std::move(a);
+    }
     paths("waivers", cfg.waivers);
     paths("vivadoClockReports", cfg.vivadoClockReports);
     paths("tclSourceDirs", cfg.tclSourceDirs);

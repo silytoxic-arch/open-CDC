@@ -392,6 +392,15 @@ engine::ProjectConfig ProjectEditor::config() const {
             c.parameters.emplace_back(n.toStdString(), cell(parameters_, r, 1).trimmed().toStdString());
     }
     c.constraints = listPaths(constraints_);
+    // scoped constraint files keep their module (not editable here)
+    c.constraintScopes.clear();
+    for (const auto& f : c.constraints) {
+        std::string ref;
+        for (std::size_t i = 0; i < original_.constraints.size(); ++i)
+            if (original_.constraints[i] == f && i < original_.constraintScopes.size())
+                ref = original_.constraintScopes[i];
+        c.constraintScopes.push_back(ref);
+    }
     c.waivers = listPaths(waivers_);
     c.vivadoClockReports = listPaths(vivadoReports_);
     c.tclSourceDirs = listPaths(tclSourceDirs_);

@@ -88,7 +88,12 @@ for top, gen in [("olo_base_cc_bits", {"Width_g": 4}), ("olo_base_cc_pulse", {"N
                  ("olo_base_cc_handshake", {"Width_g": 8}), ("olo_base_fifo_async", {"Width_g": 8, "Depth_g": 16})]:
     json.dump({"format": "opencdc-project", "version": 1, "name": top, "top": top,
                "sources": [{"file": f, "library": "olo"} for f in files],
-               "parameters": gen, "constraints": ["olo.sdc"]},
+               "parameters": gen,
+               # open-logic's own scoped constraints (read_xdc -ref, as olo_base_constraints_amd.tcl does)
+               "constraints": ["olo.sdc"] + [{"file": os.path.join(work, "open-logic/src/base/tcl", m + ".tcl"),
+                                              "ref": m}
+                                             for m in ("olo_base_cc_reset", "olo_base_cc_bits", "olo_base_cc_simple",
+                                                       "olo_base_reset_gen", "olo_base_ram_sdp")]},
               open(os.path.join(work, top + ".ocdc.json"), "w"), indent=1)
 neo = os.path.join(work, "neorv32/rtl/core")
 nfiles = [neo + "/neorv32_package.vhd"] + sorted(f for f in glob.glob(neo + "/*.vhd") if "package" not in f)

@@ -112,6 +112,14 @@ std::optional<std::pair<std::string, std::string>> splitIndex(std::string_view p
 
 DesignObjectResolver::DesignObjectResolver(const graph::DesignView& view) : view_(view) {}
 
+std::vector<std::string> DesignObjectResolver::topModules() {
+    std::vector<std::string> out;
+    const auto& d = view_.design();
+    for (const auto t : d.tops)
+        out.push_back(d.body(d.instance(t).body).name);
+    return out;
+}
+
 namespace {
 
 /// Vivado leaves unnamed generate blocks out of names ("oddr[0].oddr_inst"
@@ -1208,7 +1216,7 @@ std::optional<double> toNumber(std::string_view s) {
 
 const std::set<std::string, std::less<>>& knownCommands() {
     static const std::set<std::string, std::less<>> cmds = {
-        "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "set_output_delay", "get_ports", "get_pins", "get_nets",
+        "set", "create_clock", "create_generated_clock", "set_clock_groups", "set_input_delay", "set_output_delay", "read_xdc", "get_ports", "get_port", "get_pin", "get_cell", "get_net", "get_clock", "get_pins", "get_nets",
         "get_clocks", "all_clocks", "get_cells", "all_inputs", "all_outputs", "all_registers", "expr", "if",
         "foreach", "for", "while", "break", "continue", "incr", "llength", "lindex", "lappend", "puts",
         "get_property", "list", "concat", "proc", "return", "global", "source", "get_registers", "get_keepers",
@@ -1235,10 +1243,74 @@ bool isTimingOrMiscCommand(std::string_view c) {
     return cmds.contains(c);
 }
 
+/// The design seen from inside one instance, for scoped constraints
+/// (read_xdc -ref <module>, Vivado SCOPED_TO_REF): names are relative to the
+/// instance, get_ports names the instance's pins, -hierarchical searches
+/// below the instance only.
+class ScopedResolver final : public IObjectResolver {
+public:
+    ScopedResolver(IObjectResolver& base, std::string scope) : base_(base), scope_(std::move(scope)) {}
+
+    std::vector<Object> ports(std::string_view pattern, bool nocase) override {
+        return base_.pins(scope_ + "/" + std::string(pattern), false, nocase);
+    }
+    std::vector<Object> pins(std::string_view pattern, bool hierarchical, bool nocase) override {
+        return hierarchical ? inside(base_.pins(pattern, true, nocase))
+                            : base_.pins(scope_ + "/" + std::string(pattern), false, nocase);
+    }
+    std::vector<Object> nets(std::string_view pattern, bool hierarchical, bool nocase) override {
+        return hierarchical ? inside(base_.nets(pattern, true, nocase))
+                            : base_.nets(scope_ + "/" + std::string(pattern), false, nocase);
+    }
+    std::vector<Object> cells(std::string_view pattern, bool hierarchical, bool nocase) override {
+        return hierarchical ? inside(base_.cells(pattern, true, nocase))
+                            : base_.cells(scope_ + "/" + std::string(pattern), false, nocase);
+    }
+    std::vector<Object> cellsRegexp(std::string_view regex, bool hierarchical, bool nocase) override {
+        if (hierarchical)
+            return inside(base_.cellsRegexp(regex, true, nocase));
+        std::string prefix;
+        for (const char c : scope_ + "/") {
+            if (std::string_view(".[]{}()*+?^$|\\").find(c) != std::string_view::npos)
+                prefix += '\\';
+            prefix += c;
+        }
+        return base_.cellsRegexp(prefix + std::string(regex), false, nocase);
+    }
+    bool cellPropertyKnown(std::string_view prop) override { return base_.cellPropertyKnown(prop); }
+    std::optional<std::string> cellProperty(const Object& cell, std::string_view prop) override {
+        return base_.cellProperty(cell, prop);
+    }
+    std::vector<graph::BitRef> cellClocks(const Object& cell) override { return base_.cellClocks(cell); }
+    std::optional<std::string> blackBoxContaining(std::string_view pattern) override {
+        return base_.blackBoxContaining(scope_ + "/" + std::string(pattern));
+    }
+    std::vector<Object> cellPins(const Object& cell) override { return base_.cellPins(cell); }
+    std::vector<Object> pinNets(const Object& pin) override { return base_.pinNets(pin); }
+    std::vector<Object> netPins(const Object& net) override { return base_.netPins(net); }
+    std::vector<Object> pinCells(const Object& pin) override { return base_.pinCells(pin); }
+    std::vector<Object> quartus(std::string_view pattern, QuartusKind kind, bool nocase) override {
+        return base_.quartus(pattern, kind, nocase);
+    }
+    bool pinPropertyKnown(std::string_view prop) override { return base_.pinPropertyKnown(prop); }
+    std::optional<std::string> pinProperty(const Object& pin, std::string_view prop) override {
+        return base_.pinProperty(pin, prop);
+    }
+
+private:
+    std::vector<Object> inside(std::vector<Object> v) const {
+        const std::string prefix = scope_ + "/";
+        std::erase_if(v, [&](const Object& o) { return !o.name.starts_with(prefix); });
+        return v;
+    }
+    IObjectResolver& base_;
+    std::string scope_;
+};
+
 class Interp {
 public:
     Interp(IObjectResolver& resolver, ConstraintSet& out, DiagnosticSink& sink, SdcOptions options)
-        : resolver_(resolver), out_(out), sink_(sink), options_(std::move(options)) {}
+        : resolver_(&resolver), out_(out), sink_(sink), options_(std::move(options)) {}
 
     /// Runs one constraint file; the interpreter state (variables,
     /// procedures) carries over to the next file.
@@ -1247,6 +1319,128 @@ public:
         runScript(text, 1);
         ctl_ = Ctl::None; // a `return` (or stray break) at file level ends the file
         reportIgnored();
+    }
+
+    /// Runs a scoped constraint file once in every instance of module `ref`
+    /// (Vivado read_xdc -ref / SCOPED_TO_REF), each run with its own
+    /// variables. Returns the number of instances.
+    std::size_t runScoped(std::string_view text, const std::string& fileName, const std::string& ref) {
+        auto lowerOf = [](std::string t) {
+            std::ranges::transform(t, t.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return t;
+        };
+        std::vector<std::string> scopes;
+        for (const auto& t : resolver_->topModules())
+            if (lowerOf(t) == lowerOf(ref))
+                scopes.emplace_back(); // the top itself: names as they are
+        for (const auto& c : resolver_->cells("*", true, false)) {
+            if (!c.instance)
+                continue;
+            const auto r = resolver_->cellProperty(c, "REF_NAME");
+            const auto o = resolver_->cellProperty(c, "ORIG_REF_NAME");
+            if ((r && lowerOf(*r) == lowerOf(ref)) || (o && lowerOf(*o) == lowerOf(ref)))
+                scopes.push_back(c.name);
+        }
+        if (scopes.empty()) {
+            const std::string caller = file_;
+            file_ = fileName;
+            // a library's constraints for all its modules: noted, as Vivado does
+            diag("CON-UNMATCHED", Severity::Info,
+                 "scoped constraints (-ref " + ref + "): the design has no instance of '" + ref +
+                     "'; the file is not applied",
+                 0);
+            file_ = caller;
+            return 0;
+        }
+        IObjectResolver* base = resolver_;
+        auto frames = std::move(frames_);
+        for (const auto& scope : scopes) {
+            ScopedResolver sr(*base, scope);
+            resolver_ = scope.empty() ? base : &sr;
+            frames_ = std::vector<Frame>(1);
+            const std::string caller = file_;
+            file_ = fileName;
+            runScript(text, 1);
+            ctl_ = Ctl::None;
+            file_ = caller;
+            resolver_ = base;
+        }
+        frames_ = std::move(frames);
+        const std::string caller = file_;
+        file_ = fileName;
+        reportIgnored();
+        file_ = caller;
+        return scopes.size();
+    }
+
+    /// read_xdc [-ref <module>] [-cells <instances>] <file>: a constraint file
+    /// read from a script (open-logic's olo_base_constraints_amd.tcl).
+    Value readXdcCmd(const Command& cmd) {
+        std::string ref, file;
+        std::vector<std::string> cells;
+        for (std::size_t i = 1; i < cmd.words.size(); ++i) {
+            const std::string w = cmd.words[i].raw;
+            if (w == "-ref" && i + 1 < cmd.words.size()) {
+                ref = subst(cmd.words[++i], cmd.line).text;
+                continue;
+            }
+            if (w == "-cells" && i + 1 < cmd.words.size()) {
+                Value v = subst(cmd.words[++i], cmd.line);
+                for (const auto& o : v.objects)
+                    cells.push_back(o.name);
+                continue;
+            }
+            if (w == "-mode" || w == "-of_objects") {
+                ++i;
+                continue;
+            }
+            if (w == "-quiet" || w == "-unmanaged" || w == "-verbose" || w == "-no_add")
+                continue;
+            file = subst(cmd.words[i], cmd.line).text;
+        }
+        if (file.empty()) {
+            diag("CON-PARSE", Severity::Error, "read_xdc: no file given", cmd.line);
+            return {};
+        }
+        std::filesystem::path path = fromUtf8(file);
+        if (!path.is_absolute())
+            path = fromUtf8(file_).parent_path() / path;
+        auto decoded = readSourceText(path);
+        if (!decoded) {
+            diag("CON-OPEN", Severity::Warning, "read_xdc: cannot read '" + file + "'", cmd.line);
+            return {};
+        }
+        std::error_code ec;
+        const auto canon = std::filesystem::weakly_canonical(path, ec);
+        out_.files.push_back(ec ? path : canon);
+        const std::string name = toUtf8(ec ? path : canon);
+        if (!ref.empty()) {
+            runScoped(decoded->utf8, name, ref);
+            return {};
+        }
+        if (!cells.empty()) {
+            IObjectResolver* base = resolver_;
+            auto frames = std::move(frames_);
+            for (const auto& scope : cells) {
+                ScopedResolver sr(*base, scope);
+                resolver_ = &sr;
+                frames_ = std::vector<Frame>(1);
+                const std::string caller = file_;
+                file_ = name;
+                runScript(decoded->utf8, 1);
+                ctl_ = Ctl::None;
+                file_ = caller;
+                resolver_ = base;
+            }
+            frames_ = std::move(frames);
+            return {};
+        }
+        const std::string caller = file_;
+        file_ = name;
+        runScript(decoded->utf8, 1);
+        ctl_ = Ctl::None;
+        file_ = caller;
+        return {};
     }
 
     Value runScript(std::string_view text, std::uint32_t firstLine) {
@@ -1470,13 +1664,13 @@ private:
         // Plain names: search ports, then pins, then nets (Synopsys behaviour).
         std::vector<Object> out;
         for (const auto& pat : splitList(v.text)) {
-            auto r = resolver_.ports(pat, false);
+            auto r = resolver_->ports(pat, false);
             if (r.empty())
-                r = resolver_.pins(pat, false, false);
+                r = resolver_->pins(pat, false, false);
             if (r.empty())
-                r = resolver_.nets(pat, false, false);
+                r = resolver_->nets(pat, false, false);
             if (r.empty() && pat.find('|') != std::string::npos) // a Quartus name
-                r = resolver_.quartus(pat, QuartusKind::Pins, false);
+                r = resolver_->quartus(pat, QuartusKind::Pins, false);
             if (r.empty()) {
                 if (pat.starts_with("altera_reserved_"))
                     unmatched(ctx, pat, cmd.line);
@@ -1532,11 +1726,11 @@ private:
                 for (const auto& o : objectsOf(ov, cmd, name + " -of_objects")) {
                     std::vector<Object> r;
                     if (pins && o.kind == ObjectKind::Cell)
-                        r = resolver_.cellPins(o);
+                        r = resolver_->cellPins(o);
                     else if (pins && o.kind == ObjectKind::Net)
-                        r = resolver_.netPins(o);
+                        r = resolver_->netPins(o);
                     else if (!pins && o.kind == ObjectKind::Pin)
-                        r = resolver_.pinNets(o);
+                        r = resolver_->pinNets(o);
                     else
                         unsupportedKind = true;
                     for (auto& x : r)
@@ -1559,7 +1753,7 @@ private:
             std::vector<Object> result;
             for (const auto& ov : a.opts["-of_objects"])
                 for (auto& o : objectsOf(ov, cmd, "get_clocks -of_objects")) {
-                    auto bits = o.kind == ObjectKind::Cell ? resolver_.cellClocks(o) : std::move(o.bits);
+                    auto bits = o.kind == ObjectKind::Cell ? resolver_->cellClocks(o) : std::move(o.bits);
                     if (bits.empty() || std::ranges::any_of(result, [&](const Object& r) { return r.bits == bits; }))
                         continue;
                     result.push_back({ObjectKind::Clock, "-of_objects " + o.name, std::move(bits)});
@@ -1579,12 +1773,12 @@ private:
                     result.push_back({ObjectKind::Clock, pat, {}});
                     continue;
                 }
-                std::vector<Object> r = name == "get_ports"   ? resolver_.ports(pat, nocase)
-                                        : name == "get_pins"  ? resolver_.pins(pat, hier, nocase)
-                                        : name == "get_cells" ? resolver_.cells(pat, hier, nocase)
-                                                              : resolver_.nets(pat, hier, nocase);
+                std::vector<Object> r = name == "get_ports"   ? resolver_->ports(pat, nocase)
+                                        : name == "get_pins"  ? resolver_->pins(pat, hier, nocase)
+                                        : name == "get_cells" ? resolver_->cells(pat, hier, nocase)
+                                                              : resolver_->nets(pat, hier, nocase);
                 if (r.empty() && pins && pat.find('|') != std::string::npos)
-                    r = resolver_.quartus(pat, QuartusKind::Pins, nocase); // a Quartus name held in a variable
+                    r = resolver_->quartus(pat, QuartusKind::Pins, nocase); // a Quartus name held in a variable
                 if (!filter.empty() && !applyFilter(r, filter, true, false, name, cmd))
                     return objectsValue({});
                 if (r.empty() && !quiet)
@@ -1805,9 +1999,9 @@ private:
                 else
                     return false;
             }
-            else if (v.starts_with("get_clocks") || v.starts_with("all_clocks"))
+            else if (v.starts_with("get_clock") || v.starts_with("all_clocks"))
                 side = Side::Clocks;
-            else if (v.starts_with("get_cells") || v.starts_with("get_pins") || v.starts_with("get_ports") ||
+            else if (v.starts_with("get_cell") || v.starts_with("get_pin") || v.starts_with("get_port") ||
                      v.starts_with("get_registers") || v.starts_with("get_keepers") || v.starts_with("get_nodes"))
                 side = Side::Cells;
             else
@@ -1863,7 +2057,7 @@ private:
         if (o.kind == ObjectKind::Cell)
             return o.instance ? std::vector<BitRef>{} : o.bits;
         std::vector<BitRef> out;
-        for (const auto& c : resolver_.pinCells(o))
+        for (const auto& c : resolver_->pinCells(o))
             if (!c.instance)
                 out.insert(out.end(), c.bits.begin(), c.bits.end());
         return out;
@@ -1930,8 +2124,8 @@ private:
                     // a port of an instance (a modelled primitive such as
                     // FDPE): the flip-flops inside it that the port feeds
                     const std::string inside = o.name.substr(0, o.name.rfind('/') + 1);
-                    for (const auto& net : resolver_.pinNets(o))
-                        for (const auto& p : resolver_.netPins(net))
+                    for (const auto& net : resolver_->pinNets(o))
+                        for (const auto& p : resolver_->netPins(net))
                             if (!p.pin.empty() && p.pin != "Q" && p.name.starts_with(inside))
                                 for (const auto& b : flipFlopBits(p))
                                     e.to.push_back({b, roleOf(p.pin)});
@@ -2664,8 +2858,8 @@ private:
                     unknown = true;
                 continue;
             }
-            if (o.kind == ObjectKind::Cell && resolver_.cellPropertyKnown(prop)) {
-                if (auto v = resolver_.cellProperty(o, prop))
+            if (o.kind == ObjectKind::Cell && resolver_->cellPropertyKnown(prop)) {
+                if (auto v = resolver_->cellProperty(o, prop))
                     values.push_back(*v);
                 continue;
             }
@@ -2865,7 +3059,7 @@ private:
                 regexp, &regexCache_)
                 .parse();
             for (const auto& p : props)
-                if (!(pins ? resolver_.pinPropertyKnown(p) : resolver_.cellPropertyKnown(p))) {
+                if (!(pins ? resolver_->pinPropertyKnown(p) : resolver_->cellPropertyKnown(p))) {
                     diag("CON-UNSUPPORTED-OPTION", Severity::Warning,
                          ctx + ": -filter property '" + p + "' is not available in the design; the query returns nothing",
                          cmd.line);
@@ -2876,7 +3070,7 @@ private:
                 return !FilterParser(
                             filter,
                             [&](const std::string& p) {
-                                return pins ? resolver_.pinProperty(o, p) : resolver_.cellProperty(o, p);
+                                return pins ? resolver_->pinProperty(o, p) : resolver_->cellProperty(o, p);
                             },
                             regexp, &regexCache_)
                             .parse();
@@ -2909,7 +3103,7 @@ private:
                         unsupportedKind = true;
                         continue;
                     }
-                    for (auto& c : resolver_.pinCells(o))
+                    for (auto& c : resolver_->pinCells(o))
                         if (std::ranges::find(result, c.name, &Object::name) == result.end())
                             result.push_back(std::move(c));
                 }
@@ -2935,7 +3129,7 @@ private:
             std::vector<Object> r;
             if (regexp) {
                 try {
-                    r = resolver_.cellsRegexp(pat, hier, nocase);
+                    r = resolver_->cellsRegexp(pat, hier, nocase);
                 }
                 catch (const std::regex_error&) {
                     diag("CON-PARSE", Severity::Error, "get_cells: invalid regular expression '" + pat + "'", cmd.line);
@@ -2943,9 +3137,9 @@ private:
                 }
             }
             else {
-                r = resolver_.cells(pat, hier, nocase);
+                r = resolver_->cells(pat, hier, nocase);
                 if (r.empty() && pat.find('|') != std::string::npos)
-                    r = resolver_.quartus(pat, QuartusKind::Cells, nocase); // a Quartus name held in a variable
+                    r = resolver_->quartus(pat, QuartusKind::Cells, nocase); // a Quartus name held in a variable
             }
             if (!filter.empty() && !applyFilter(r, filter, false, regexp, "get_cells", cmd))
                 return objectsValue({});
@@ -3178,7 +3372,7 @@ private:
             patterns.emplace_back("*");
         std::vector<Object> result;
         for (const auto& pat : patterns) {
-            auto r = resolver_.quartus(pat, kind, nocase);
+            auto r = resolver_->quartus(pat, kind, nocase);
             if (r.empty() && !nowarn)
                 unmatched(name, pat, cmd.line);
             for (auto& o : r)
@@ -3269,7 +3463,7 @@ private:
             diag("CON-UNMATCHED", Severity::Info,
                  ctx + ": '" + pattern + "' is a Quartus reserved JTAG port added during fitting, not part of the RTL",
                  line);
-        else if (const auto bb = resolver_.blackBoxContaining(pattern))
+        else if (const auto bb = resolver_->blackBoxContaining(pattern))
             diag("CON-UNMATCHED", Severity::Info,
                  ctx + ": " + shown + " is inside the black box '" + *bb + "', whose contents are not modelled", line);
         else if (debugCore)
@@ -3284,6 +3478,16 @@ private:
     Value exec(const Command& cmd) {
         const Value head = subst(cmd.words[0], cmd.line);
         const std::string& name = head.text;
+        // Vivado completes unique command abbreviations: open-logic's scoped
+        // constraints write `get_cell`
+        static const std::map<std::string, std::string, std::less<>> kAbbreviations = {
+            {"get_cell", "get_cells"}, {"get_pin", "get_pins"}, {"get_port", "get_ports"},
+            {"get_net", "get_nets"},   {"get_clock", "get_clocks"}};
+        if (const auto a = kAbbreviations.find(name); a != kAbbreviations.end() && !procs_.contains(name)) {
+            Command full = cmd;
+            full.words[0] = Word{Word::Kind::Bare, a->second, cmd.words[0].line};
+            return exec(full);
+        }
         if (name == "set") {
             if (cmd.words.size() == 3) {
                 Value v = subst(cmd.words[2], cmd.line);
@@ -3321,6 +3525,8 @@ private:
             return setInputDelay(cmd);
         if (name == "set_output_delay")
             return setPortDelay(cmd, name, out_.outputDelays);
+        if (name == "read_xdc")
+            return readXdcCmd(cmd);
         if (name == "set_clock_groups")
             return setClockGroups(cmd);
         if (name == "get_ports" || name == "get_pins" || name == "get_nets" || name == "get_clocks")
@@ -3387,7 +3593,7 @@ private:
     }
 
     std::string file_; ///< the file being run (diagnostics; base of relative `source` paths)
-    IObjectResolver& resolver_;
+    IObjectResolver* resolver_;
     ConstraintSet& out_;
     DiagnosticSink& sink_;
     /// Tcl variable frames: the global frame and one per procedure call
@@ -3434,6 +3640,19 @@ SdcReader::SdcReader(IObjectResolver& resolver, ConstraintSet& out, DiagnosticSi
 SdcReader::~SdcReader() = default;
 
 void SdcReader::parse(std::string_view text, const std::string& fileName) { impl_->interp.runFile(text, fileName); }
+
+bool SdcReader::readFile(const std::filesystem::path& file, const std::string& scopeRef) {
+    if (scopeRef.empty())
+        return readFile(file);
+    auto text = readSourceText(file);
+    if (!text) {
+        impl_->sink.report({"CON-OPEN", Severity::Error, "cannot open constraint file", {toUtf8(file), 0, 0}, {}});
+        return false;
+    }
+    impl_->out.files.push_back(file);
+    impl_->interp.runScoped(text->utf8, toUtf8(file), scopeRef);
+    return true;
+}
 
 bool SdcReader::readFile(const std::filesystem::path& file) {
     auto text = readSourceText(file);

@@ -173,9 +173,11 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
             constraints::DesignObjectResolver resolver(*view);
             // one interpreter for all files: procedures and variables carry over
             constraints::SdcReader reader(resolver, *cons, sink, {config.tclSourceDirs});
-            for (const auto& f : config.constraints)
-                if (reader.readFile(f))
+            for (std::size_t i = 0; i < config.constraints.size(); ++i) {
+                const std::string ref = i < config.constraintScopes.size() ? config.constraintScopes[i] : std::string();
+                if (reader.readFile(config.constraints[i], ref))
                     ++readFiles;
+            }
         }
         pushStage(
             {conStage, readFiles == config.constraints.size() ? StageStatus::Completed : StageStatus::Failed,

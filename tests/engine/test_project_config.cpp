@@ -157,7 +157,7 @@ TEST_CASE("projectToJson round-trips through parseProjectJson", "[engine][projec
         "includeDirs": ["inc"],
         "defines": {"WIDTH": "8", "FLAG": null},
         "parameters": {"DEPTH": 16, "MODE": "\"FAST\""},
-        "constraints": ["c/clk.sdc"],
+        "constraints": ["c/clk.sdc", {"file": "c/sync2.tcl", "ref": "sync2"}],
         "waivers": ["../w.json"],
         "tclSourceDirs": ["syn/quartus"],
         "ipRepositories": ["../ip_repo"],
@@ -179,6 +179,11 @@ TEST_CASE("projectToJson round-trips through parseProjectJson", "[engine][projec
     CHECK(b.sourceLibraries == a.sourceLibraries);
     CHECK(b.includeDirs == a.includeDirs);
     CHECK(b.constraints == a.constraints);
+    REQUIRE(a.constraintScopes.size() == 2);
+    CHECK(a.constraintScopes[0].empty());
+    CHECK(a.constraintScopes[1] == "sync2");
+    CHECK(b.constraintScopes == a.constraintScopes);
+    CHECK(text.find("\"ref\": \"sync2\"") != std::string::npos);
     CHECK(b.waivers == a.waivers);
     REQUIRE(a.tclSourceDirs.size() == 1);
     CHECK(a.tclSourceDirs[0] == (kBase / "syn/quartus").lexically_normal());
