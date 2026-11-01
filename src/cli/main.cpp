@@ -319,9 +319,11 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
         if (!writeText(dir / "paths.csv", engine::pathsCsv(*result)) ||
-            !writeText(dir / "violations.csv", engine::violationsCsv(*result)))
+            !writeText(dir / "violations.csv", engine::violationsCsv(*result)) ||
+            !writeText(dir / "waivers.csv", engine::waiversCsv(*result)) ||
+            !writeText(dir / "outputs.csv", engine::outputsCsv(*result)))
             return kExitUsage;
-        os << "CSV     : " << outs.csvDir << " (paths.csv, violations.csv)\n";
+        os << "CSV     : " << outs.csvDir << " (paths.csv, violations.csv, waivers.csv, outputs.csv)\n";
     }
 
     if (!outs.suggestSdc.empty()) {
@@ -517,7 +519,8 @@ int main(int argc, char** argv) {
     analyze->add_option("--json", outs.json, "Write the result as JSON to this file");
     analyze->add_option("--dump-ir", outs.ir, "Write a text dump of the extracted Design IR to this file");
     analyze->add_option("--html", outs.html, "Write a self-contained HTML report (with schematics) to this file");
-    analyze->add_option("--csv", outs.csvDir, "Write paths.csv and violations.csv into this directory");
+    analyze->add_option("--csv", outs.csvDir,
+                        "Write paths.csv, violations.csv, waivers.csv and outputs.csv into this directory");
     analyze->add_option("--suggest-sdc", outs.suggestSdc,
                         "Write suggested constraints (missing clocks, clock groups for unknown relations) to this file");
     analyze->add_flag("--blackbox-unknown", outs.blackBoxUnknown,

@@ -6,6 +6,7 @@
 #include "core/PathUtil.h"
 #include "core/Version.h"
 #include "rules/RuleEngine.h"
+#include "rules/Waiver.h"
 #include "schematic/Schematic.h"
 
 #include <algorithm>
@@ -128,6 +129,11 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
         card("needs review", r.pathsWithStatus(AnalysisStatus::NeedsReview));
         card("safe", r.pathsWithStatus(AnalysisStatus::Safe), "ok");
         card("waived rule hits", r.waivedHits());
+        if (!r.cdc->waivers.empty()) {
+            const auto attention = static_cast<std::size_t>(std::ranges::count_if(
+                r.cdc->waivers, [](const auto& w) { return rules::waiverState(w) != "active"; }));
+            card("waivers to review (unused, expiring, expired)", attention, attention > 0 ? "fail" : "");
+        }
         card("synchronizer structures", r.cdc->structures.size());
     }
     card("errors (HDL/constraints)", r.count(Severity::Error) + r.count(Severity::Fatal),
@@ -399,9 +405,19 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
             o << "<p>No waivers.</p>\n";
         }
         else {
-            o << "<table><tr><th>Id</th><th>Rule</th><th>Selectors</th><th>Reason</th><th>Author</th><th>Expires</th>"
-                 "<th>Hits covered</th><th>Defined at</th></tr>\n";
+            std::map<std::string, std::size_t, std::less<>> states;
+            for (const auto& w : c.waivers)
+                ++states[std::string(rules::waiverState(w))];
+            o << "<p>" << c.waivers.size() << " waiver(s): " << states["active"] << " active, " << states["expiring"]
+              << " expiring, <span class=\"" << (states["unused"] > 0 ? "fail" : "") << "\">" << states["unused"]
+              << " unused</span>, <span class=\"" << (states["expired"] > 0 ? "fail" : "") << "\">"
+              << states["expired"]
+              << " expired</span>. Unused waivers match nothing (stale or too narrow); expired ones are not "
+                 "applied.</p>\n";
+            o << "<table><tr><th>Id</th><th>State</th><th>Rule</th><th>Selectors</th><th>Reason</th><th>Author</th>"
+                 "<th>Expires</th><th>Hits covered</th><th>Defined at</th></tr>\n";
             for (const auto& w : c.waivers) {
+                const std::string_view state = rules::waiverState(w);
                 std::string sel;
                 if (!w.fingerprint.empty())
                     sel += "fingerprint=" + esc(w.fingerprint) + "<br>";
@@ -409,7 +425,8 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
                     sel += "source=" + esc(w.source) + "<br>";
                 if (!w.destination.empty())
                     sel += "destination=" + esc(w.destination);
-                o << "<tr><td>" << esc(w.id) << "</td><td>" << esc(w.rule) << "</td><td class=\"mono\">" << sel
+                o << "<tr><td>" << esc(w.id) << "</td><td" << (state == "active" ? "" : " class=\"fail\"") << ">"
+                  << state << "</td><td>" << esc(w.rule) << "</td><td class=\"mono\">" << sel
                   << "</td><td>" << esc(w.reason) << "</td><td>" << esc(w.author) << "</td><td>" << esc(w.expires)
                   << (w.expired ? " <b class=\"fail\">expired</b>" : "")
                   << (w.expiresInDays >= 0
@@ -567,6 +584,62 @@ std::string violationsCsv(const AnalysisResult& r) {
                 .field(p.fingerprint);
             csv.endRow();
         }
+    return csv.str();
+}
+
+std::string waiversCsv(const AnalysisResult& r) {
+    Csv csv;
+    for (const char* h : {"id", "state", "uses", "rule", "fingerprint", "source", "destination", "reason", "author",
+                          "expires", "expires_in_days", "file", "line"})
+        csv.field(h);
+    csv.endRow();
+    if (!r.cdc)
+        return csv.str();
+    for (const auto& w : r.cdc->waivers) {
+        csv.field(w.id)
+            .field(std::string(rules::waiverState(w)))
+            .field(w.uses)
+            .field(w.rule)
+            .field(w.fingerprint)
+            .field(w.source)
+            .field(w.destination)
+            .field(w.reason)
+            .field(w.author)
+            .field(w.expires)
+            .field(w.expiresInDays >= 0 ? std::to_string(w.expiresInDays) : std::string())
+            .field(w.loc.file)
+            .field(std::size_t{w.loc.line});
+        csv.endRow();
+    }
+    return csv.str();
+}
+
+std::string outputsCsv(const AnalysisResult& r) {
+    Csv csv;
+    for (const char* h : {"ports", "drivers", "driver_clock", "output_delay_clock", "relation", "waiver", "fingerprint",
+                          "constraint_file", "constraint_line"})
+        csv.field(h);
+    csv.endRow();
+    if (!r.cdc)
+        return csv.str();
+    auto joined = [](const std::vector<std::string>& v) {
+        std::string t;
+        for (const auto& s : v)
+            t += (t.empty() ? "" : ";") + s;
+        return t;
+    };
+    for (const auto& o : r.cdc->outputs) {
+        csv.field(joined(o.ports))
+            .field(joined(o.sources))
+            .field(o.srcClock)
+            .field(o.outClock)
+            .field(clock::toString(o.relation))
+            .field(o.waiver)
+            .field(o.fingerprint)
+            .field(o.loc.file)
+            .field(std::size_t{o.loc.line});
+        csv.endRow();
+    }
     return csv.str();
 }
 

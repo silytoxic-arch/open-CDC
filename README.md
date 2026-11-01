@@ -55,7 +55,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | `opencdc analyze --schematic-dir <dir>`: one SVG schematic per path (no Qt needed) | ✅ |
 | Waivers: by rule, path fingerprint, source/destination glob; reason required, optional expiry; waived hits stay visible everywhere ([docs/waivers.md](docs/waivers.md)) | ✅ |
 | Crossings summarized by clock pair (paths, synchronized, violations, risk, review) in the CLI, the GUI run report, the HTML report and the JSON result (`clockPairs`) | ✅ |
-| Reports: self-contained HTML (summary, stages, clocks, rules, every path with its schematic, structures, waivers, diagnostics, unanalyzed constructs), CSV (paths, rule hits), JSON (streamed) — from the CLI and the GUI | ✅ |
+| Reports: self-contained HTML (summary, stages, clocks, rules, every path with its schematic, structures, waivers with their state (active, expiring, unused, expired), diagnostics, unanalyzed constructs), CSV (paths, rule hits, waivers with their state, output crossings), JSON (streamed) — from the CLI and the GUI | ✅ |
 | Scale: 10⁶ registers analyzed in ~19 s / 2.6 GB on 2 vCPUs; GUI tables are model/view ([docs/benchmarks.md](docs/benchmarks.md)) | ✅ |
 | Install rules and packages: Windows ZIP + NSIS installer with the Qt and MSVC runtimes bundled, Linux TGZ/DEB; built and tested by CI on Windows (MSVC `/W4 /WX`) and Linux (GCC, Clang, sanitizers) | ✅ |
 

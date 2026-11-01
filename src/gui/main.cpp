@@ -229,7 +229,9 @@ bool checkSchematicAndHierarchy(MainWindow& window, const opencdc::engine::Analy
         if (!window.exportSuggestedSdc(sdc) || QFileInfo(sdc).size() < 100)
             return (fail("suggested constraints export failed"), false);
         if (!window.exportHtmlReport(html) || QFileInfo(html).size() < 2000 || !window.exportCsv(dir.path()) ||
-            !QFileInfo::exists(dir.filePath(QStringLiteral("violations.csv"))))
+            !QFileInfo::exists(dir.filePath(QStringLiteral("violations.csv"))) ||
+            !QFileInfo::exists(dir.filePath(QStringLiteral("waivers.csv"))) ||
+            !QFileInfo::exists(dir.filePath(QStringLiteral("outputs.csv"))))
             return (fail("report export failed"), false);
     }
     auto* top = window.hierarchyTree()->topLevelItem(0);

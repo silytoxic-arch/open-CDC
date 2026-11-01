@@ -81,7 +81,7 @@ opencdc_cli_test(analyze_schematics 3 "Schematics: 16 SVG file\\(s\\)"
     --schematic-dir ${CMAKE_CURRENT_BINARY_DIR}/schematics)
 opencdc_cli_test(analyze_waived 3 "Waiver application \\([0-9.]+ s\\) - 2 waiver\\(s\\).*3 rule hit\\(s\\) waived.*waived by W-CFG"
     analyze ${PROJECT_SOURCE_DIR}/examples/cdc_advanced/cdc_advanced_waived.ocdc.json)
-opencdc_cli_test(analyze_reports 3 "HTML    : .*report.html.*CSV     : .*paths.csv, violations.csv"
+opencdc_cli_test(analyze_reports 3 "HTML    : .*report.html.*CSV     : .*paths.csv, violations.csv, waivers.csv, outputs.csv"
     analyze ${PROJECT_SOURCE_DIR}/examples/cdc_advanced/cdc_advanced_waived.ocdc.json -q
     --html ${CMAKE_CURRENT_BINARY_DIR}/report/report.html --csv ${CMAKE_CURRENT_BINARY_DIR}/report)
 opencdc_cli_test(no_subcommand 2 "")

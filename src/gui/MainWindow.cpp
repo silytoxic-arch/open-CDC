@@ -205,7 +205,7 @@ void MainWindow::createActions() {
             QMessageBox::warning(this, tr("Export"), tr("Could not write %1").arg(file));
     });
     exportCsvAction_ = fileMenu->addAction(tr("Export &CSV..."), this, [this] {
-        const QString dir = QFileDialog::getExistingDirectory(this, tr("Directory for paths.csv and violations.csv"));
+        const QString dir = QFileDialog::getExistingDirectory(this, tr("Directory for paths.csv, violations.csv, waivers.csv and outputs.csv"));
         if (!dir.isEmpty() && !exportCsv(dir))
             QMessageBox::warning(this, tr("Export"), tr("Could not write CSV files into %1").arg(dir));
     });
@@ -385,7 +385,9 @@ bool MainWindow::exportCsv(const QString& dir) const {
     if (!lastResult_)
         return false;
     for (const auto& [name, text] : {std::pair{QStringLiteral("paths.csv"), engine::pathsCsv(*lastResult_)},
-                                      std::pair{QStringLiteral("violations.csv"), engine::violationsCsv(*lastResult_)}}) {
+                                      std::pair{QStringLiteral("violations.csv"), engine::violationsCsv(*lastResult_)},
+                                      std::pair{QStringLiteral("waivers.csv"), engine::waiversCsv(*lastResult_)},
+                                      std::pair{QStringLiteral("outputs.csv"), engine::outputsCsv(*lastResult_)}}) {
         QFile out(QDir(dir).filePath(name));
         if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
             out.write(text.data(), static_cast<qint64>(text.size())) != static_cast<qint64>(text.size()))

@@ -163,3 +163,71 @@ TEST_CASE("CSV reports: one row per path / hit, RFC 4180 quoting", "[report]") {
     CHECK(waived == r->waivedHits());
     CHECK(quotedMessage);
 }
+
+TEST_CASE("CSV and HTML: waivers with their state, output crossings", "[report][waiver]") {
+    auto r = run("cdc_advanced_waived.ocdc.json");
+    REQUIRE(r->cdc);
+    const auto w = parseCsv(waiversCsv(*r));
+    REQUIRE(w.size() == r->cdc->waivers.size() + 1);
+    const auto& header = w.front();
+    const auto col = [&](std::string_view name) {
+        return static_cast<std::size_t>(std::ranges::find(header, name) - header.begin());
+    };
+    REQUIRE(col("state") < header.size());
+    for (std::size_t i = 1; i < w.size(); ++i) {
+        const auto& rec = r->cdc->waivers[i - 1];
+        CHECK(w[i].size() == header.size());
+        CHECK(w[i][col("id")] == rec.id);
+        CHECK(w[i][col("state")] == "active");
+        CHECK(w[i][col("uses")] == std::to_string(rec.uses));
+        CHECK(w[i][col("line")] == std::to_string(rec.loc.line));
+    }
+    const std::string html = toHtmlReport(*r);
+    CHECK(html.find("2 waiver(s): 2 active, 0 expiring") != std::string::npos);
+    CHECK(html.find("waivers to review (unused, expiring, expired)") != std::string::npos);
+
+    // a project without output delays has an output CSV with the header only
+    CHECK(parseCsv(outputsCsv(*r)).size() == 1);
+    auto cfg = loadProjectFile(test::examplesDir() / "output_ports" / "output_ports.ocdc.json");
+    REQUIRE(cfg);
+    NullProgressSink progress;
+    CancellationToken cancel;
+    auto o = AnalysisSession().run(cfg.value(), progress, cancel);
+    REQUIRE(o->cdc);
+    const auto out = parseCsv(outputsCsv(*o));
+    REQUIRE(out.size() == 3); // header, sys_flag, dbg_led
+    const auto ocol = [&](std::string_view name) {
+        return static_cast<std::size_t>(std::ranges::find(out.front(), name) - out.front().begin());
+    };
+    std::size_t waived = 0;
+    for (std::size_t i = 1; i < out.size(); ++i) {
+        CHECK(out[i][ocol("driver_clock")] == "clk_sys");
+        CHECK(out[i][ocol("output_delay_clock")] == "clk_io");
+        waived += out[i][ocol("waiver")] == "W-LED" ? 1U : 0U;
+        CHECK(out[i][ocol("fingerprint")].size() == 16);
+    }
+    CHECK(waived == 1);
+}
+
+TEST_CASE("HTML marks unused and expired waivers", "[report][waiver]") {
+    test::TempDir dir;
+    auto cfg = loadProjectFile(test::examplesDir() / "cdc_advanced" / "cdc_advanced.ocdc.json");
+    REQUIRE(cfg);
+    cfg.value().waivers = {dir.write("w.json", "{\"format\": \"opencdc-waivers\", \"version\": 1, \"waivers\": ["
+                                               "{\"id\": \"W-STALE\", \"source\": \"cdc_advanced.nosuch\", \"reason\": \"r\"},"
+                                               "{\"id\": \"W-OLD\", \"rule\": \"CDC-007\", \"reason\": \"r\", "
+                                               "\"expires\": \"2020-01-01\"}]}")};
+    NullProgressSink progress;
+    CancellationToken cancel;
+    auto r = AnalysisSession().run(cfg.value(), progress, cancel);
+    REQUIRE(r->cdc);
+    const std::string html = toHtmlReport(*r);
+    CHECK(html.find("2 waiver(s): 0 active, 0 expiring, <span class=\"fail\">1 unused</span>, <span "
+                    "class=\"fail\">1 expired</span>") != std::string::npos);
+    CHECK(html.find("<td class=\"fail\">unused</td>") != std::string::npos);
+    CHECK(html.find("<td class=\"fail\">expired</td>") != std::string::npos);
+    const auto w = parseCsv(waiversCsv(*r));
+    REQUIRE(w.size() == 3);
+    CHECK(w[1][1] == "unused");
+    CHECK(w[2][1] == "expired");
+}

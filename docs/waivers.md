@@ -95,10 +95,10 @@ opencdc waivers my.ocdc.json --fail-on expiring --json waivers.json
 - **CLI**: each waived hit shows "waived by <id>". The summary counts waived hits separately.
 - **JSON**:
   - `ruleHits[].waiver` and `paths[].waived` on each path;
-  - `cdc.waivers[]`, with `uses` and `expired` for each waiver;
+  - `cdc.waivers[]`, with `uses`, `expired`, `expiresInDays` and `state` for each waiver;
   - `summary.waivedHits`.
-- **HTML report**: a "Waivers" section, plus "Waived by …" with the reason on each hit.
-- **CSV**: a `waived` column in `paths.csv`, and a `waiver` column in `violations.csv`.
+- **HTML report**: a "Waivers" section that counts the waivers per state and marks unused, expiring and expired ones (the summary has a "waivers to review" card), plus "Waived by …" with the reason on each hit.
+- **CSV**: a `waived` column in `paths.csv`, a `waiver` column in `violations.csv` and `outputs.csv`, and `waivers.csv` with every waiver, its state (active, expiring, unused, expired), uses and location.
 - **GUI**: the violation table has a Waiver column and a "Waived / Not waived" filter. The rule pane shows the waiver's reason, author and expiry date. Output crossings (`CDC-OUTPUT-CLOCK`) are in the Output Ports view, with the same filter and the waiver in the details pane. The Waivers view lists every waiver with its state and use count.
 
 Prefer fingerprint or exact source/destination selectors over broad globs. With narrow selectors, a design change that creates a new crossing is not waived silently. `WAIVER-UNUSED` tells you when a waiver no longer matches anything.

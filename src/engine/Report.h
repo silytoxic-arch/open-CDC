@@ -28,5 +28,10 @@ struct HtmlReportOptions {
 [[nodiscard]] std::string pathsCsv(const AnalysisResult& result);
 /// CSV of all rule hits (one row per hit, waived ones included with their waiver).
 [[nodiscard]] std::string violationsCsv(const AnalysisResult& result);
+/// CSV of the project's waivers: state (active / expiring / unused /
+/// expired), uses, selectors, reason, author, expiry, where defined.
+[[nodiscard]] std::string waiversCsv(const AnalysisResult& result);
+/// CSV of the output crossings (CDC-OUTPUT-CLOCK), waived ones included with their waiver.
+[[nodiscard]] std::string outputsCsv(const AnalysisResult& result);
 
 } // namespace opencdc::engine
