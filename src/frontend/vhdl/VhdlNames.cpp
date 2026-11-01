@@ -28,6 +28,16 @@ bool isRangeChoice(const Expr& e) {
 
 } // namespace
 
+bool Elaborator::isSliceRange(const Expr& e, Ctx& ctx) {
+    if (isRangeChoice(e))
+        return true;
+    if (e.kind != ExprKind::Simple && e.kind != ExprKind::Selected)
+        return false;
+    const auto syms = resolveName(e, ctx, true);
+    return !syms.empty() && syms.front()->kind == SymKind::Type && syms.front()->type &&
+           syms.front()->type->isDiscrete();
+}
+
 std::optional<Value> Elaborator::constValue(const Expr& e, Ctx& ctx, const Type* expected) {
     SVal v = eval(e, ctx, expected);
     if (!v.known())
@@ -1066,7 +1076,7 @@ SVal Elaborator::evalCall(const Expr& e, Ctx& ctx, const Type* expected) {
         error("VHDL-INDEX", "'" + arr.type->name + "' is not an array and cannot be indexed", e.loc);
         return SVal{};
     }
-    if (e.args.size() == 1 && isRangeChoice(*e.args[0].actual)) {
+    if (e.args.size() == 1 && isSliceRange(*e.args[0].actual, ctx)) {
         const Expr& re = *e.args[0].actual;
         if (re.kind == ExprKind::Range && !arr.known() &&
             (!constInt(*re.lhs, ctx) || !constInt(*re.rhs, ctx)))
@@ -1386,7 +1396,7 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
             // part of a dynamically indexed element (mem(i)(7 downto 0)): static offsets inside the element
             std::uint32_t& off = t.dynamic ? t.subOffset : t.offset;
             const auto ew = bitWidth(*T->element).value_or(0);
-            if (e.args.size() == 1 && isRangeChoice(*e.args[0].actual)) {
+            if (e.args.size() == 1 && isSliceRange(*e.args[0].actual, ctx)) {
                 const Expr& re = *e.args[0].actual;
                 // a variable offset with a fixed width (v((i+1)*8-1 downto i*8) <= x): one
                 // dynamic element target per element, left to right
@@ -1459,6 +1469,11 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
             std::vector<SVal> idx;
             for (std::size_t k = 0; k < e.args.size(); ++k)
                 idx.push_back(convert(eval(*e.args[k].actual, ctx, T->indexTypes[k]), T->indexTypes[k], ctx, e.loc));
+            // an index that could not be evaluated (already reported) has no type
+            if (std::ranges::any_of(idx, [](const SVal& v) { return !v.valid() || !v.type; })) {
+                error("VHDL-INDEX", "the index of this assignment target cannot be evaluated", e.loc);
+                return false;
+            }
             if (std::ranges::all_of(idx, [](const SVal& v) { return v.known(); })) {
                 std::uint64_t flat = 0;
                 for (std::size_t d = 0; d < idx.size(); ++d) {

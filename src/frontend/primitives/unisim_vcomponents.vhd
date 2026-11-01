@@ -50,6 +50,10 @@ package vcomponents is
     port (Q : out std_ulogic; D : in std_ulogic; G : in std_ulogic; GE : in std_ulogic; PRE : in std_ulogic);
   end component;
   component BUFG port (O : out std_ulogic; I : in std_ulogic); end component;
+  component BUFG_GT generic (SIM_DEVICE : string := "ULTRASCALE");
+    port (O : out std_ulogic; CE : in std_ulogic; CEMASK : in std_ulogic; CLR : in std_ulogic; CLRMASK : in std_ulogic;
+          DIV : in std_logic_vector(2 downto 0); I : in std_ulogic);
+  end component;
   component BUFGCE generic (CE_TYPE : string := "SYNC"; IS_CE_INVERTED : bit := '0'; IS_I_INVERTED : bit := '0';
                             SIM_DEVICE : string := "ULTRASCALE");
     port (O : out std_ulogic; CE : in std_ulogic; I : in std_ulogic);
@@ -93,6 +97,9 @@ package vcomponents is
   component OBUFT generic (DRIVE : integer := 12; IOSTANDARD : string := "DEFAULT"; SLEW : string := "SLOW");
     port (O : out std_ulogic; I : in std_ulogic; T : in std_ulogic);
   end component;
+  component IOBUF generic (DRIVE : integer := 12; IOSTANDARD : string := "DEFAULT"; SLEW : string := "SLOW");
+    port (O : out std_ulogic; IO : inout std_ulogic; I : in std_ulogic; T : in std_ulogic);
+  end component;
   component OBUFDS generic (IOSTANDARD : string := "DEFAULT"; SLEW : string := "SLOW");
     port (O : out std_ulogic; OB : out std_ulogic; I : in std_ulogic);
   end component;
@@ -123,6 +130,10 @@ package vcomponents is
   component LUT6 generic (INIT : bit_vector(63 downto 0) := x"0000000000000000");
     port (O : out std_ulogic; I0 : in std_ulogic; I1 : in std_ulogic; I2 : in std_ulogic; I3 : in std_ulogic;
           I4 : in std_ulogic; I5 : in std_ulogic);
+  end component;
+  component LUT6_2 generic (INIT : bit_vector(63 downto 0) := x"0000000000000000");
+    port (O5 : out std_ulogic; O6 : out std_ulogic; I0 : in std_ulogic; I1 : in std_ulogic; I2 : in std_ulogic;
+          I3 : in std_ulogic; I4 : in std_ulogic; I5 : in std_ulogic);
   end component;
   component MUXF7 port (O : out std_ulogic; I0 : in std_ulogic; I1 : in std_ulogic; S : in std_ulogic);
   end component;
@@ -227,6 +238,9 @@ package vcomponents is
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component GTYE4_COMMON port (GTREFCLK00 : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
+  component IBUFDS_GTE2 port (O : out std_ulogic; ODIV2 : out std_ulogic; CEB : in std_ulogic; I : in std_ulogic;
+                               IB : in std_ulogic);
+  end component;
   component IBUFDS_GTE3 port (I : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component IBUFDS_GTE4 port (I : in std_ulogic); end component;

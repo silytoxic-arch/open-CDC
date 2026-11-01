@@ -155,6 +155,16 @@ private:
             std::erase(v, '"');
             c.name = c.name.substr(0, c.name.size() - net.name.size()) + v;
         }
+        // a period an IP configuration gives its clock output (a transceiver's TXOUTCLK)
+        if (const auto* per = net.findAttr("OPENCDC_CLOCK_PERIOD")) {
+            try {
+                const double ns = std::stod(per->value);
+                if (ns > 0 && std::isfinite(ns))
+                    c.periodNs = ns;
+            }
+            catch (const std::exception&) {
+            }
+        }
         const ClockId id = addClock(std::move(c));
         blackBox_.emplace(b, id);
         return id;

@@ -470,6 +470,10 @@ public:
     std::optional<Value> constValue(const Expr& e, Ctx& ctx, const Type* expected);
     std::optional<std::int64_t> constInt(const Expr& e, Ctx& ctx, const Type* expected = nullptr);
     std::optional<IntRange> discreteRange(const Expr& e, Ctx& ctx, const Type** indexType = nullptr);
+    /// An index argument that is a discrete range: `a to b`, `x'range`, a
+    /// subtype indication, or the name of a discrete subtype
+    /// (`d(FIELD_C)` with `subtype FIELD_C is natural range 7 downto 4`).
+    bool isSliceRange(const Expr& e, Ctx& ctx);
     bool targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, const Type** type = nullptr);
     SVal convert(const SVal& v, const Type* to, Ctx& ctx, Loc l, bool implicit = true);
     ir::SigSpec bitsOf(const SVal& v, Loc l);

@@ -2385,6 +2385,315 @@ Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const 
     return r;
 }
 
+/// UltraScale / UltraScale+ transceiver wizard (gtwizard_ultrascale): the
+/// clock domains of its ports. The user clocks are clocks of their own (a
+/// transceiver clock is not related to the fabric clocks by any constraint
+/// the IP gives): the source clock (TXOUTCLK/RXOUTCLK) with the configured
+/// frequency, USRCLK and USRCLK2 derived from it. User data, gearbox, 8b/10b
+/// and the reset-done / active outputs are in the USRCLK2 domain of their
+/// direction; the DRP in drpclk; the reset controller's outputs in the
+/// free-running clock; PMA / programmable-divider reset-done and power-good
+/// outputs are asynchronous; reset and analog-control inputs are synchronized
+/// (or static) inside the IP.
+Result<XciModel> gtWizard(const XciInfo& info) {
+    const auto& m = info.model;
+    const auto unsupportedGt = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
+                               info.version + "): " + why,
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    };
+    const unsigned n = static_cast<unsigned>(std::max(1LL, num(m, "C_TOTAL_NUM_CHANNELS", 1)));
+    const long long gtType = num(m, "C_GT_TYPE", 0); // 0 GTHE3, 1 GTYE3, 2 GTHE4, 3 GTYE4
+    const std::string serial = gtType == 1 || gtType == 3 ? "gty" : "gth";
+    auto mhz = [&](const std::string& key) {
+        try {
+            return std::stod(text(m, key, "0"));
+        }
+        catch (...) {
+            return 0.0;
+        }
+    };
+    // port widths per channel (PG182; the unisim GT*E3/E4_CHANNEL widths)
+    const std::map<std::string, unsigned> perChannel = {
+        {"loopback_in", 3},          {"txdiffctrl_in", gtType == 0 ? 4U : 5U},
+        {"txprecursor_in", 5},       {"txpostcursor_in", 5},
+        {"txheader_in", 6},          {"txsequence_in", 7},
+        {"rxheader_out", 6},         {"rxheadervalid_out", 2},
+        {"rxdatavalid_out", 2},      {"rxstartofseq_out", 2},
+        {"txctrl0_in", 16},          {"txctrl1_in", 16},
+        {"txctrl2_in", 8},           {"rxctrl0_out", 16},
+        {"rxctrl1_out", 16},         {"rxctrl2_out", 8},
+        {"rxctrl3_out", 8},          {"rxbufstatus_out", 3},
+        {"txbufstatus_out", 2},      {"rxclkcorcnt_out", 2},
+        {"drpaddr_in", gtType == 0 ? 9U : 10U},
+        {"drpdi_in", 16},            {"drpdo_out", 16},
+        {"cpllrefclksel_in", 3}};
+    // channel-level 1-bit ports and wizard-level ports (width 1)
+    const std::set<std::string> wizardLevel = {
+        "gtwiz_userclk_tx_reset_in",   "gtwiz_userclk_tx_srcclk_out", "gtwiz_userclk_tx_usrclk_out",
+        "gtwiz_userclk_tx_usrclk2_out", "gtwiz_userclk_tx_active_out", "gtwiz_userclk_tx_active_in",
+        "gtwiz_userclk_rx_reset_in",   "gtwiz_userclk_rx_srcclk_out", "gtwiz_userclk_rx_usrclk_out",
+        "gtwiz_userclk_rx_usrclk2_out", "gtwiz_userclk_rx_active_out", "gtwiz_userclk_rx_active_in",
+        "gtwiz_reset_clk_freerun_in",  "gtwiz_reset_all_in",          "gtwiz_reset_tx_pll_and_datapath_in",
+        "gtwiz_reset_tx_datapath_in",  "gtwiz_reset_rx_pll_and_datapath_in", "gtwiz_reset_rx_datapath_in",
+        "gtwiz_reset_qpll0lock_in",    "gtwiz_reset_qpll1lock_in",    "gtwiz_reset_cplllock_in",
+        "gtwiz_reset_rx_cdr_stable_out", "gtwiz_reset_tx_done_out",   "gtwiz_reset_rx_done_out",
+        "gtwiz_reset_qpll0reset_out",  "gtwiz_reset_qpll1reset_out",
+        // buffer bypass controller helper block (PG182)
+        "gtwiz_buffbypass_tx_reset_in", "gtwiz_buffbypass_tx_start_user_in", "gtwiz_buffbypass_tx_done_out",
+        "gtwiz_buffbypass_tx_error_out", "gtwiz_buffbypass_rx_reset_in", "gtwiz_buffbypass_rx_start_user_in",
+        "gtwiz_buffbypass_rx_done_out", "gtwiz_buffbypass_rx_error_out"};
+    const std::set<std::string> oneBitPerChannel = {
+        "drpclk_in",        "drpen_in",          "drpwe_in",           "drprdy_out",          "qpll0clk_in",
+        "qpll0refclk_in",   "qpll1clk_in",       "qpll1refclk_in",     "gtrefclk0_in",        "gtrefclk1_in",
+        "rxgearboxslip_in", "rxpolarity_in",     "txpolarity_in",      "rx8b10ben_in",        "tx8b10ben_in",
+        "rxcommadeten_in",  "rxmcommaalignen_in", "rxpcommaalignen_in", "rxbufreset_in",       "rxbyteisaligned_out",
+        "rxbyterealign_out", "rxcommadet_out",   "rxpmaresetdone_out", "txpmaresetdone_out",  "rxprgdivresetdone_out",
+        "txprgdivresetdone_out", "gtpowergood_out", "rxcdrlock_out",   "rxresetdone_out",     "txresetdone_out",
+        "rxusrclk_in",      "rxusrclk2_in",      "txusrclk_in",        "txusrclk2_in",        "rxoutclk_out",
+        "txoutclk_out",     "cplllock_out",      "rxsyncdone_out",     "rxphaligndone_out",   "rxdlysresetdone_out",
+        "txpmareset_in",    "txpcsreset_in",     "rxpmareset_in",      "rxpcsreset_in",       "rxcdrreset_in",
+        "gtgrefclk_in",     "cplllocken_in",     "cplllockdetclk_in",  "cpllpd_in",           "cpllreset_in",
+        "cpllfbclklost_out", "cpllrefclklost_out", "txinhibit_in",     "rxslide_in",          serial + "rxn_in",    serial + "rxp_in",     serial + "txn_out",
+        serial + "txp_out"};
+
+    // the ports: the JSON boundary, otherwise the enabled ports of the configuration
+    struct P {
+        std::string name;
+        bool out;
+        unsigned width;
+    };
+    std::vector<P> ports;
+    std::vector<std::string> unknown;
+    if (!info.ports.empty()) {
+        for (const auto& b : info.ports)
+            ports.push_back({b.name, b.output,
+                             b.range ? static_cast<unsigned>(std::llabs(b.range->first - b.range->second) + 1) : 1U});
+    }
+    else {
+        std::vector<std::string> names;
+        for (const auto& [key, value] : info.user)
+            if (key.starts_with("INTERNAL_PORT_ENABLED_") && num(info.user, key, 0) > 0) // -1: disabled
+                names.push_back(lower(key.substr(std::string_view("INTERNAL_PORT_ENABLED_").size())));
+        std::stringstream opt(text(info.user, "ENABLE_OPTIONAL_PORTS", ""));
+        for (std::string w; opt >> w;)
+            if (std::ranges::find(names, lower(w)) == names.end())
+                names.push_back(lower(w));
+        if (names.empty())
+            return unsupportedGt("the configuration names no ports (INTERNAL_PORT_ENABLED_*, ENABLE_OPTIONAL_PORTS)");
+        for (const auto& name : names) {
+            const bool out = name.ends_with("_out");
+            if (const auto it = perChannel.find(name); it != perChannel.end())
+                ports.push_back({name, out, it->second * n});
+            else if (name == "gtwiz_userdata_tx_in")
+                ports.push_back({name, false, static_cast<unsigned>(std::max(1LL, num(m, "C_TX_USER_DATA_WIDTH", 32))) * n});
+            else if (name == "gtwiz_userdata_rx_out")
+                ports.push_back({name, true, static_cast<unsigned>(std::max(1LL, num(m, "C_RX_USER_DATA_WIDTH", 32))) * n});
+            else if (wizardLevel.contains(name))
+                ports.push_back({name, out, 1});
+            else if (oneBitPerChannel.contains(name))
+                ports.push_back({name, out, n});
+            else
+                unknown.push_back(name);
+        }
+    }
+    if (!unknown.empty()) {
+        std::string list;
+        for (const auto& u : unknown)
+            list += (list.empty() ? "" : ", ") + u;
+        return unsupportedGt("ports whose width or clock domain is not modelled: " + list);
+    }
+    auto has = [&](const std::string& name) { return std::ranges::any_of(ports, [&](const P& p) { return p.name == name; }); };
+
+    // clock domain of every port
+    enum class D { TxUser, RxUser, Drp, Freerun, Async, Ignored, Clock };
+    auto domainOf = [&](const std::string& p) -> std::optional<D> {
+        static const std::set<std::string> tx = {"gtwiz_userdata_tx_in", "txheader_in", "txsequence_in", "txctrl0_in",
+                                                 "txctrl1_in", "txctrl2_in", "tx8b10ben_in", "txpolarity_in",
+                                                 "gtwiz_reset_tx_done_out", "gtwiz_userclk_tx_active_out",
+                                                 "gtwiz_userclk_tx_active_in", "txbufstatus_out", "txresetdone_out",
+                                                 "gtwiz_buffbypass_tx_start_user_in", "gtwiz_buffbypass_tx_done_out",
+                                                 "gtwiz_buffbypass_tx_error_out"};
+        static const std::set<std::string> rx = {
+            "gtwiz_userdata_rx_out", "rxheader_out",       "rxheadervalid_out",  "rxdatavalid_out",
+            "rxstartofseq_out",      "rxctrl0_out",        "rxctrl1_out",        "rxctrl2_out",
+            "rxctrl3_out",           "rxbyteisaligned_out", "rxbyterealign_out", "rxcommadet_out",
+            "rxbufstatus_out",       "rxclkcorcnt_out",    "gtwiz_reset_rx_done_out", "gtwiz_userclk_rx_active_out",
+            "gtwiz_userclk_rx_active_in", "rxgearboxslip_in", "rxpolarity_in",   "rx8b10ben_in",
+            "rxcommadeten_in",       "rxmcommaalignen_in", "rxpcommaalignen_in", "rxresetdone_out",
+            "rxslide_in",            "gtwiz_buffbypass_rx_start_user_in", "gtwiz_buffbypass_rx_done_out",
+            "gtwiz_buffbypass_rx_error_out"};
+        static const std::set<std::string> asyncOut = {"rxpmaresetdone_out", "txpmaresetdone_out",
+                                                       "rxprgdivresetdone_out", "txprgdivresetdone_out",
+                                                       "gtpowergood_out", "rxcdrlock_out", "cplllock_out",
+                                                       // UG576/UG578: asynchronous status of the channel
+                                                       "rxsyncdone_out", "rxphaligndone_out", "rxdlysresetdone_out",
+                                                       "cpllfbclklost_out", "cpllrefclklost_out"};
+        static const std::set<std::string> freerun = {"gtwiz_reset_rx_cdr_stable_out", "gtwiz_reset_qpll0reset_out",
+                                                      "gtwiz_reset_qpll1reset_out"};
+        static const std::set<std::string> clocks = {
+            "gtwiz_userclk_tx_srcclk_out", "gtwiz_userclk_tx_usrclk_out", "gtwiz_userclk_tx_usrclk2_out",
+            "gtwiz_userclk_rx_srcclk_out", "gtwiz_userclk_rx_usrclk_out", "gtwiz_userclk_rx_usrclk2_out",
+            "txoutclk_out", "rxoutclk_out", "txusrclk_in", "txusrclk2_in", "rxusrclk_in", "rxusrclk2_in",
+            "drpclk_in", "gtwiz_reset_clk_freerun_in"};
+        if (tx.contains(p))
+            return D::TxUser;
+        if (rx.contains(p))
+            return D::RxUser;
+        if (p.starts_with("drp") && p != "drpclk_in")
+            return D::Drp;
+        if (freerun.contains(p))
+            return D::Freerun;
+        if (asyncOut.contains(p))
+            return D::Async;
+        if (clocks.contains(p))
+            return D::Clock;
+        // synchronized inside the IP, static analog controls, reference clocks, serial pins
+        if (p.starts_with("gtwiz_reset_") || p.starts_with("gtwiz_userclk_") || p == "loopback_in" ||
+            p == "txdiffctrl_in" || p == "txprecursor_in" || p == "txpostcursor_in" || p == "rxbufreset_in" ||
+            p.starts_with("qpll") || p.starts_with("gtrefclk") || p.starts_with("gthrx") || p.starts_with("gtyrx") ||
+            p.starts_with("gthtx") || p.starts_with("gtytx") ||
+            // asynchronous resets and static controls of the channel and its CPLL (UG576/UG578),
+            // the buffer bypass reset (synchronized in the helper block), the global reference clock
+            p == "txpmareset_in" || p == "txpcsreset_in" || p == "rxpmareset_in" || p == "rxpcsreset_in" ||
+            p == "rxcdrreset_in" || p == "txinhibit_in" || p == "gtgrefclk_in" || p.starts_with("cpll") ||
+            p == "gtwiz_buffbypass_tx_reset_in" || p == "gtwiz_buffbypass_rx_reset_in")
+            return D::Ignored;
+        return std::nullopt;
+    };
+    for (const auto& p : ports)
+        if (!domainOf(p.name))
+            unknown.push_back(p.name);
+    if (!unknown.empty()) {
+        std::string list;
+        for (const auto& u : unknown)
+            list += (list.empty() ? "" : ", ") + u;
+        return unsupportedGt("ports whose clock domain is not modelled: " + list);
+    }
+
+    std::ostringstream v;
+    v << "// Generated by OpenCDC from a Vivado IP configuration (.xci): a CDC model, not a functional model.\n"
+      << "module " << info.instance << " (\n";
+    for (std::size_t i = 0; i < ports.size(); ++i)
+        v << "  " << (ports[i].out ? "output wire " : "input  wire ") << vec(ports[i].width) << " " << ports[i].name
+          << (i + 1 < ports.size() ? ",\n" : "\n");
+    v << ");\n";
+
+    // user clocks of a direction: from the IP's helper (source, usrclk,
+    // usrclk2 out) or from the user (usrclk2 in, the source out)
+    std::string summary;
+    auto userClock = [&](const std::string& dir) -> std::optional<std::string> {
+        const std::string up = dir == "tx" ? "TX" : "RX";
+        const double fUsr = mhz("C_" + up + "_USRCLK_FREQUENCY");
+        const double fUsr2 = mhz("C_" + up + "_USRCLK2_FREQUENCY");
+        const double srcRatio = std::max(1.0, mhz("C_" + up + "_USER_CLOCKING_RATIO_FSRC_FUSRCLK"));
+        const double fSrc = fUsr * srcRatio;
+        const std::string helper = "gtwiz_userclk_" + dir + "_";
+        const std::string srcPin = has(helper + "srcclk_out") ? helper + "srcclk_out"
+                                   : has(dir + "outclk_out")  ? dir + "outclk_out"
+                                                              : "";
+        // the source clock: a transceiver output clock of its own
+        v << "  (* OPENCDC_CLOCK_PIN = \"" << (srcPin.empty() ? dir + "outclk" : srcPin) << "\"";
+        if (fSrc > 0)
+            v << ", OPENCDC_CLOCK_PERIOD = " << fmtReal(1000.0 / fSrc);
+        v << " *) wire oc_" << dir << "_src;\n  opencdc_async_source u_oc_" << dir << "_src (oc_" << dir << "_src);\n";
+        if (!srcPin.empty())
+            v << "  assign " << srcPin << " = {" << n << "{oc_" << dir << "_src}};\n";
+        if (has(dir + "usrclk2_in")) { // user clocking in the example design: the user's clock
+            summary += ", " + dir + " " + fmtReal(fUsr2) + " MHz (user clocking outside the IP)";
+            return dir + "usrclk2_in[0]";
+        }
+        if (fUsr <= 0 || fUsr2 <= 0)
+            return std::nullopt;
+        // through the source clock port (when the IP has it), so that
+        // get_clocks -of_objects on that pin finds the user clocks
+        const std::string srcNet = srcPin.empty() ? "oc_" + dir + "_src" : srcPin + "[0]";
+        auto derived = [&](const std::string& pin, double f) {
+            v << "  (* OPENCDC_CLOCK_PIN = \"" << pin << "\", OPENCDC_CLOCK_RATIO = " << fmtReal(fSrc / f)
+              << " *)\n  reg oc_" << pin << "_q = 1'b0;\n  always @(posedge " << srcNet << ") oc_" << pin
+              << "_q <= ~oc_" << pin << "_q;\n";
+            if (has(pin))
+                v << "  assign " << pin << " = oc_" << pin << "_q;\n";
+        };
+        derived(helper + "usrclk_out", fUsr);
+        derived(helper + "usrclk2_out", fUsr2);
+        summary += ", " + dir + " usrclk2 " + fmtReal(fUsr2) + " MHz";
+        return "oc_" + helper + "usrclk2_out_q";
+    };
+    const bool txUsed = std::ranges::any_of(ports, [&](const P& p) { return domainOf(p.name) == D::TxUser; });
+    const bool rxUsed = std::ranges::any_of(ports, [&](const P& p) { return domainOf(p.name) == D::RxUser; });
+    std::optional<std::string> txClk, rxClk;
+    if (txUsed || has("gtwiz_userclk_tx_usrclk2_out") || has("txoutclk_out")) {
+        txClk = userClock("tx");
+        if (!txClk)
+            return unsupportedGt("the transmitter user clock frequencies (C_TX_USRCLK_FREQUENCY, C_TX_USRCLK2_FREQUENCY) "
+                                 "are not configured");
+    }
+    if (rxUsed || has("gtwiz_userclk_rx_usrclk2_out") || has("rxoutclk_out")) {
+        rxClk = userClock("rx");
+        if (!rxClk)
+            return unsupportedGt("the receiver user clock frequencies (C_RX_USRCLK_FREQUENCY, C_RX_USRCLK2_FREQUENCY) are "
+                                 "not configured");
+    }
+
+    // every domain: one register mixing its inputs; its outputs depend on it
+    auto domain = [&](D d, const std::string& clk, const std::string& tag) {
+        std::string inputs;
+        for (const auto& p : ports)
+            if (!p.out && domainOf(p.name) == d)
+                inputs += (inputs.empty() ? "" : ", ") + p.name;
+        bool outputs = false;
+        for (const auto& p : ports)
+            outputs = outputs || (p.out && domainOf(p.name) == d);
+        if (inputs.empty() && !outputs)
+            return;
+        v << "  reg oc_" << tag << " = 1'b0;\n  always @(posedge " << clk << ") oc_" << tag << " <= "
+          << (inputs.empty() ? std::string("~oc_" + tag) : "^{" + inputs + "}") << ";\n";
+        for (const auto& p : ports)
+            if (p.out && domainOf(p.name) == d)
+                v << "  reg " << vec(p.width) << " oc_" << p.name << "_q = " << p.width << "'b0;\n  always @(posedge "
+                  << clk << ") oc_" << p.name << "_q <= {" << p.width << "{oc_" << tag << "}};\n  assign " << p.name
+                  << " = oc_" << p.name << "_q;\n";
+    };
+    if (txClk)
+        domain(D::TxUser, *txClk, "tx");
+    if (rxClk)
+        domain(D::RxUser, *rxClk, "rx");
+    if (has("drpclk_in"))
+        domain(D::Drp, "drpclk_in[0]", "drp");
+    if (has("gtwiz_reset_clk_freerun_in"))
+        domain(D::Freerun, "gtwiz_reset_clk_freerun_in[0]", "freerun");
+    for (const auto& p : ports) {
+        if (!p.out)
+            continue;
+        const D d = *domainOf(p.name);
+        if (d == D::Async) {
+            v << "  wire oc_" << p.name << "_a;\n  opencdc_async_source u_oc_" << p.name << " (oc_" << p.name
+              << "_a);\n  assign " << p.name << " = {" << p.width << "{oc_" << p.name << "_a}};\n";
+        }
+        else if (d == D::Ignored) {
+            v << "  assign " << p.name << " = " << p.width << "'b0;\n"; // serial pins
+        }
+        else if ((d == D::Drp && !has("drpclk_in")) || (d == D::Freerun && !has("gtwiz_reset_clk_freerun_in"))) {
+            return unsupportedGt("'" + p.name + "' without its clock port");
+        }
+    }
+    v << "endmodule\n";
+
+    XciModel model;
+    model.module = info.instance;
+    model.ip = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    model.summary = std::to_string(n) + " channel(s), " +
+                    (gtType == 0 ? "GTHE3" : gtType == 1 ? "GTYE3" : gtType == 2 ? "GTHE4" : "GTYE4") +
+                    ", line rate " + text(m, "C_TX_LINE_RATE", "?") + " Gb/s" + summary;
+    model.verilog = v.str();
+    model.notes.push_back("transceiver user clocks are clocks of their own (relate them to other clocks with "
+                          "set_clock_groups or create_clock on the reference clock as Vivado does); PMA reset-done "
+                          "and power-good outputs are asynchronous");
+    return model;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -2427,6 +2736,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return wiringIp(info);
     if (info.name == "ila" || info.name == "vio")
         return debugCore(info, info.name == "vio");
+    if (info.name == "gtwizard_ultrascale")
+        return gtWizard(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +

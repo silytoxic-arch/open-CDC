@@ -1169,3 +1169,172 @@ TEST_CASE("XCI: XADC Wizard, DRP interface in dclk_in", "[frontend][xci][xadc]")
     REQUIRE(other->cdc);
     CHECK(other->cdc->stats.unsynchronized >= 1);
 }
+
+namespace {
+
+// Transceivers Wizard (gtwizard_ultrascale) after SURF's Pgp3GthUsIp10G:
+// 10.3125 Gb/s, user clocks 312.5 / 156.25 MHz, ports enabled by the configuration.
+std::vector<std::pair<std::string, std::string>> gtModel(int gtType, int channels, bool frequencies = true) {
+    std::vector<std::pair<std::string, std::string>> m = {
+        {"C_GT_TYPE", std::to_string(gtType)},       {"C_TOTAL_NUM_CHANNELS", std::to_string(channels)},
+        {"C_TX_LINE_RATE", "10.3125"},               {"C_TX_USER_DATA_WIDTH", "64"},
+        {"C_RX_USER_DATA_WIDTH", "64"},              {"C_TX_USER_CLOCKING_RATIO_FSRC_FUSRCLK", "1"},
+        {"C_RX_USER_CLOCKING_RATIO_FSRC_FUSRCLK", "1"}};
+    if (frequencies)
+        for (const char* d : {"TX", "RX"}) {
+            m.emplace_back(std::string("C_") + d + "_USRCLK_FREQUENCY", "312.5000000");
+            m.emplace_back(std::string("C_") + d + "_USRCLK2_FREQUENCY", "156.25");
+        }
+    return m;
+}
+
+std::vector<std::pair<std::string, std::string>> gtUser(const std::vector<std::string>& extra = {}) {
+    std::vector<std::pair<std::string, std::string>> u = {
+        {"ENABLE_OPTIONAL_PORTS", "drpaddr_in drpclk_in drpdi_in drpen_in drpwe_in txdiffctrl_in drpdo_out drprdy_out"}};
+    for (const char* p : {"GTHRXN_IN", "GTHRXP_IN", "GTHTXN_OUT", "GTHTXP_OUT", "GTWIZ_USERCLK_TX_SRCCLK_OUT",
+                          "GTWIZ_USERCLK_TX_USRCLK_OUT", "GTWIZ_USERCLK_TX_USRCLK2_OUT", "GTWIZ_USERCLK_RX_SRCCLK_OUT",
+                          "GTWIZ_USERCLK_RX_USRCLK_OUT", "GTWIZ_USERCLK_RX_USRCLK2_OUT", "GTWIZ_USERDATA_TX_IN",
+                          "GTWIZ_USERDATA_RX_OUT", "TXHEADER_IN", "RXPMARESETDONE_OUT", "GTWIZ_RESET_CLK_FREERUN_IN",
+                          "GTWIZ_RESET_ALL_IN", "GTWIZ_RESET_TX_DONE_OUT", "GTWIZ_RESET_RX_DONE_OUT"})
+        u.emplace_back(std::string("INTERNAL_PORT_ENABLED_") + p, "1");
+    u.emplace_back("INTERNAL_PORT_ENABLED_RXSLIDE_IN", "-1"); // disabled
+    for (const auto& e : extra)
+        u.emplace_back("INTERNAL_PORT_ENABLED_" + e, "1");
+    return u;
+}
+
+} // namespace
+
+TEST_CASE("XCI: Transceivers Wizard ports, widths and user clocks from the configuration", "[frontend][xci][gt]") {
+    auto m = frontend::modelFromXciText(spirit("gt_10g", "gtwizard_ultrascale", "1.7", gtModel(2, 2), gtUser()));
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    // two GTHE4 channels: widths per channel times 2
+    for (const char* p : {"input  wire [127:0] gtwiz_userdata_tx_in", "output wire [127:0] gtwiz_userdata_rx_out",
+                          "input  wire [19:0] drpaddr_in", "input  wire [9:0] txdiffctrl_in",
+                          "input  wire [11:0] txheader_in", "output wire [1:0] gthtxp_out", "input  wire [1:0] drpclk_in",
+                          "output wire [0:0] gtwiz_userclk_rx_usrclk2_out", "output wire [1:0] rxpmaresetdone_out"})
+        CHECK(v.find(p) != std::string::npos);
+    // the source clock (312.5 MHz) and the dividers through the source clock port
+    CHECK(v.find("OPENCDC_CLOCK_PIN = \"gtwiz_userclk_tx_srcclk_out\", OPENCDC_CLOCK_PERIOD = 3.2") != std::string::npos);
+    CHECK(v.find("OPENCDC_CLOCK_PIN = \"gtwiz_userclk_rx_usrclk2_out\", OPENCDC_CLOCK_RATIO = 2.0") != std::string::npos);
+    CHECK(v.find("always @(posedge gtwiz_userclk_rx_srcclk_out[0])") != std::string::npos);
+    // TX data in the TX user clock, DRP in drpclk, PMA reset done asynchronous
+    CHECK(v.find("^{gtwiz_userdata_tx_in, txheader_in}") != std::string::npos);
+    CHECK(v.find("always @(posedge drpclk_in[0]) oc_drp") != std::string::npos);
+    CHECK(v.find("opencdc_async_source u_oc_rxpmaresetdone_out") != std::string::npos);
+    // negative: a disabled port (-1) and ports that are not enabled
+    for (const char* p : {"rxslide_in", "txctrl0_in", "cpllfbclklost_out"})
+        CHECK(v.find(p) == std::string::npos);
+    CHECK(m.value().summary.find("2 channel(s), GTHE4, line rate 10.3125 Gb/s") != std::string::npos);
+    CHECK(m.value().summary.find("rx usrclk2 156.25 MHz") != std::string::npos);
+
+    // GTHE3: 9-bit DRP address and 4-bit TX swing control per channel
+    auto e3 = frontend::modelFromXciText(spirit("gt_e3", "gtwizard_ultrascale", "1.7", gtModel(0, 2), gtUser()));
+    REQUIRE(e3);
+    CHECK(e3.value().verilog.find("input  wire [17:0] drpaddr_in") != std::string::npos);
+    CHECK(e3.value().verilog.find("input  wire [7:0] txdiffctrl_in") != std::string::npos);
+    // GTYE4: serial pins named gty*
+    auto y4 = frontend::modelFromXciText(spirit("gt_y4", "gtwizard_ultrascale", "1.7", gtModel(3, 1),
+                                                {{"INTERNAL_PORT_ENABLED_GTYRXN_IN", "1"},
+                                                 {"INTERNAL_PORT_ENABLED_GTYTXP_OUT", "1"}}));
+    REQUIRE(y4);
+    CHECK(y4.value().verilog.find("input  wire [0:0] gtyrxn_in") != std::string::npos);
+}
+
+TEST_CASE("XCI: Transceivers Wizard with user clocking outside the IP and buffer bypass", "[frontend][xci][gt]") {
+    // SURF Pgp2fc: TX/RX user clocks are inputs, the buffer bypass helper, CPLL controls
+    auto user = gtUser({"RXUSRCLK_IN", "RXUSRCLK2_IN", "TXUSRCLK_IN", "TXUSRCLK2_IN", "GTWIZ_BUFFBYPASS_RX_RESET_IN",
+                        "GTWIZ_BUFFBYPASS_RX_START_USER_IN", "GTWIZ_BUFFBYPASS_RX_DONE_OUT", "RXSYNCDONE_OUT",
+                        "CPLLREFCLKSEL_IN", "CPLLFBCLKLOST_OUT", "RXPMARESET_IN", "TXINHIBIT_IN"});
+    std::erase_if(user, [](const auto& kv) { return kv.first.find("GTWIZ_USERCLK_") != std::string::npos; });
+    auto m = frontend::modelFromXciText(spirit("gt_fc", "gtwizard_ultrascale", "1.7", gtModel(2, 1), user));
+    if (!m)
+        UNSCOPED_INFO(m.error().message);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    CHECK(v.find("input  wire [2:0] cpllrefclksel_in") != std::string::npos);
+    CHECK(v.find("always @(posedge rxusrclk2_in[0]) oc_rx <= ^{gtwiz_buffbypass_rx_start_user_in}") != std::string::npos);
+    CHECK(v.find("always @(posedge rxusrclk2_in[0]) oc_gtwiz_buffbypass_rx_done_out_q") != std::string::npos);
+    CHECK(v.find("opencdc_async_source u_oc_rxsyncdone_out") != std::string::npos);
+    CHECK(v.find("opencdc_async_source u_oc_cpllfbclklost_out") != std::string::npos);
+    // negative: asynchronous resets and static controls are read by no domain register
+    std::string mixed; // the inputs of every domain register
+    for (std::size_t at = v.find("<= ^{"); at != std::string::npos; at = v.find("<= ^{", at + 1))
+        mixed += v.substr(at, v.find(';', at) - at);
+    CHECK(mixed.find("gtwiz_buffbypass_rx_start_user_in") != std::string::npos);
+    for (const char* p : {"gtwiz_buffbypass_rx_reset_in", "rxpmareset_in", "txinhibit_in", "cpllrefclksel_in"})
+        CHECK(mixed.find(p) == std::string::npos);
+    CHECK(m.value().summary.find("user clocking outside the IP") != std::string::npos);
+}
+
+TEST_CASE("XCI negative: Transceivers Wizard configurations that are not modelled", "[frontend][xci][gt]") {
+    // a port whose width and domain are unknown is named in the message
+    auto unknown = frontend::modelFromXciText(
+        spirit("gt_u", "gtwizard_ultrascale", "1.7", gtModel(2, 1), gtUser({"RXOSINTDONE_OUT"})));
+    REQUIRE_FALSE(unknown);
+    CHECK(unknown.error().code == "FE-XCI-UNSUPPORTED");
+    CHECK(unknown.error().message.find("rxosintdone_out") != std::string::npos);
+    // user clock frequencies missing: no invented period
+    auto noFreq = frontend::modelFromXciText(spirit("gt_f", "gtwizard_ultrascale", "1.7", gtModel(2, 1, false), gtUser()));
+    REQUIRE_FALSE(noFreq);
+    CHECK(noFreq.error().message.find("C_TX_USRCLK_FREQUENCY") != std::string::npos);
+    // no port enabled at all
+    auto none = frontend::modelFromXciText(spirit("gt_n", "gtwizard_ultrascale", "1.7", gtModel(2, 1),
+                                                  {{"INTERNAL_PORT_ENABLED_GTHRXN_IN", "-1"}}));
+    REQUIRE_FALSE(none);
+    CHECK(none.error().message.find("names no ports") != std::string::npos);
+}
+
+TEST_CASE("XCI: Transceivers Wizard user clocks in a design", "[frontend][xci][gt]") {
+    // RX data registered in the RX usrclk2, then read in clk_a: a crossing only in the second case
+    auto e2e = [](const std::string& readClk, const std::string& sdc) {
+        test::TempDir dir;
+        engine::ProjectConfig cfg;
+        cfg.name = "gt";
+        cfg.top = "top";
+        cfg.sources = {
+            dir.write("top.v",
+                      "module top(input clk_a, input free, input rxn, input rxp, output reg [7:0] q);\n"
+                      "  wire [63:0] rxd; wire rxclk, txclk; wire [0:0] txn, txp; wire [11:0] hdr;\n"
+                      "  wire [9:0] drpa; wire [15:0] drpdo; wire drprdy, tdone, rdone, pma;\n"
+                      "  gt_10g u (.gthrxn_in(rxn), .gthrxp_in(rxp), .gthtxn_out(txn), .gthtxp_out(txp),\n"
+                      "    .gtwiz_userclk_tx_srcclk_out(), .gtwiz_userclk_tx_usrclk_out(), .gtwiz_userclk_tx_usrclk2_out(txclk),\n"
+                      "    .gtwiz_userclk_rx_srcclk_out(), .gtwiz_userclk_rx_usrclk_out(), .gtwiz_userclk_rx_usrclk2_out(rxclk),\n"
+                      "    .gtwiz_userdata_tx_in(64'd0), .gtwiz_userdata_rx_out(rxd), .txheader_in(6'd0),\n"
+                      "    .rxpmaresetdone_out(pma), .gtwiz_reset_clk_freerun_in(free), .gtwiz_reset_all_in(1'b0),\n"
+                      "    .gtwiz_reset_tx_done_out(tdone), .gtwiz_reset_rx_done_out(rdone), .drpaddr_in(10'd0),\n"
+                      "    .drpclk_in(free), .drpdi_in(16'd0), .drpen_in(1'b0), .drpwe_in(1'b0), .txdiffctrl_in(5'd0),\n"
+                      "    .drpdo_out(drpdo), .drprdy_out(drprdy));\n"
+                      "  reg [7:0] r; always @(posedge rxclk) r <= rxd[7:0];\n"
+                      "  always @(posedge " + readClk + ") q <= r;\n"
+                      "endmodule\n"),
+            dir.write("gt_10g.xci", spirit("gt_10g", "gtwizard_ultrascale", "1.7", gtModel(2, 1), gtUser()))};
+        cfg.sourceLibraries = {"", ""};
+        cfg.constraints = {dir.write("c.sdc", sdc)};
+        return run(cfg);
+    };
+    const std::string base = "create_clock -name a -period 10 [get_ports clk_a]\n"
+                             "create_clock -name free -period 8 [get_ports free]\n";
+    auto same = e2e("rxclk", base);
+    REQUIRE(same->cdc);
+    CHECK(same->cdc->stats.paths == 0);
+    // the RX usrclk2: 156.25 MHz, a clock of its own derived from the RX source clock
+    REQUIRE(same->clocks);
+    bool usr2 = false;
+    for (const auto& c : same->clocks->clocks)
+        if (c.name.find("gtwiz_userclk_rx_usrclk2_out") != std::string::npos && c.periodNs) {
+            CHECK((*c.periodNs > 6.39 && *c.periodNs < 6.41));
+            usr2 = true;
+        }
+    CHECK(usr2);
+    // Vivado style: the user clocks asynchronous to clk_a by get_clocks -of_objects on the source pin
+    auto other = e2e("clk_a", base + "set_clock_groups -asynchronous -group a -group free "
+                                     "-group [get_clocks -of_objects [get_pins u/gtwiz_userclk_rx_srcclk_out*]]\n");
+    REQUIRE(other->cdc);
+    CHECK(other->cdc->stats.unsynchronized == 1);
+    CHECK(other->cdc->stats.unknownRelation == 0);
+    CHECK(count(*other, "CON-UNMATCHED") == 0);
+}

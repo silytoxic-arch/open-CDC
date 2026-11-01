@@ -151,6 +151,79 @@ for name, top, gen, sdc in [
                "sources": [{"file": os.path.join(work, "surf", f), "library": "surf"} for f in surf],
                "parameters": gen, "constraints": [sdc]},
               open(os.path.join(work, name + ".ocdc.json"), "w"), indent=1)
+# surf transceivers: Transceivers Wizard (gtwizard_ultrascale) .xci models in their SURF wrappers
+sw = os.path.join(work, "surf")
+def surf_project(name, top, files, sdc, gen=None):
+    json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": top,
+               "sources": [{"file": os.path.join(sw, f), "library": "surf"} if f.endswith(".vhd") else os.path.join(sw, f)
+                           for f in files],
+               "parameters": gen or {}, "constraints": [sdc]},
+              open(os.path.join(work, name + ".ocdc.json"), "w"), indent=1)
+pgp3_xci = ["protocols/pgp/pgp3/gthUs+/ip/Pgp3GthUsIp%s/Pgp3GthUsIp%s.xci" % (r, r) for r in ["10G", "12G", "15G", "3G", "6G"]]
+open(os.path.join(work, "pgp3_wrapper.sdc"), "w").write(
+    "create_clock -name stable -period 6.4 [get_ports stableClk]\n"
+    "create_clock -name axil -period 8 [get_ports axilClk]\n"
+    "set_clock_groups -asynchronous -group stable -group axil\n")
+surf_project("surf_pgp3_gth_wrapper", "Pgp3GthUsIpWrapper",
+             surf[:-1] + ["protocols/pgp/pgp3/gthUs+/rtl/Pgp3GthUsIpWrapper.vhd"] + pgp3_xci, "pgp3_wrapper.sdc")
+# the whole PGPv3 core on the GTH (Pgp3GthUs), DRP and monitoring enabled
+open(os.path.join(work, "pgp3_core.sdc"), "w").write(
+    "create_clock -name stable -period 6.4 [get_ports stableClk]\n"
+    "create_clock -name axil -period 8 [get_ports axilClk]\n"
+    "# the transceiver's user clocks (TX and RX) and the fabric clocks are unrelated\n"
+    "set_clock_groups -asynchronous -group [get_clocks stable] -group [get_clocks axil] \\\n"
+    "    -group [get_clocks -include_generated_clocks -of_objects [get_pins -hier *U_Pgp3GthUsIp/gtwiz_userclk_tx_srcclk_out]] \\\n"
+    "    -group [get_clocks -include_generated_clocks -of_objects [get_pins -hier *U_Pgp3GthUsIp/gtwiz_userclk_rx_srcclk_out]]\n")
+pgp3_core = [
+    "base/general/rtl/StdRtlPkg.vhd", "base/general/rtl/TextUtilPkg.vhd", "axi/axi-lite/rtl/AxiLitePkg.vhd",
+    "axi/axi-stream/rtl/AxiStreamPkg.vhd", "axi/axi4/rtl/AxiPkg.vhd", "protocols/ssi/rtl/SsiPkg.vhd",
+    "protocols/pgp/pgp3/core/rtl/Pgp3Pkg.vhd", "protocols/packetizer/rtl/AxiStreamPacketizer2Pkg.vhd",
+    "base/crc/rtl/CrcPkg.vhd", "base/general/rtl/ArbiterPkg.vhd", "axi/axi-lite/rtl/AxiLiteCrossbar.vhd",
+    "base/general/rtl/RegisterVector.vhd", "axi/axi-lite/rtl/AxiLiteAsync.vhd", "axi/bridge/rtl/AxiLiteToDrp.vhd",
+    "protocols/pgp/pgp3/gthUs+/rtl/Pgp3GthUsIpWrapper.vhd", "protocols/packetizer/rtl/AxiStreamPacketizer2.vhd",
+    "axi/axi-stream/rtl/AxiStreamMux.vhd", "protocols/pgp/pgp3/core/rtl/Pgp3TxProtocol.vhd",
+    "protocols/pgp/pgp3/core/rtl/Pgp3Tx.vhd", "base/sync/rtl/SynchronizerOneShot.vhd",
+    "base/sync/rtl/SynchronizerOneShotCnt.vhd", "base/sync/rtl/SynchronizerOneShotCntVector.vhd",
+    "base/sync/rtl/SyncStatusVector.vhd", "base/sync/rtl/SyncClockFreq.vhd", "protocols/pgp/pgp3/core/rtl/Pgp3AxiL.vhd",
+    "axi/axi-stream/rtl/AxiStreamDeMux.vhd", "base/general/rtl/Scrambler.vhd", "base/crc/rtl/Crc32Parallel.vhd",
+    "base/ram/inferred/TrueDualPortRamInferred.vhd", "base/ram/inferred/LutRam.vhd", "base/ram/inferred/DualPortRam.vhd",
+    "base/crc/rtl/Crc32.vhd", "axi/axi-stream/rtl/AxiStreamPipeline.vhd",
+    "protocols/packetizer/rtl/AxiStreamDepacketizer2.vhd", "protocols/pgp/pgp3/core/rtl/Pgp3RxGearboxAligner.vhd",
+    "base/ram/inferred/SimpleDualPortRamInferred.vhd", "base/ram/xilinx/SimpleDualPortRamXpm.vhd",
+    "base/ram/rtl/SimpleDualPortRam.vhd", "base/fifo/rtl/FifoOutputPipeline.vhd", "base/sync/rtl/SynchronizerVector.vhd",
+    "base/fifo/rtl/inferred/FifoWrFsm.vhd", "base/fifo/rtl/inferred/FifoRdFsm.vhd", "base/fifo/rtl/inferred/FifoAsync.vhd",
+    "base/sync/rtl/SynchronizerFifo.vhd", "base/sync/rtl/RstSync.vhd", "protocols/pgp/pgp3/core/rtl/Pgp3RxEb.vhd",
+    "base/sync/rtl/Synchronizer.vhd", "base/sync/rtl/SynchronizerEdge.vhd", "protocols/pgp/pgp3/core/rtl/Pgp3RxProtocol.vhd",
+    "protocols/pgp/pgp3/core/rtl/Pgp3Rx.vhd", "protocols/pgp/pgp3/core/rtl/Pgp3Core.vhd",
+    "protocols/pgp/pgp3/gthUs+/rtl/Pgp3GthUs.vhd"] + pgp3_xci
+surf_project("surf_pgp3_gth_core", "Pgp3GthUs", pgp3_core, "pgp3_core.sdc", {"EN_PGP_MON_G": "true", "EN_DRP_G": "true"})
+# PGP2fc on the GTY: user clocking outside the IP, the buffer bypass helper, CPLL ports
+open(os.path.join(work, "pgp2fc.sdc"), "w").write(
+    "create_clock -name txUsrClk -period 5.385 [get_ports txUsrClk]\n"
+    "create_clock -name rxUsrClk -period 5.385 [get_ports rxUsrClk]\n"
+    "create_clock -name stableClk -period 6.4 [get_ports stableClk]\n"
+    "create_clock -name axilClk -period 6.4 [get_ports axilClk]\n"
+    "create_clock -name gtUserRefClk -period 2.692 [get_ports gtUserRefClk]\n"
+    "set_clock_groups -asynchronous -group txUsrClk -group rxUsrClk -group stableClk -group axilClk -group gtUserRefClk\n")
+fc = "protocols/pgp/pgp2fc/gtyUltraScale+/"
+surf_project("surf_pgp2fc_gty_wrapper", "Pgp2fcGtyCoreWrapper",
+             surf[:3] + ["base/general/rtl/ArbiterPkg.vhd"] + surf[3:-1] +
+             ["axi/axi-lite/rtl/AxiLiteCrossbar.vhd", "axi/axi-lite/rtl/AxiLiteMaster.vhd",
+              "base/sync/rtl/SynchronizerFifo.vhd", "base/sync/rtl/SyncClockFreq.vhd", "base/sync/rtl/SyncStatusVector.vhd",
+              "base/sync/rtl/SyncTrigRate.vhd", "axi/axi-lite/rtl/AxiDualPortRam.vhd",
+              "xilinx/general/rtl/GtRxAlignCheck.vhd", fc + "rtl/Pgp2fcGtyCoreWrapper.vhd",
+              fc + "ip/Pgp2fcGtyCore/Pgp2fcGtyCore.xci", fc + "ip/Pgp2fcGtyCore_refclk2x/Pgp2fcGtyCore_refclk2x.xci"],
+             "pgp2fc.sdc")
+# every Transceivers Wizard .xci of surf alone (the IP is the top)
+gtx = []
+for x in sorted(glob.glob(os.path.join(sw, "**", "*.xci"), recursive=True)):
+    if "gtwizard_ultrascale" in open(x, errors="replace").read():
+        gtx.append(x)
+        n = "gtx_%d" % len(gtx)
+        json.dump({"format": "opencdc-project", "version": 1, "name": n,
+                   "top": os.path.splitext(os.path.basename(x))[0], "sources": [x]},
+                  open(os.path.join(work, n + ".ocdc.json"), "w"), indent=1)
+open(os.path.join(work, "gtx_count.txt"), "w").write(str(len(gtx)))
 # microwatt for the ECP5-EVN board (Makefile: FPGA_TARGET=ECP5-EVN, synth_files + uart_files)
 mw = os.path.join(work, "microwatt")
 core = ("decode_types common wishbone_types fetch1 utils plrufn cache_ram icache predecode decode1 helpers "
@@ -338,6 +411,20 @@ check pmodamp2.ocdc.json "Clocks  : 1 \\(39/39 registers resolved\\).*IP 'PmodAM
 # makes the handshake's data path safe
 check dl_sync_example.ocdc.json "Clocks  : 2 \\(17/17 registers resolved\\).*Summary : 0 error\\(s\\), 0 warning.*CDC     : 7 crossing path\\(s\\), 7 synchronized.*OneClk -> TwoClk \\(asynchronous\\): 5 path\\(s\\), 5 synchronized, 4 need review"
 check olo_intf_sync.ocdc.json "Summary : 0 error\\(s\\), 0 warning"
+# Transceivers Wizard models in SURF: the transceiver user clocks are clocks of their own
+check surf_pgp3_gth_wrapper.ocdc.json "Clocks  : 6 \\(195/195 registers resolved\\).*IP 'Pgp3GthUsIp10G' \\(xilinx.com:ip:gtwizard_ultrascale:1.7\\) modelled.*GTHE4.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 32 crossing path\\(s\\), 22 synchronized"
+# the core: the 9 errors are genuine in SURF's configuration (pgpRxClk is the TX usrclk2)
+check surf_pgp3_gth_core.ocdc.json    "Clocks  : 6 \\(2158/2158 registers resolved\\).*Summary : 0 error\\(s\\), 1 warning.*CDC     : 209 crossing path\\(s\\), 145 synchronized.*Rules   : 9 error violation"
+check surf_pgp2fc_gty_wrapper.ocdc.json "Clocks  : 5 \\(458/458 registers resolved\\).*IP 'Pgp2fcGtyCore'.*user clocking outside the IP.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 52 crossing path\\(s\\), 36 synchronized"
+n=$(cat gtx_count.txt)
+[ "$n" = 30 ] || { echo "::error::expected 30 Transceivers Wizard .xci files in surf, found $n"; fail=1; }
+for f in gtx_*.ocdc.json; do
+    out=$("$BIN/opencdc" analyze "$f" -q 2>&1 || true)
+    if ! grep -q "FE-XCI-MODEL" <<<"$out" || ! grep -q "Summary : 0 error" <<<"$out"; then
+        echo "::error::$f: Transceivers Wizard .xci not modelled"; echo "$out" | tail -10; fail=1
+    fi
+done
+echo "ok   $n surf Transceivers Wizard .xci models"
 # each FIFO .xci alone: modelled; with independent clocks an asynchronous FIFO
 n=$(cat dl_fifo_count.txt)
 [ "$n" = 13 ] || { echo "::error::expected 13 FIFO .xci files in vivado-library, found $n"; fail=1; }

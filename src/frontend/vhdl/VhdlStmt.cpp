@@ -153,6 +153,10 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
     if (!signal && v.known() && !t.dynamic && t.offset == 0 && (!W || t.width == *W) && isOne(st.alive)) {
         SVal nv = v;
         nv.type = o.type;
+        // a part that covers every bit (the only field of a record, r.d := x):
+        // the value takes the object's shape through its bits
+        if (W && t.type && &t.type->baseType() != &o.type->baseType())
+            nv = makeBits(o.type, bitsOf(v, l));
         st.cur[t.object] = nv;
         if (W) {
             markBits(st.any[t.object], *W, 0, *W);

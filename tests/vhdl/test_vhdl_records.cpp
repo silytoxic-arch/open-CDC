@@ -173,3 +173,71 @@ TEST_CASE("Records negative: unknown field and out-of-range index on a Verilog p
     CHECK_FALSE(run->r->cdc);
     CHECK(run->count("VHDL-PORT-MAP") == 3);
 }
+
+// SURF style (AxiStreamPacketizer2Pkg): slices by the name of a discrete
+// subtype (`subtype FIELD_C is natural range 7 downto 4; d(FIELD_C) := x`), as
+// targets in functions and processes and as values; a record with a single
+// field written whole and then in part. The analysis used to crash on the
+// subtype slice target and to reject the single-field record.
+TEST_CASE("VHDL: slices by a subtype name; a record with one field", "[vhdl][records]") {
+    const std::string src =
+        "library ieee; use ieee.std_logic_1164.all;\n"
+        "package sp is\n"
+        "  subtype LO_C is natural range 3 downto 0;\n"
+        "  subtype HI_C is natural range 7 downto 4;\n"
+        "  type m_t is record d : std_logic_vector(7 downto 0); end record;\n"
+        "  function mk(a : std_logic_vector(3 downto 0)) return m_t;\n"
+        "end package;\n"
+        "package body sp is\n"
+        "  function mk(a : std_logic_vector(3 downto 0)) return m_t is\n"
+        "    variable r : m_t;\n"
+        "  begin\n"
+        "    r.d := (others => '0');\n"
+        "    r.d(LO_C) := a;\n"
+        "    return r;\n"
+        "  end function;\n"
+        "end package body;\n"
+        "library ieee; use ieee.std_logic_1164.all; use work.sp.all;\n"
+        "entity top is port (clk_a, clk_b : in std_logic; a, b : in std_logic_vector(3 downto 0);\n"
+        "                    lo, hi : out std_logic_vector(3 downto 0)); end;\n"
+        "architecture x of top is\n"
+        "  signal ra, rb : std_logic_vector(3 downto 0);\n"
+        "  signal s : std_logic_vector(7 downto 0);\n"
+        "begin\n"
+        "  process(clk_a) begin if rising_edge(clk_a) then ra <= a; end if; end process;\n"
+        "  process(clk_b) variable m : m_t; begin\n"
+        "    if rising_edge(clk_b) then\n"
+        "      rb <= b;\n"
+        "      m := mk(ra);\n"
+        "      m.d(HI_C) := rb;\n"
+        "      s <= m.d;\n"
+        "      lo <= s(LO_C);\n"
+        "      hi <= s(HI_C);\n"
+        "    end if;\n"
+        "  end process;\n"
+        "end;\n";
+    auto run = analyze({{"s.vhd", src}}, "top");
+    REQUIRE(run->r);
+    CHECK(run->count("VHDL-NO-HARDWARE") == 0);
+    REQUIRE(run->r->cdc);
+    // ra (clk_a) reaches the low nibble of s and lo, never the high nibble or hi
+    CHECK(run->sources("top.s") == std::vector<std::string>{"top.ra 4"});
+    CHECK(run->sources("top.lo").empty()); // lo is read from s (clk_b): no crossing
+    for (const auto& p : run->r->cdc->paths)
+        CHECK(p.dstName.find("top.hi") == std::string::npos);
+    // the next-state value of s: rb in bits 7:4 (the HI_C slice), ra in bits 3:0 (LO_C)
+    REQUIRE(run->r->design);
+    const auto& d = *run->r->design;
+    const auto top = std::ranges::find(d.bodies, std::string("top"), &ir::ModuleBody::name);
+    REQUIRE(top != d.bodies.end());
+    std::string next;
+    for (const auto& reg : top->registers) {
+        const auto& qc = reg.q.chunks();
+        if (qc.size() != 1 || qc[0].isConst() || top->net(qc[0].net).name != "s")
+            continue;
+        for (const auto& c : reg.d.chunks()) // LSB first
+            next += (c.isConst() ? std::string("const") : top->net(c.net).name) + "[" +
+                    std::to_string(c.offset + c.width - 1) + ":" + std::to_string(c.offset) + "] ";
+    }
+    CHECK(next == "ra[3:0] rb[3:0] ");
+}

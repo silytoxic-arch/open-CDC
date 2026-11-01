@@ -819,12 +819,8 @@ TypeSet Elaborator::typesOf(const Expr& e, Ctx& ctx) {
             for (const Type* t : ps.types) {
                 if (!t->isArray())
                     continue;
-                const bool slice = e.args.size() == 1 &&
-                                   (e.args[0].actual->kind == ExprKind::Range ||
-                                    e.args[0].actual->kind == ExprKind::Subtype ||
-                                    (e.args[0].actual->kind == ExprKind::Attribute &&
-                                     (e.args[0].actual->ident.key == "range" ||
-                                      e.args[0].actual->ident.key == "reverse_range")));
+                // a slice also by the name of a discrete subtype: d(FIELD_C)
+                const bool slice = e.args.size() == 1 && isSliceRange(*e.args[0].actual, ctx);
                 if (slice)
                     s.add(t);
                 else if (e.args.size() == t->indexTypes.size())

@@ -947,8 +947,9 @@ private:
         static const std::regex nameRe("'([^']+)'");
         for (const auto& d : diags) {
             std::smatch m;
+            // the built-in black box of the models (IP models from .xci use it too)
             if (d.code == "FE-SLANG-UnknownModule" && std::regex_search(d.message, m, nameRe) &&
-                PrimitiveLibrary::instance().find(m[1].str()))
+                (PrimitiveLibrary::instance().find(m[1].str()) || lower(m[1].str()) == "opencdc_async_source"))
                 return true;
         }
         return false;

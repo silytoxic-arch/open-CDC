@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <regex>
 #include <set>
 #include <string>
 #include <vector>
@@ -761,6 +762,35 @@ TEST_CASE("Primitive library: every model is documented in docs/primitives.md", 
     }
     CHECK(doc.find("`MMCME2/3/4_BASE`") != std::string::npos);
     CHECK(doc.find("`PLLE2/3/4_ADV`") != std::string::npos);
+}
+
+TEST_CASE("Primitive library: every Xilinx unisim model has a VHDL component in unisim.vcomponents",
+          "[primitives][vhdl]") {
+    // otherwise VHDL designs that use the primitive through 'use unisim.vcomponents.all'
+    // get VHDL-COMPONENT warnings (SURF's BUFG_GT in Pgp2fcGtyCoreWrapper)
+    std::ifstream in(std::filesystem::path(OPENCDC_TESTS_DIR) / ".." / "src" / "frontend" / "primitives" /
+                     "xilinx_unisim.v");
+    REQUIRE(in);
+    const std::string models((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string pkg;
+    for (const auto& p : frontend::PrimitiveLibrary::instance().vhdlPackages())
+        if (p.library == "unisim")
+            pkg += p.text;
+    REQUIRE_FALSE(pkg.empty());
+    std::string upper = pkg;
+    std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    const std::regex moduleRe(R"(^module (\w+))", std::regex::multiline);
+    int count = 0;
+    for (auto it = std::sregex_iterator(models.begin(), models.end(), moduleRe); it != std::sregex_iterator(); ++it) {
+        std::string n = (*it)[1].str();
+        std::ranges::transform(n, n.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        INFO(n);
+        CHECK(upper.find("COMPONENT " + n + " ") != std::string::npos);
+        ++count;
+    }
+    CHECK(count > 50);
+    // negative: a name that is not a model is not in the package
+    CHECK(upper.find("COMPONENT NOT_A_PRIMITIVE ") == std::string::npos);
 }
 
 TEST_CASE("Primitives: Intel, Lattice and Gowin PLL output periods", "[primitives][pll]") {
