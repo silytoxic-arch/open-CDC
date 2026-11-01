@@ -49,6 +49,8 @@ A waiver file looks like this:
 
 In globs, `*` matches any sequence of characters (including `.`), and `?` matches exactly one character. All other characters, including `[` and `]`, are literal, so `top.g[0].*` works as written.
 
+A step-by-step walk through waiving a finding and auditing waivers in CI is in [tutorial-waivers.md](tutorial-waivers.md).
+
 ## Adding a waiver
 
 A waiver for one rule hit (or one output crossing) can be written for you. It selects the rule and the path's fingerprint, so it covers that path only:

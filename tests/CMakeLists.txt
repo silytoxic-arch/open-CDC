@@ -113,6 +113,21 @@ add_test(NAME cli.waiver_audit
         "-DEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/cdc_advanced"
         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/waiver_audit_work"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunWaiverAudit.cmake")
+add_test(NAME cli.waiver_tutorial
+    COMMAND ${CMAKE_COMMAND}
+        "-DEXE=$<TARGET_FILE:opencdc>"
+        "-DDOC=${PROJECT_SOURCE_DIR}/docs/tutorial-waivers.md"
+        "-DEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/cdc_advanced"
+        "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/waiver_tutorial_work"
+        "-DSETUP=${CMAKE_CURRENT_SOURCE_DIR}/cli/TutorialSetup.cmake"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunDocConsole.cmake")
+# the document runner itself: a right document passes, a wrong line or exit code fails
+foreach(doc right wrong_line wrong_exit)
+    add_test(NAME cli.doc_runner_${doc}
+        COMMAND ${CMAKE_COMMAND} "-DEXE=$<TARGET_FILE:opencdc>" "-DDOC=${CMAKE_CURRENT_SOURCE_DIR}/cli/docs/${doc}.md"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunDocConsole.cmake")
+endforeach()
+set_tests_properties(cli.doc_runner_wrong_line cli.doc_runner_wrong_exit PROPERTIES WILL_FAIL TRUE)
 opencdc_cli_test(vivado_clocks 3
     "Vivado clock report check .*1/1 report\\(s\\), 5 Vivado clock\\(s\\), 4 matched, 0 period mismatch\\(es\\), 0 unmatched"
     analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json

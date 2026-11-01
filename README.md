@@ -46,6 +46,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Every instance without a definition or built-in model is reported (`FE-UNRESOLVED-INSTANCE`), never silently a black box; a user module whose name differs from a vendor primitive only in case does not hide the primitive's model | ✅ |
 | Asynchronous reset crossings (grouped per reset source and clock), reconvergence (bit-level, configurable depth), multi-bit incoherency, pulse loss (with clock periods), multi-domain logic | ✅ |
 | Rules CDC-001 … CDC-010, all ten (specs in [docs/rules](docs/rules)) | ✅ |
+| Tutorial [docs/tutorial-waivers.md](docs/tutorial-waivers.md): from a finding to a waiver that CI keeps checking; its commands and outputs are run as a test (`cli.waiver_tutorial`) | ✅ |
 | Waiver audit for CI: `opencdc waivers <project> [--fail-on unused,expiring,expired,invalid] [--json …]` lists every waiver with its state and use count and fails (exit 4) on the given states | ✅ |
 | Waiver expiry warnings: waivers that expire within `options.waiverExpiryWarningDays` (default 30) are reported (`WAIVER-EXPIRING`), also in the JSON (`expiresInDays`), the HTML report and the GUI | ✅ |
 | Waivers written for you: **Waive...** in the GUI (rule violation or output crossing) or `opencdc waive <project> --fingerprint … --rule … --reason …`; by rule and path fingerprint, into the project's waiver file (created and added to the project when there is none). GUI Waivers view: state (active / unused / expiring / expired), uses, edit and remove (`opencdc waive --remove <id>`) | ✅ |
