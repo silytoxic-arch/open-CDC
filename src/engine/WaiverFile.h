@@ -43,6 +43,16 @@ void readWaiverFile(const std::filesystem::path& file, std::vector<cdc::WaiverRe
 [[nodiscard]] std::string appendWaiver(const std::filesystem::path& file, const cdc::WaiverRecord& w,
                                        const std::vector<std::string>& taken);
 
+/// Replaces waiver `id` in `file` by `w` (its id may change; `taken` as for
+/// appendWaiver, `id` itself excluded). Fields other than the waiver's
+/// (e.g. "comment") and the entry's position are kept. Returns an error
+/// message, empty on success.
+[[nodiscard]] std::string updateWaiver(const std::filesystem::path& file, const std::string& id,
+                                       const cdc::WaiverRecord& w, const std::vector<std::string>& taken);
+
+/// Removes waiver `id` from `file`. Returns an error message, empty on success.
+[[nodiscard]] std::string removeWaiver(const std::filesystem::path& file, const std::string& id);
+
 /// The first id "W-<n>" (n = 1, 2, ...) not in `taken`.
 [[nodiscard]] std::string nextWaiverId(const std::vector<std::string>& taken);
 

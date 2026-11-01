@@ -123,53 +123,33 @@ std::string waiverProblem(const cdc::WaiverRecord& w, const std::vector<std::str
     return {};
 }
 
-std::string appendWaiver(const std::filesystem::path& file, const cdc::WaiverRecord& w,
-                         const std::vector<std::string>& taken) {
-    if (auto problem = waiverProblem(w, taken); !problem.empty())
-        return problem;
+namespace {
+
+/// Reads a waiver file for rewriting (field order kept); error text or "".
+std::string loadForEdit(const std::filesystem::path& file, nlohmann::ordered_json& root) {
     const std::string name = toUtf8(file);
-    nlohmann::ordered_json root;
-    std::error_code ec;
-    if (std::filesystem::exists(file, ec)) {
-        std::ifstream in(file, std::ios::binary);
-        if (!in)
-            return "cannot read '" + name + "'";
-        std::stringstream buf;
-        buf << in.rdbuf();
-        try {
-            root = nlohmann::ordered_json::parse(buf.str());
-        }
-        catch (const nlohmann::json::parse_error& e) {
-            return "'" + name + "' is not valid JSON: " + e.what();
-        }
-        if (!root.is_object() || root.value("format", "") != kWaiverFormatName)
-            return "'" + name + "' is not an OpenCDC waiver file";
-        if (root.value("version", 0) != kWaiverFormatVersion)
-            return "'" + name + "' has an unsupported waiver file version";
-        if (!root.contains("waivers") || !root["waivers"].is_array())
-            return "'" + name + "': field 'waivers' must be an array";
-        for (const auto& e : root["waivers"])
-            if (e.is_object() && e.value("id", "") == w.id)
-                return "a waiver with id '" + w.id + "' already exists in '" + name + "'";
+    std::ifstream in(file, std::ios::binary);
+    if (!in)
+        return "cannot read '" + name + "'";
+    std::stringstream buf;
+    buf << in.rdbuf();
+    try {
+        root = nlohmann::ordered_json::parse(buf.str());
     }
-    else {
-        root["format"] = kWaiverFormatName;
-        root["version"] = kWaiverFormatVersion;
-        root["waivers"] = nlohmann::ordered_json::array();
+    catch (const nlohmann::json::parse_error& e) {
+        return "'" + name + "' is not valid JSON: " + e.what();
     }
-    nlohmann::ordered_json e;
-    e["id"] = w.id;
-    for (const auto& [key, value] : {std::pair<const char*, const std::string*>{"rule", &w.rule},
-                                     {"fingerprint", &w.fingerprint},
-                                     {"source", &w.source},
-                                     {"destination", &w.destination},
-                                     {"reason", &w.reason},
-                                     {"author", &w.author},
-                                     {"expires", &w.expires}})
-        if (!value->empty())
-            e[key] = *value;
-    root["waivers"].push_back(std::move(e));
-    // written next to the file, then renamed over it
+    if (!root.is_object() || root.value("format", "") != kWaiverFormatName)
+        return "'" + name + "' is not an OpenCDC waiver file";
+    if (root.value("version", 0) != kWaiverFormatVersion)
+        return "'" + name + "' has an unsupported waiver file version";
+    if (!root.contains("waivers") || !root["waivers"].is_array())
+        return "'" + name + "': field 'waivers' must be an array";
+    return {};
+}
+
+/// Writes next to the file, then renames over it; error text or "".
+std::string writeAtomically(const std::filesystem::path& file, const nlohmann::ordered_json& root) {
     auto tmp = file;
     tmp += ".tmp";
     {
@@ -180,12 +160,95 @@ std::string appendWaiver(const std::filesystem::path& file, const cdc::WaiverRec
         if (!out.flush())
             return "cannot write '" + toUtf8(tmp) + "'";
     }
+    std::error_code ec;
     std::filesystem::rename(tmp, file, ec);
     if (ec) {
         std::filesystem::remove(tmp, ec);
-        return "cannot replace '" + name + "'";
+        return "cannot replace '" + toUtf8(file) + "'";
     }
     return {};
+}
+
+/// Sets (or, when empty, removes) the selector and text fields of an entry;
+/// the id and other fields ("comment") stay where they are.
+void setFields(nlohmann::ordered_json& e, const cdc::WaiverRecord& w) {
+    for (const auto& [key, value] : {std::pair<const char*, const std::string*>{"rule", &w.rule},
+                                     {"fingerprint", &w.fingerprint},
+                                     {"source", &w.source},
+                                     {"destination", &w.destination},
+                                     {"reason", &w.reason},
+                                     {"author", &w.author},
+                                     {"expires", &w.expires}}) {
+        if (!value->empty())
+            e[key] = *value;
+        else
+            e.erase(key);
+    }
+}
+
+nlohmann::ordered_json* entryWithId(nlohmann::ordered_json& root, const std::string& id) {
+    for (auto& e : root["waivers"])
+        if (e.is_object() && e.value("id", "") == id)
+            return &e;
+    return nullptr;
+}
+
+} // namespace
+
+std::string appendWaiver(const std::filesystem::path& file, const cdc::WaiverRecord& w,
+                         const std::vector<std::string>& taken) {
+    if (auto problem = waiverProblem(w, taken); !problem.empty())
+        return problem;
+    nlohmann::ordered_json root;
+    std::error_code ec;
+    if (std::filesystem::exists(file, ec)) {
+        if (auto err = loadForEdit(file, root); !err.empty())
+            return err;
+        if (entryWithId(root, w.id))
+            return "a waiver with id '" + w.id + "' already exists in '" + toUtf8(file) + "'";
+    }
+    else {
+        root["format"] = kWaiverFormatName;
+        root["version"] = kWaiverFormatVersion;
+        root["waivers"] = nlohmann::ordered_json::array();
+    }
+    nlohmann::ordered_json e;
+    e["id"] = w.id;
+    setFields(e, w);
+    root["waivers"].push_back(std::move(e));
+    return writeAtomically(file, root);
+}
+
+std::string updateWaiver(const std::filesystem::path& file, const std::string& id, const cdc::WaiverRecord& w,
+                         const std::vector<std::string>& taken) {
+    std::vector<std::string> others = taken;
+    std::erase(others, id); // keeping its own id is fine
+    if (auto problem = waiverProblem(w, others); !problem.empty())
+        return problem;
+    nlohmann::ordered_json root;
+    if (auto err = loadForEdit(file, root); !err.empty())
+        return err;
+    auto* e = entryWithId(root, id);
+    if (!e)
+        return "no waiver with id '" + id + "' in '" + toUtf8(file) + "'";
+    if (w.id != id && entryWithId(root, w.id))
+        return "a waiver with id '" + w.id + "' already exists in '" + toUtf8(file) + "'";
+    (*e)["id"] = w.id;
+    setFields(*e, w);
+    return writeAtomically(file, root);
+}
+
+std::string removeWaiver(const std::filesystem::path& file, const std::string& id) {
+    nlohmann::ordered_json root;
+    if (auto err = loadForEdit(file, root); !err.empty())
+        return err;
+    auto& list = root["waivers"];
+    for (auto it = list.begin(); it != list.end(); ++it)
+        if (it->is_object() && it->value("id", "") == id) {
+            list.erase(it);
+            return writeAtomically(file, root);
+        }
+    return "no waiver with id '" + id + "' in '" + toUtf8(file) + "'";
 }
 
 std::string nextWaiverId(const std::vector<std::string>& taken) {

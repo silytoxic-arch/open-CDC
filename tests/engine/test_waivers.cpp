@@ -381,3 +381,53 @@ TEST_CASE("A waiver made for one rule hit covers that path only (cdc_advanced, C
     CHECK(again.id == "W-2");
     CHECK(!again.projectChanged);
 }
+
+TEST_CASE("updateWaiver and removeWaiver edit one entry and keep the rest of the file", "[waiver][engine]") {
+    test::TempDir dir;
+    const auto file = dir.write("w.json", "{\"format\": \"opencdc-waivers\", \"version\": 1, \"waivers\": [\n"
+                                          " {\"id\": \"A\", \"rule\": \"CDC-001\", \"reason\": \"a\", \"comment\": \"keep me\"},\n"
+                                          " {\"id\": \"B\", \"source\": \"top.b*\", \"reason\": \"b\", \"author\": \"x\"}]}\n");
+    auto readAll = [&] {
+        std::vector<cdc::WaiverRecord> v;
+        CollectingDiagnosticSink sink;
+        engine::readWaiverFile(file, v, sink);
+        CHECK(sink.take().empty());
+        return v;
+    };
+    auto a = readAll()[0];
+    a.id = "A2";
+    a.reason = "edited";
+    a.expires = "2030-01-01";
+    CHECK(engine::updateWaiver(file, "A", a, {"A", "B"}).empty());
+    auto v = readAll();
+    REQUIRE(v.size() == 2);
+    CHECK(v[0].id == "A2"); // same position
+    CHECK(v[0].reason == "edited");
+    CHECK(v[0].expires == "2030-01-01");
+    CHECK(v[0].rule == "CDC-001");
+    std::ifstream in(file);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(text.find("\"comment\": \"keep me\"") != std::string::npos);
+    // a field cleared in the record is removed from the entry
+    auto b = v[1];
+    b.author.clear();
+    CHECK(engine::updateWaiver(file, "B", b, {"A2", "B"}).empty());
+    CHECK(readAll()[1].author.empty());
+
+    // negatives: unknown id, an id another waiver has, no reason; the file is unchanged
+    CHECK(engine::updateWaiver(file, "Z", b, {}).find("no waiver") != std::string::npos);
+    auto clash = v[1];
+    clash.id = "A2";
+    CHECK(engine::updateWaiver(file, "B", clash, {"A2", "B"}).find("already exists") != std::string::npos);
+    auto noReason = v[1];
+    noReason.reason.clear();
+    CHECK(!engine::updateWaiver(file, "B", noReason, {}).empty());
+    CHECK(readAll()[1].reason == "b");
+
+    CHECK(engine::removeWaiver(file, "A2").empty());
+    v = readAll();
+    REQUIRE(v.size() == 1);
+    CHECK(v[0].id == "B");
+    CHECK(engine::removeWaiver(file, "A2").find("no waiver") != std::string::npos);
+    CHECK(readAll().size() == 1);
+}

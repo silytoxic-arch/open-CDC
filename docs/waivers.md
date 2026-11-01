@@ -56,6 +56,8 @@ A waiver for one rule hit (or one output crossing) can be written for you. It se
 - **GUI**: select the hit in *Rule Violations* (or the output in *Output Ports*) and press **Waive...**. Enter a reason (required), and optionally an author and an expiry date. Choose the waiver file: one of the project's, or `waivers.json` next to the project file. A new file is added to the project and the project is saved. The analysis then runs again. The project must have been saved to a file first.
 - **CLI**: `opencdc waive <project> --fingerprint <fp> --rule <rule> --reason "<text>" [--author …] [--expires YYYY-MM-DD] [--id …] [--file …]`. The fingerprint is printed at the end of every path line that has rule hits (`fingerprint=…`) and in every `CDC-OUTPUT-CLOCK` warning. Without `--file` the waiver goes to the project's first waiver file, or to a new `waivers.json` next to the project, which is then added to the project. Without `--id` the next free `W-<n>` is used.
 
+Existing waivers are listed in the GUI's **Waivers** view: id, state (*active*, *unused* — it matched nothing, *expired*), number of uses, rule, selectors, reason, author, expiry date and where it is defined. A filter shows only one state. **Edit...** changes the id, reason, author or expiry date (the selectors stay); **Remove** deletes the waiver from its file. Double-click opens the waiver in its file. From the command line, `opencdc waive <project> --remove <id>` removes a waiver from whichever of the project's waiver files has it.
+
 In both cases the waiver is checked before anything is written: the id must not already be used in any of the project's waiver files, a reason is required, and the expiry date must be YYYY-MM-DD. An existing waiver file keeps its entries, their field order and any other fields. The file is replaced only once the new text has been written completely.
 
 ## Matching
@@ -85,6 +87,6 @@ In both cases the waiver is checked before anything is written: the id must not 
   - `summary.waivedHits`.
 - **HTML report**: a "Waivers" section, plus "Waived by …" with the reason on each hit.
 - **CSV**: a `waived` column in `paths.csv`, and a `waiver` column in `violations.csv`.
-- **GUI**: the violation table has a Waiver column and a "Waived / Not waived" filter. The rule pane shows the waiver's reason, author and expiry date. Output crossings (`CDC-OUTPUT-CLOCK`) are in the Output Ports view, with the same filter and the waiver in the details pane.
+- **GUI**: the violation table has a Waiver column and a "Waived / Not waived" filter. The rule pane shows the waiver's reason, author and expiry date. Output crossings (`CDC-OUTPUT-CLOCK`) are in the Output Ports view, with the same filter and the waiver in the details pane. The Waivers view lists every waiver with its state and use count.
 
 Prefer fingerprint or exact source/destination selectors over broad globs. With narrow selectors, a design change that creates a new crossing is not waived silently. `WAIVER-UNUSED` tells you when a waiver no longer matches anything.

@@ -23,6 +23,7 @@ namespace opencdc::gui {
 class CdcPathView;
 class ClockView;
 class OutputPortView;
+class WaiverView;
 class SchematicView;
 class ViolationView;
 class SourceViewer;
@@ -52,6 +53,7 @@ public:
     [[nodiscard]] CdcPathView* pathView() const { return pathView_; }
     [[nodiscard]] ViolationView* violationView() const { return violationView_; }
     [[nodiscard]] OutputPortView* outputView() const { return outputView_; }
+    [[nodiscard]] WaiverView* waiverView() const { return waiverView_; }
     [[nodiscard]] SchematicView* schematicView() const { return schematicView_; }
     [[nodiscard]] AnalysisController* controller() const { return controller_; }
     [[nodiscard]] const AnalysisController::ResultPtr& lastResult() const { return lastResult_; }
@@ -75,6 +77,12 @@ public:
     /// when the file is new to it, and analyzes again. Returns an error
     /// message, empty on success. The project must have been saved to a file.
     QString addWaiver(const cdc::WaiverRecord& waiver, const QString& file);
+    /// The dialog that edits waiver `id` of the last result (null if unknown).
+    [[nodiscard]] std::unique_ptr<WaiverDialog> waiverDialogForEdit(const QString& id);
+    /// Rewrites waiver `id` in its file as `waiver` / removes it, then
+    /// analyzes again. Return an error message, empty on success.
+    QString updateWaiver(const QString& id, const cdc::WaiverRecord& waiver);
+    QString removeWaiver(const QString& id);
 
 private slots:
     void onOpenProject();
@@ -89,6 +97,8 @@ private slots:
 private:
     std::unique_ptr<WaiverDialog> waiverDialog(cdc::WaiverRecord proposal, const QString& what);
     void execWaiverDialog(std::unique_ptr<WaiverDialog> dialog);
+    [[nodiscard]] const cdc::WaiverRecord* findWaiver(const QString& id) const;
+    [[nodiscard]] std::vector<std::string> waiverIds() const;
     void createActions();
     void createDocks();
     QDockWidget* addDock(const QString& title, const QString& objectName, QWidget* widget,
@@ -111,6 +121,7 @@ private:
     CdcPathView* pathView_ = nullptr;
     ViolationView* violationView_ = nullptr;
     OutputPortView* outputView_ = nullptr;
+    WaiverView* waiverView_ = nullptr;
     SchematicView* schematicView_ = nullptr;
     QDockWidget* schematicDock_ = nullptr;
     QDockWidget* pathDock_ = nullptr;

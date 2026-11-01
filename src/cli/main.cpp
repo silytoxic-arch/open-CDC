@@ -342,6 +342,7 @@ struct WaiveArgs {
     std::string project;
     cdc::WaiverRecord w;
     std::string file;
+    std::string remove; ///< id of a waiver to remove instead
 };
 
 /// opencdc waive: adds a waiver to the project's waiver file (created and
@@ -353,6 +354,27 @@ int runWaive(WaiveArgs args) {
         return kExitUsage;
     }
     auto& cfg = project.value();
+    if (!args.remove.empty()) {
+        for (const auto& f : cfg.waivers) {
+            std::vector<cdc::WaiverRecord> records;
+            CollectingDiagnosticSink ignored;
+            engine::readWaiverFile(f, records, ignored);
+            if (std::ranges::none_of(records, [&](const cdc::WaiverRecord& r) { return r.id == args.remove; }))
+                continue;
+            if (const auto err = engine::removeWaiver(f, args.remove); !err.empty()) {
+                std::cerr << "error: " << err << '\n';
+                return kExitUsage;
+            }
+            std::cout << "waiver '" << args.remove << "' removed from " << toUtf8(f) << '\n';
+            return kExitOk;
+        }
+        std::cerr << "error: no waiver '" << args.remove << "' in the project's waiver files\n";
+        return kExitUsage;
+    }
+    if (args.w.reason.empty()) {
+        std::cerr << "error: --reason is required\n";
+        return kExitUsage;
+    }
     const auto added = engine::addProjectWaiver(cfg, args.w, args.file.empty() ? std::filesystem::path() : fromUtf8(args.file));
     if (!added.error.empty()) {
         std::cerr << "error: " << added.error << '\n';
@@ -408,11 +430,12 @@ int main(int argc, char** argv) {
     waiveCmd->add_option("--rule", waive.w.rule, "Rule id or glob (e.g. CDC-007, CDC-OUTPUT-CLOCK)");
     waiveCmd->add_option("--source", waive.w.source, "Glob on the source name");
     waiveCmd->add_option("--destination", waive.w.destination, "Glob on the destination name");
-    waiveCmd->add_option("--reason", waive.w.reason, "Why the hit is acceptable")->required();
+    waiveCmd->add_option("--reason", waive.w.reason, "Why the hit is acceptable (required to add a waiver)");
     waiveCmd->add_option("--author", waive.w.author, "Who waived it");
     waiveCmd->add_option("--expires", waive.w.expires, "Expiry date YYYY-MM-DD");
     waiveCmd->add_option("--id", waive.w.id, "Waiver id (default: the next free W-<n>)");
     waiveCmd->add_option("--file", waive.file, "Waiver file to write (default: the project's first waiver file)");
+    waiveCmd->add_option("--remove", waive.remove, "Remove the waiver with this id (from whichever project waiver file has it)");
 
     try {
         app.parse(argc, argv);

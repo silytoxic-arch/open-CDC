@@ -90,6 +90,8 @@ std::vector<const opencdc::cdc::CdcPath*> samplePaths(const opencdc::engine::Ana
 }
 
 /// Every hit is listed; filtering by a rule shows exactly that rule's hits.
+bool checkWaiverView(MainWindow& window, const opencdc::engine::AnalysisResult& result);
+
 /// Output Ports view: one row per output crossing, the waiver filter splits
 /// waived and open ones, the waiver column and details match the record, and
 /// a double-click opens the set_output_delay command.
@@ -296,6 +298,9 @@ int runSmokeTest(MainWindow& window, const QString& project, const QString& scre
                          else if (result->cdc && window.pathView()->rowCount() !=
                                                      static_cast<int>(result->cdc->paths.size())) {
                              exitCode = fail("CDC path table does not match the analysis result");
+                         }
+                         else if (result->cdc && !checkWaiverView(window, *result)) {
+                             exitCode = fail("the Waivers view or its state filter does not match the result");
                          }
                          else if (result->cdc && !checkOutputPorts(window, *result)) {
                              exitCode = fail("output port table, its filter or its details do not match the result");
@@ -506,119 +511,199 @@ int runEditTest(MainWindow& window, const QString& project) {
     return QApplication::exec();
 }
 
+/// Waivers view: one row per waiver; the state filter counts match the
+/// result (unused = no use, expired).
+bool checkWaiverView(MainWindow& window, const opencdc::engine::AnalysisResult& result) {
+    auto* view = window.waiverView();
+    const auto& ws = result.cdc->waivers;
+    if (view->rowCount() != static_cast<int>(ws.size()))
+        return false;
+    auto* f = view->stateFilter();
+    for (const char* state : {"active", "unused", "expired"}) {
+        f->setCurrentIndex(f->findData(QString::fromLatin1(state)));
+        const auto expected = std::ranges::count_if(ws, [&](const auto& w) {
+            return opencdc::gui::WaiverView::stateOf(w) == QString::fromLatin1(state);
+        });
+        if (view->visibleRows() != static_cast<int>(expected))
+            return false;
+    }
+    f->setCurrentIndex(0);
+    return view->visibleRows() == view->rowCount();
+}
+
 /// Waivers from the GUI: on a copy of the project (saved into a temporary
-/// directory), the first open rule hit and the first open output crossing
-/// are waived through the waiver dialog into a new waiver file; the file is
-/// added to the project, the project is saved, the analysis runs again and
-/// shows them waived. Negative: no reason, a duplicate id.
+/// directory), the first open rule hit is waived through the waiver dialog
+/// into a new waiver file (added to the project, which is saved); the
+/// analysis runs again and shows it waived; the waiver is edited and then
+/// removed in the Waivers view, the hit is open again. Then the first open
+/// output crossing is waived. Negative: no reason, a malformed date, a
+/// duplicate id when adding and when editing.
 int runWaiveTest(MainWindow& window, const QString& project) {
     if (!window.openProject(project))
         return fail("project could not be loaded");
     static QTemporaryDir dir;
     if (!dir.isValid() || !window.saveProjectAs(dir.filePath(QStringLiteral("copy.ocdc.json"))))
         return fail("project copy could not be saved");
-    const QString file = dir.filePath(QStringLiteral("new-waivers.json"));
+    static QString file;
+    file = dir.filePath(QStringLiteral("new-waivers.json"));
+    enum Stage { Start, HitWaived, Edited, Removed, OutputWaived };
     struct State {
-        int stage = 0;
+        Stage stage = Start;
         std::string hitRule, hitFingerprint, hitId, outFingerprint, outId;
         std::size_t waivedBefore = 0;
     };
     static State st;
-    auto waivedHitsOf = [](const opencdc::engine::AnalysisResult& r) {
-        std::size_t n = 0;
-        for (const auto& p : r.cdc->paths)
-            n += static_cast<std::size_t>(std::ranges::count_if(p.hits, [](const auto& h) { return !h.waiver.empty(); }));
-        return n;
-    };
-    // fill and check a dialog, then add its waiver; "" on success
-    auto waiveThrough = [&](std::unique_ptr<opencdc::gui::WaiverDialog> dlg, std::string& id) -> const char* {
-        if (!dlg)
-            return "no waiver dialog";
-        if (dlg->validationError().isEmpty())
-            return "a waiver without a reason is accepted";
-        dlg->setReason(QStringLiteral("self-test: acceptable"));
-        dlg->setExpires(QStringLiteral("2099-1-1"));
-        if (dlg->validationError().isEmpty())
-            return "a malformed expiry date is accepted";
-        dlg->setExpires(QStringLiteral("2099-12-31"));
-        if (!dlg->validationError().isEmpty())
-            return "a complete waiver is refused";
-        auto w = dlg->waiver();
-        id = w.id;
-        if (!window.addWaiver(w, file).isEmpty())
-            return "the waiver could not be added";
-        return "";
+    static MainWindow* win = &window;
+    struct Helpers {
+        static std::size_t waivedHits(const opencdc::engine::AnalysisResult& r) {
+            std::size_t n = 0;
+            for (const auto& p : r.cdc->paths)
+                n += static_cast<std::size_t>(
+                    std::ranges::count_if(p.hits, [](const auto& h) { return !h.waiver.empty(); }));
+            return n;
+        }
+        static const opencdc::cdc::RuleHit* hit(const opencdc::engine::AnalysisResult& r) {
+            for (const auto& p : r.cdc->paths)
+                if (p.fingerprint == st.hitFingerprint)
+                    for (const auto& h : p.hits)
+                        if (h.ruleId == st.hitRule)
+                            return &h;
+            return nullptr;
+        }
+        // fill and check an add dialog, then add its waiver; "" on success
+        static const char* waiveThrough(std::unique_ptr<opencdc::gui::WaiverDialog> dlg, std::string& id) {
+            if (!dlg)
+                return "no waiver dialog";
+            if (dlg->validationError().isEmpty())
+                return "a waiver without a reason is accepted";
+            dlg->setReason(QStringLiteral("self-test: acceptable"));
+            dlg->setExpires(QStringLiteral("2099-1-1"));
+            if (dlg->validationError().isEmpty())
+                return "a malformed expiry date is accepted";
+            dlg->setExpires(QStringLiteral("2099-12-31"));
+            if (!dlg->validationError().isEmpty())
+                return "a complete waiver is refused";
+            auto w = dlg->waiver();
+            id = w.id;
+            if (!win->addWaiver(w, file).isEmpty())
+                return "the waiver could not be added";
+            return "";
+        }
+        // waive the first open output crossing; false: none
+        static bool waiveOutput(const opencdc::cdc::CdcResult& c, const char*& err) {
+            for (std::size_t i = 0; i < c.outputs.size(); ++i)
+                if (c.outputs[i].waiver.empty()) {
+                    st.outFingerprint = c.outputs[i].fingerprint;
+                    st.stage = OutputWaived;
+                    err = waiveThrough(win->waiverDialogForOutput(i), st.outId);
+                    return true;
+                }
+            return false;
+        }
     };
     auto finish = [](int code) { QApplication::exit(code); };
+    auto done = [finish] {
+        if (st.hitRule.empty() && st.outFingerprint.empty())
+            return finish(fail("nothing to waive in this project"));
+        std::printf("GUI waive test passed: rule hit %s %s, output %s %s\n",
+                    st.hitRule.empty() ? "-" : st.hitRule.c_str(),
+                    st.hitId.empty() ? "" : (st.hitId + " (waived, edited, removed)").c_str(),
+                    st.outFingerprint.empty() ? "-" : st.outFingerprint.c_str(), st.outId.c_str());
+        finish(0);
+    };
     QObject::connect(
         window.controller(), &opencdc::gui::AnalysisController::finished, &window,
-        [&, waivedHitsOf, waiveThrough, finish](const opencdc::gui::AnalysisController::ResultPtr& result) {
+        [&window, finish, done](const opencdc::gui::AnalysisController::ResultPtr& result) {
             if (!result || !result->cdc)
                 return finish(fail("no CDC result"));
             const auto& c = *result->cdc;
-            if (st.stage == 0) {
-                st.waivedBefore = waivedHitsOf(*result);
-                // first open rule hit, else first open output crossing
-                for (const auto& p : c.paths)
-                    for (std::size_t h = 0; h < p.hits.size() && st.hitRule.empty(); ++h)
-                        if (p.hits[h].waiver.empty()) {
-                            st.hitRule = p.hits[h].ruleId;
-                            st.hitFingerprint = p.fingerprint;
-                            if (const char* err = waiveThrough(window.waiverDialogForHit(p.id, h), st.hitId); *err)
-                                return finish(fail(err));
-                        }
-                if (!st.hitRule.empty()) {
-                    st.stage = 1;
-                    return; // addWaiver started the analysis again
-                }
-                st.stage = 1;
-            }
-            if (st.stage == 1) {
-                if (!st.hitRule.empty()) {
-                    bool waived = false;
+            if (!checkWaiverView(window, *result))
+                return finish(fail("the Waivers view or its state filter does not match the result"));
+            const char* err = "";
+            switch (st.stage) {
+                case Start: {
+                    st.waivedBefore = Helpers::waivedHits(*result);
                     for (const auto& p : c.paths)
-                        if (p.fingerprint == st.hitFingerprint)
-                            for (const auto& h : p.hits)
-                                waived = waived || (h.ruleId == st.hitRule && h.waiver == st.hitId);
-                    if (!waived || waivedHitsOf(*result) <= st.waivedBefore)
+                        for (std::size_t h = 0; h < p.hits.size(); ++h)
+                            if (p.hits[h].waiver.empty()) {
+                                st.hitRule = p.hits[h].ruleId;
+                                st.hitFingerprint = p.fingerprint;
+                                st.stage = HitWaived;
+                                if (*(err = Helpers::waiveThrough(window.waiverDialogForHit(p.id, h), st.hitId)))
+                                    return finish(fail(err));
+                                return; // analyzed again
+                            }
+                    if (!Helpers::waiveOutput(c, err))
+                        return done();
+                    if (*err)
+                        return finish(fail(err));
+                    return;
+                }
+                case HitWaived: {
+                    const auto* h = Helpers::hit(*result);
+                    if (!h || h->waiver != st.hitId || Helpers::waivedHits(*result) <= st.waivedBefore)
                         return finish(fail("the waived rule hit is not waived after the analysis"));
-                    if (!window.project() ||
-                        std::ranges::none_of(window.project()->waivers, [&](const auto& f) {
+                    if (!window.project() || std::ranges::none_of(window.project()->waivers, [](const auto& f) {
                             return QFileInfo(QString::fromStdString(opencdc::toUtf8(f))) == QFileInfo(file);
                         }))
                         return finish(fail("the new waiver file is not in the project"));
                     auto reloaded = opencdc::engine::loadProjectFile(window.project()->projectFile);
                     if (!reloaded || reloaded.value().waivers != window.project()->waivers)
                         return finish(fail("the project file does not list the new waiver file"));
-                    // negative: the same id again
-                    auto again = window.waiverDialogForHit(0, 0);
-                    if (again) {
-                        again->setReason(QStringLiteral("x"));
-                        again->setId(QString::fromStdString(st.hitId));
-                        if (again->validationError().isEmpty())
-                            return finish(fail("a duplicate waiver id is accepted"));
-                    }
+                    // the Waivers view shows it, used once
+                    const QString id = QString::fromStdString(st.hitId);
+                    if (!window.waiverView()->selectWaiver(id) || window.waiverView()->currentId() != id)
+                        return finish(fail("the new waiver is not in the Waivers view"));
+                    // edit: a new reason; negative: an id another waiver has
+                    auto dlg = window.waiverDialogForEdit(id);
+                    if (!dlg)
+                        return finish(fail("no edit dialog"));
+                    for (const auto& w : c.waivers)
+                        if (w.id != st.hitId) {
+                            dlg->setId(QString::fromStdString(w.id));
+                            if (dlg->validationError().isEmpty())
+                                return finish(fail("editing a waiver to another waiver's id is accepted"));
+                            break;
+                        }
+                    dlg->setId(id);
+                    dlg->setReason(QStringLiteral("self-test: edited reason"));
+                    if (!dlg->validationError().isEmpty())
+                        return finish(fail("an edited waiver is refused"));
+                    st.stage = Edited;
+                    if (!window.updateWaiver(id, dlg->waiver()).isEmpty())
+                        return finish(fail("the waiver could not be updated"));
+                    return;
                 }
-                st.stage = 2;
-                for (std::size_t i = 0; i < c.outputs.size(); ++i)
-                    if (c.outputs[i].waiver.empty()) {
-                        st.outFingerprint = c.outputs[i].fingerprint;
-                        if (const char* err = waiveThrough(window.waiverDialogForOutput(i), st.outId); *err)
-                            return finish(fail(err));
-                        return;
-                    }
+                case Edited: {
+                    const auto it = std::ranges::find(c.waivers, st.hitId, &opencdc::cdc::WaiverRecord::id);
+                    const auto* h = Helpers::hit(*result);
+                    if (it == c.waivers.end() || it->reason != "self-test: edited reason" || !h ||
+                        h->waiver != st.hitId)
+                        return finish(fail("the edited waiver is not in the result"));
+                    st.stage = Removed;
+                    if (!window.removeWaiver(QString::fromStdString(st.hitId)).isEmpty())
+                        return finish(fail("the waiver could not be removed"));
+                    return;
+                }
+                case Removed: {
+                    const auto* h = Helpers::hit(*result);
+                    if (!h || !h->waiver.empty() ||
+                        std::ranges::any_of(c.waivers, [](const auto& w) { return w.id == st.hitId; }))
+                        return finish(fail("the removed waiver still applies"));
+                    if (!Helpers::waiveOutput(c, err))
+                        return done();
+                    if (*err)
+                        return finish(fail(err));
+                    return;
+                }
+                case OutputWaived: {
+                    const auto it =
+                        std::ranges::find(c.outputs, st.outFingerprint, &opencdc::cdc::OutputCrossing::fingerprint);
+                    if (it == c.outputs.end() || it->waiver != st.outId)
+                        return finish(fail("the waived output crossing is not waived after the analysis"));
+                    return done();
+                }
             }
-            if (st.stage == 2 && !st.outFingerprint.empty()) {
-                const auto it = std::ranges::find(c.outputs, st.outFingerprint, &opencdc::cdc::OutputCrossing::fingerprint);
-                if (it == c.outputs.end() || it->waiver != st.outId)
-                    return finish(fail("the waived output crossing is not waived after the analysis"));
-            }
-            if (st.hitRule.empty() && st.outFingerprint.empty())
-                return finish(fail("nothing to waive in this project"));
-            std::printf("GUI waive test passed: rule hit %s %s, output %s %s\n",
-                        st.hitRule.empty() ? "-" : st.hitRule.c_str(), st.hitId.c_str(),
-                        st.outFingerprint.empty() ? "-" : st.outFingerprint.c_str(), st.outId.c_str());
-            finish(0);
         });
     QTimer::singleShot(0, &window, [&window] { window.runAnalysis(); });
     QTimer::singleShot(600000, &window, [] {

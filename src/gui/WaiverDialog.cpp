@@ -30,20 +30,47 @@ WaiverDialog::WaiverDialog(cdc::WaiverRecord proposal, const QString& what, cons
                            const QString& newFile, const std::vector<std::string>& takenIds, QWidget* parent)
     : QDialog(parent), proposal_(std::move(proposal)), taken_(takenIds),
       id_(new QLineEdit(qs(proposal_.id.empty() ? engine::nextWaiverId(takenIds) : proposal_.id), this)),
-      reason_(new QPlainTextEdit(this)), author_(new QLineEdit(userName(), this)), expires_(new QLineEdit(this)),
-      file_(new QComboBox(this)) {
+      reason_(new QPlainTextEdit(qs(proposal_.reason), this)),
+      author_(new QLineEdit(proposal_.author.empty() ? userName() : qs(proposal_.author), this)),
+      expires_(new QLineEdit(qs(proposal_.expires), this)), file_(new QComboBox(this)) {
     setWindowTitle(tr("Add Waiver"));
+    for (const auto& f : files)
+        file_->addItem(f, f);
+    if (!newFile.isEmpty() && !files.contains(newFile))
+        file_->addItem(tr("%1 (new, added to the project)").arg(newFile), newFile);
+    build(what, false);
+}
+
+WaiverDialog::WaiverDialog(const cdc::WaiverRecord& existing, const std::vector<std::string>& takenIds,
+                           QWidget* parent)
+    : QDialog(parent), proposal_(existing), taken_(takenIds), id_(new QLineEdit(qs(existing.id), this)),
+      reason_(new QPlainTextEdit(qs(existing.reason), this)), author_(new QLineEdit(qs(existing.author), this)),
+      expires_(new QLineEdit(qs(existing.expires), this)), file_(new QComboBox(this)) {
+    setWindowTitle(tr("Edit Waiver"));
+    std::erase(taken_, existing.id); // keeping its id is fine
+    file_->addItem(qs(existing.loc.file), qs(existing.loc.file));
+    file_->setEnabled(false);
+    build(tr("Waiver <b>%1</b> (%2)").arg(qs(existing.id).toHtmlEscaped(), qs(toString(existing.loc)).toHtmlEscaped()),
+          true);
+}
+
+void WaiverDialog::build(const QString& what, bool editing) {
     auto* layout = new QVBoxLayout(this);
     auto* intro = new QLabel(what, this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
     auto* form = new QFormLayout;
-    auto* rule = new QLabel(qs(proposal_.rule), this);
-    auto* fp = new QLabel(qs(proposal_.fingerprint), this);
-    rule->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    fp->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    form->addRow(tr("Rule:"), rule);
-    form->addRow(tr("Fingerprint:"), fp);
+    // the selectors, read-only
+    for (const auto& [label, value] : {std::pair{tr("Rule:"), &proposal_.rule},
+                                       {tr("Fingerprint:"), &proposal_.fingerprint},
+                                       {tr("Source:"), &proposal_.source},
+                                       {tr("Destination:"), &proposal_.destination}}) {
+        if (value->empty() && (editing || label == tr("Source:") || label == tr("Destination:")))
+            continue;
+        auto* l = new QLabel(qs(*value), this);
+        l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        form->addRow(label, l);
+    }
     form->addRow(tr("Id:"), id_);
     reason_->setPlaceholderText(tr("Why this is acceptable (required)"));
     reason_->setTabChangesFocus(true);
@@ -52,17 +79,15 @@ WaiverDialog::WaiverDialog(cdc::WaiverRecord proposal, const QString& what, cons
     form->addRow(tr("Author:"), author_);
     expires_->setPlaceholderText(tr("YYYY-MM-DD (optional)"));
     form->addRow(tr("Expires:"), expires_);
-    for (const auto& f : files)
-        file_->addItem(f, f);
-    if (!newFile.isEmpty() && !files.contains(newFile))
-        file_->addItem(tr("%1 (new, added to the project)").arg(newFile), newFile);
     form->addRow(tr("Waiver file:"), file_);
     layout->addLayout(form);
-    auto* note = new QLabel(tr("The waiver covers this rule on this path only (by fingerprint): a design change that "
-                               "creates another crossing is not waived silently."),
-                            this);
-    note->setWordWrap(true);
-    layout->addWidget(note);
+    if (!editing) {
+        auto* note = new QLabel(tr("The waiver covers this rule on this path only (by fingerprint): a design change "
+                                   "that creates another crossing is not waived silently."),
+                                this);
+        note->setWordWrap(true);
+        layout->addWidget(note);
+    }
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &WaiverDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);

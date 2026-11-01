@@ -959,4 +959,135 @@ void OutputPortView::showDetails(int row) {
     details_->setHtml(html);
 }
 
+// ---------------------------------------------------------------------------
+// Waivers
+// ---------------------------------------------------------------------------
+
+WaiverView::WaiverView(QWidget* parent)
+    : QWidget(parent), stateFilter_(combo(this, tr("All waivers"))), editButton_(new QPushButton(tr("Edit..."), this)),
+      removeButton_(new QPushButton(tr("Remove"), this)), countLabel_(new QLabel(this)),
+      table_(new QTableWidget(0, 9, this)) {
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(2, 2, 2, 2);
+    auto* bar = new QHBoxLayout();
+    stateFilter_->addItem(tr("Active"), QStringLiteral("active"));
+    stateFilter_->addItem(tr("Unused (stale or too narrow)"), QStringLiteral("unused"));
+    stateFilter_->addItem(tr("Expired"), QStringLiteral("expired"));
+    bar->addWidget(stateFilter_);
+    editButton_->setToolTip(tr("Change the id, reason, author or expiry date of the selected waiver"));
+    removeButton_->setToolTip(tr("Remove the selected waiver from its waiver file"));
+    bar->addWidget(editButton_);
+    bar->addWidget(removeButton_);
+    bar->addStretch(1);
+    bar->addWidget(countLabel_);
+    layout->addLayout(bar);
+    table_->setHorizontalHeaderLabels({tr("Id"), tr("State"), tr("Uses"), tr("Rule"), tr("Selects"), tr("Reason"),
+                                       tr("Author"), tr("Expires"), tr("Defined in")});
+    setupTable(table_);
+    makeResizable(table_->horizontalHeader());
+    layout->addWidget(table_, 1);
+    connect(stateFilter_, &QComboBox::currentIndexChanged, this, &WaiverView::applyFilter);
+    connect(table_, &QTableWidget::currentCellChanged, this, [this](int, int, int, int) {
+        const bool any = !currentId().isEmpty();
+        editButton_->setEnabled(any);
+        removeButton_->setEnabled(any);
+    });
+    connect(editButton_, &QPushButton::clicked, this, [this] {
+        if (const QString id = currentId(); !id.isEmpty())
+            emit editRequested(id);
+    });
+    connect(removeButton_, &QPushButton::clicked, this, [this] {
+        if (const QString id = currentId(); !id.isEmpty())
+            emit removeRequested(id);
+    });
+    connect(table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (!result_ || !result_->cdc || row < 0)
+            return;
+        const auto& w = result_->cdc->waivers.at(static_cast<std::size_t>(table_->item(row, 0)->data(kIdRole).toInt()));
+        if (!w.loc.file.empty())
+            emit locationActivated(qs(w.loc.file), static_cast<int>(w.loc.line));
+    });
+    clear();
+}
+
+QString WaiverView::stateOf(const cdc::WaiverRecord& w) {
+    if (w.expired)
+        return QStringLiteral("expired");
+    return w.uses == 0 ? QStringLiteral("unused") : QStringLiteral("active");
+}
+
+void WaiverView::clear() {
+    result_.reset();
+    table_->setRowCount(0);
+    countLabel_->clear();
+    editButton_->setEnabled(false);
+    removeButton_->setEnabled(false);
+}
+
+void WaiverView::setResult(std::shared_ptr<const engine::AnalysisResult> result) {
+    clear();
+    result_ = std::move(result);
+    if (!result_ || !result_->cdc)
+        return;
+    const auto& ws = result_->cdc->waivers;
+    table_->setRowCount(static_cast<int>(ws.size()));
+    for (std::size_t i = 0; i < ws.size(); ++i) {
+        const auto& w = ws[i];
+        QStringList sel;
+        if (!w.fingerprint.empty())
+            sel << tr("fingerprint %1").arg(qs(w.fingerprint));
+        if (!w.source.empty())
+            sel << tr("source %1").arg(qs(w.source));
+        if (!w.destination.empty())
+            sel << tr("destination %1").arg(qs(w.destination));
+        const QString state = stateOf(w);
+        const QStringList cells{qs(w.id),     state,          QString::number(w.uses), qs(w.rule),
+                                sel.join(QStringLiteral("; ")), qs(w.reason), qs(w.author), qs(w.expires),
+                                qs(toString(w.loc))};
+        for (int c = 0; c < cells.size(); ++c) {
+            auto* item = new QTableWidgetItem(cells[c]);
+            item->setData(kIdRole, static_cast<int>(i));
+            if (state != QStringLiteral("active"))
+                item->setBackground(statusColor(cdc::AnalysisStatus::NeedsReview));
+            table_->setItem(static_cast<int>(i), c, item);
+        }
+    }
+    fitColumns(table_, 360);
+    applyFilter();
+}
+
+int WaiverView::rowCount() const {
+    return table_->rowCount();
+}
+
+int WaiverView::visibleRows() const {
+    int n = 0;
+    for (int r = 0; r < table_->rowCount(); ++r)
+        n += table_->isRowHidden(r) ? 0 : 1;
+    return n;
+}
+
+QString WaiverView::currentId() const {
+    const int row = table_->currentRow();
+    if (!result_ || row < 0 || row >= table_->rowCount() || table_->isRowHidden(row) || !table_->item(row, 0))
+        return {};
+    return table_->item(row, 0)->text();
+}
+
+bool WaiverView::selectWaiver(const QString& id) {
+    for (int r = 0; r < table_->rowCount(); ++r)
+        if (table_->item(r, 0)->text() == id && !table_->isRowHidden(r)) {
+            table_->setCurrentCell(r, 0);
+            return true;
+        }
+    return false;
+}
+
+void WaiverView::applyFilter() {
+    const QString state = stateFilter_->currentData().toString();
+    for (int r = 0; r < table_->rowCount(); ++r)
+        table_->setRowHidden(r, !state.isEmpty() && table_->item(r, 1)->text() != state);
+    countLabel_->setText(tr("%1 of %2 waivers").arg(visibleRows()).arg(rowCount()));
+}
+
 } // namespace opencdc::gui

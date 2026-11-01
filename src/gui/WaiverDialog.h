@@ -23,6 +23,10 @@ public:
     /// last entry of the combo box is `newFile` when it is not among them.
     WaiverDialog(cdc::WaiverRecord proposal, const QString& what, const QStringList& files, const QString& newFile,
                  const std::vector<std::string>& takenIds, QWidget* parent = nullptr);
+    /// Edits an existing waiver (from its file, `loc.file`): id, reason,
+    /// author and expiry date; the selectors are shown, not edited.
+    WaiverDialog(const cdc::WaiverRecord& existing, const std::vector<std::string>& takenIds,
+                 QWidget* parent = nullptr);
 
     /// The waiver as edited (selectors from the proposal).
     [[nodiscard]] cdc::WaiverRecord waiver() const;
@@ -39,6 +43,7 @@ public slots:
     void accept() override;
 
 private:
+    void build(const QString& what, bool editing);
     cdc::WaiverRecord proposal_;
     std::vector<std::string> taken_;
     QLineEdit* id_;

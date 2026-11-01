@@ -321,6 +321,24 @@ void MainWindow::createDocks() {
     outputView_ = new OutputPortView(this);
     connect(outputView_, &OutputPortView::locationActivated, this, jump);
     auto* outputDock = addDock(tr("Output Ports"), "outputPorts", outputView_, Qt::BottomDockWidgetArea);
+    waiverView_ = new WaiverView(this);
+    connect(waiverView_, &WaiverView::locationActivated, this, jump);
+    auto* waiverDock = addDock(tr("Waivers"), "waivers", waiverView_, Qt::BottomDockWidgetArea);
+    connect(waiverView_, &WaiverView::editRequested, this, [this](const QString& id) {
+        auto dlg = waiverDialogForEdit(id);
+        if (!dlg || dlg->exec() != QDialog::Accepted)
+            return;
+        if (const QString err = updateWaiver(id, dlg->waiver()); !err.isEmpty())
+            QMessageBox::warning(this, tr("Edit Waiver"), err);
+    });
+    connect(waiverView_, &WaiverView::removeRequested, this, [this](const QString& id) {
+        const auto* w = findWaiver(id);
+        if (!w || QMessageBox::question(this, tr("Remove Waiver"),
+                                        tr("Remove waiver %1 from %2?").arg(id, qs(w->loc.file))) != QMessageBox::Yes)
+            return;
+        if (const QString err = removeWaiver(id); !err.isEmpty())
+            QMessageBox::warning(this, tr("Remove Waiver"), err);
+    });
     connect(violationView_, &ViolationView::waiveRequested, this,
             [this](std::size_t pathId, std::size_t hit) { execWaiverDialog(waiverDialogForHit(pathId, hit)); });
     connect(outputView_, &OutputPortView::waiveRequested, this,
@@ -339,7 +357,8 @@ void MainWindow::createDocks() {
     tabifyDockWidget(msgDock, pathDock);
     tabifyDockWidget(pathDock, violationDock);
     tabifyDockWidget(violationDock, outputDock);
-    tabifyDockWidget(outputDock, reportDock);
+    tabifyDockWidget(outputDock, waiverDock);
+    tabifyDockWidget(waiverDock, reportDock);
     msgDock->raise();
 }
 
@@ -409,6 +428,7 @@ void MainWindow::setProject(engine::ProjectConfig config) {
     pathView_->clear();
     violationView_->clear();
     outputView_->clear();
+    waiverView_->clear();
     schematicView_->clear();
     showProjectInfo();
     statusLabel_->setText(tr("Project '%1'").arg(qs(project_->name)));
@@ -488,6 +508,54 @@ void MainWindow::execWaiverDialog(std::unique_ptr<WaiverDialog> dialog) {
         return;
     if (const QString err = addWaiver(dialog->waiver(), dialog->file()); !err.isEmpty())
         QMessageBox::warning(this, tr("Add Waiver"), err);
+}
+
+const cdc::WaiverRecord* MainWindow::findWaiver(const QString& id) const {
+    if (!lastResult_ || !lastResult_->cdc)
+        return nullptr;
+    const auto it = std::ranges::find(lastResult_->cdc->waivers, id.toStdString(), &cdc::WaiverRecord::id);
+    return it == lastResult_->cdc->waivers.end() ? nullptr : &*it;
+}
+
+std::vector<std::string> MainWindow::waiverIds() const {
+    std::vector<std::string> ids;
+    if (lastResult_ && lastResult_->cdc)
+        for (const auto& w : lastResult_->cdc->waivers)
+            ids.push_back(w.id);
+    return ids;
+}
+
+std::unique_ptr<WaiverDialog> MainWindow::waiverDialogForEdit(const QString& id) {
+    const auto* w = findWaiver(id);
+    if (!w)
+        return nullptr;
+    return std::make_unique<WaiverDialog>(*w, waiverIds(), this);
+}
+
+QString MainWindow::updateWaiver(const QString& id, const cdc::WaiverRecord& waiver) {
+    const auto* w = findWaiver(id);
+    if (!w)
+        return tr("No waiver %1 in the last analysis.").arg(id);
+    if (controller_->isRunning())
+        return tr("An analysis is running.");
+    if (const auto err = engine::updateWaiver(fromUtf8(w->loc.file), id.toStdString(), waiver, waiverIds()); !err.empty())
+        return qs(err);
+    statusLabel_->setText(tr("Waiver %1 updated").arg(qs(waiver.id)));
+    runAnalysis();
+    return {};
+}
+
+QString MainWindow::removeWaiver(const QString& id) {
+    const auto* w = findWaiver(id);
+    if (!w)
+        return tr("No waiver %1 in the last analysis.").arg(id);
+    if (controller_->isRunning())
+        return tr("An analysis is running.");
+    if (const auto err = engine::removeWaiver(fromUtf8(w->loc.file), id.toStdString()); !err.empty())
+        return qs(err);
+    statusLabel_->setText(tr("Waiver %1 removed").arg(id));
+    runAnalysis();
+    return {};
 }
 
 QString MainWindow::addWaiver(const cdc::WaiverRecord& waiver, const QString& file) {
@@ -647,6 +715,7 @@ void MainWindow::populateResult(const engine::AnalysisResult& result) {
     pathView_->setResult(lastResult_);
     violationView_->setResult(lastResult_);
     outputView_->setResult(lastResult_);
+    waiverView_->setResult(lastResult_);
     if (result.elaboration) {
         const auto& e = *result.elaboration;
         const auto counts = registerCounts(result.design.get());

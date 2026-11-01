@@ -164,4 +164,45 @@ private:
     QTextBrowser* details_;
 };
 
+/// Waivers: every waiver of the project with its selectors, reason, use
+/// count and state (active, unused, expired); Edit... and Remove change its
+/// waiver file; double-click opens the waiver in its file.
+class WaiverView final : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit WaiverView(QWidget* parent = nullptr);
+
+    void clear();
+    void setResult(std::shared_ptr<const engine::AnalysisResult> result);
+
+    [[nodiscard]] QTableWidget* table() const { return table_; }
+    [[nodiscard]] QComboBox* stateFilter() const { return stateFilter_; }
+    [[nodiscard]] QPushButton* editButton() const { return editButton_; }
+    [[nodiscard]] QPushButton* removeButton() const { return removeButton_; }
+    [[nodiscard]] int rowCount() const;
+    [[nodiscard]] int visibleRows() const;
+    /// Id of the selected waiver ("" if none).
+    [[nodiscard]] QString currentId() const;
+    /// Selects the row of waiver `id`; false if it is not in the table.
+    bool selectWaiver(const QString& id);
+    /// "active", "unused" or "expired".
+    [[nodiscard]] static QString stateOf(const cdc::WaiverRecord& w);
+
+signals:
+    void locationActivated(const QString& file, int line);
+    void editRequested(const QString& id);
+    void removeRequested(const QString& id);
+
+private:
+    void applyFilter();
+
+    std::shared_ptr<const engine::AnalysisResult> result_;
+    QComboBox* stateFilter_;
+    QPushButton* editButton_;
+    QPushButton* removeButton_;
+    QLabel* countLabel_;
+    QTableWidget* table_;
+};
+
 } // namespace opencdc::gui

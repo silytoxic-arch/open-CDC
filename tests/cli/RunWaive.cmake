@@ -47,4 +47,18 @@ execute_process(COMMAND "${EXE}" waive "${project}" --fingerprint ${fp} --rule C
 if(NOT rc EQUAL 2 OR NOT err MATCHES "already exists")
     message(FATAL_ERROR "a duplicate waiver id was not refused: ${rc} ${err}")
 endif()
+# remove it again: the hit is open, the file stays in the project
+execute_process(COMMAND "${EXE}" waive "${project}" --remove W-1 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT rc EQUAL 0 OR NOT out MATCHES "waiver 'W-1' removed from .*waivers.json")
+    message(FATAL_ERROR "waive --remove failed: ${rc} ${out}${err}")
+endif()
+execute_process(COMMAND "${EXE}" analyze "${project}" RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(out MATCHES "waived by W-1" OR NOT out MATCHES "CDC-007")
+    message(FATAL_ERROR "the hit is still waived after --remove:\n${out}")
+endif()
+# negative: an id no waiver file has
+execute_process(COMMAND "${EXE}" waive "${project}" --remove W-9 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT rc EQUAL 2 OR NOT err MATCHES "no waiver 'W-9'")
+    message(FATAL_ERROR "removing an unknown waiver did not fail: ${rc} ${err}")
+endif()
 message("opencdc waive: ok (fingerprint ${fp})")
