@@ -135,6 +135,48 @@ python3 tools/bench/gen_bench.py soc --domains 8 --blocks 1250 --out bench/soc_1
 opencdc-gui examples/smoke/smoke.ocdc.json
 ```
 
+What the examples give (from the repository root; these blocks are run by the test suite, `cli.readme`, so they stay true — `...` stands for lines or parts of lines left out):
+
+```console
+$ opencdc analyze examples/smoke/smoke.ocdc.json -q
+...
+Clocks  : 2 (15/15 registers resolved)
+...
+CDC     : 7 crossing path(s), 6 synchronized, 1 unsynchronized, 6 synchronizer structure(s)
+Rules   : 0 error violation(s), 0 warning violation(s), 1 path(s) at potential risk, 4 path(s) need review
+  clk_a -> clk_b (asynchronous): 6 path(s), 6 synchronized, 4 need review
+```
+
+Waived hits are not counted as violations; exit code 3 means error violations remain:
+
+```console
+$ opencdc analyze examples/cdc_advanced/cdc_advanced_waived.ocdc.json -q
+...
+  [completed] Waiver application ... - 2 waiver(s) from 1 file(s); 3 rule hit(s) waived, 0 expired, 0 unused
+...
+Rules   : 3 error violation(s), 0 warning violation(s), 1 path(s) at potential risk, 0 path(s) need review, 3 hit(s) waived
+(exit code 3)
+$ opencdc waivers examples/cdc_advanced/cdc_advanced_waived.ocdc.json --fail-on unused,expired,invalid
+...
+Waivers : 2 from 1 file(s): 2 active, 0 expiring, 0 unused, 0 expired; 0 invalid entr(y/ies) or file problem(s)
+...
+Audit   : passed
+```
+
+Vendor primitives are modelled: the MMCM's output clocks are derived from its input with their periods:
+
+```console
+$ opencdc analyze examples/primitives/primitives.ocdc.json -q
+...
+  top.u_mmcm.CLKOUT0  [divider] ... master=clk_in period=5ns (200 MHz) = clk_in x 0.5 ...
+  top.u_mmcm.CLKOUT1  [divider] ... master=clk_in period=20ns (50 MHz) = clk_in x 2 ...
+...
+  info[FE-PRIMITIVES]: built-in models used for vendor primitives: BUFG, MMCME2_ADV, RAMB36E1, xpm_cdc_gray
+...
+Rules   : 1 error violation(s), 1 warning violation(s), 0 path(s) at potential risk, 0 path(s) need review
+(exit code 3)
+```
+
 The CLI exit codes are:
 * 0: no errors and no error-severity CDC violations.
 * 1: the analysis reported errors (HDL or constraint).

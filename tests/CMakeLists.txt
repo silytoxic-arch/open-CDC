@@ -121,6 +121,14 @@ add_test(NAME cli.waiver_tutorial
         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/waiver_tutorial_work"
         "-DSETUP=${CMAKE_CURRENT_SOURCE_DIR}/cli/TutorialSetup.cmake"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunDocConsole.cmake")
+add_test(NAME cli.readme
+    COMMAND ${CMAKE_COMMAND}
+        "-DEXE=$<TARGET_FILE:opencdc>"
+        "-DDOC=${PROJECT_SOURCE_DIR}/README.md"
+        "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/readme_work"
+        "-DSETUP=${CMAKE_CURRENT_SOURCE_DIR}/cli/ReadmeSetup.cmake"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunDocConsole.cmake")
 # the document runner itself: a right document passes, a wrong line or exit code fails
 foreach(doc right wrong_line wrong_exit)
     add_test(NAME cli.doc_runner_${doc}
