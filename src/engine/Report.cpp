@@ -411,7 +411,13 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
                     sel += "destination=" + esc(w.destination);
                 o << "<tr><td>" << esc(w.id) << "</td><td>" << esc(w.rule) << "</td><td class=\"mono\">" << sel
                   << "</td><td>" << esc(w.reason) << "</td><td>" << esc(w.author) << "</td><td>" << esc(w.expires)
-                  << (w.expired ? " <b class=\"fail\">expired</b>" : "") << "</td><td>" << w.uses
+                  << (w.expired ? " <b class=\"fail\">expired</b>" : "")
+                  << (w.expiresInDays >= 0
+                          ? " <b class=\"fail\">expires " +
+                                (w.expiresInDays == 0 ? std::string("today") : "in " + std::to_string(w.expiresInDays) + " day(s)") +
+                                "</b>"
+                          : std::string())
+                  << "</td><td>" << w.uses
                   << (w.uses == 0 && !w.expired ? " <b class=\"fail\">unused</b>" : "") << "</td><td>" << esc(loc(w.loc))
                   << "</td></tr>\n";
             }

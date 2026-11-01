@@ -238,6 +238,12 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
                     return projectError("PRJ-SCHEMA", "options.reconvergenceDepth must be an integer between 0 and 8");
                 cfg.options.reconvergenceDepth = value.get<std::uint32_t>();
             }
+            else if (key == "waiverExpiryWarningDays") {
+                if (!value.is_number_integer() || value.get<long long>() < 0 || value.get<long long>() > 3650)
+                    return projectError("PRJ-SCHEMA",
+                                        "options.waiverExpiryWarningDays must be an integer between 0 and 3650");
+                cfg.options.waiverExpiryWarningDays = value.get<std::uint32_t>();
+            }
             else if (key == "unknownModules") {
                 if (!value.is_string() || (value.get<std::string>() != "error" && value.get<std::string>() != "blackbox"))
                     return projectError("PRJ-SCHEMA", "options.unknownModules must be error or blackbox");
@@ -368,12 +374,15 @@ std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path&
     if (cfg.options.unknownClockRelation != defaults.unknownClockRelation ||
         cfg.options.minSyncStages != defaults.minSyncStages ||
         cfg.options.reconvergenceDepth != defaults.reconvergenceDepth ||
-        cfg.options.blackBoxUnknownModules != defaults.blackBoxUnknownModules) {
+        cfg.options.blackBoxUnknownModules != defaults.blackBoxUnknownModules ||
+        cfg.options.waiverExpiryWarningDays != defaults.waiverExpiryWarningDays) {
         j["options"] = {{"unknownClockRelation", std::string(policyText(cfg.options.unknownClockRelation))},
                         {"minSyncStages", cfg.options.minSyncStages},
                         {"reconvergenceDepth", cfg.options.reconvergenceDepth}};
         if (cfg.options.blackBoxUnknownModules)
             j["options"]["unknownModules"] = "blackbox";
+        if (cfg.options.waiverExpiryWarningDays != defaults.waiverExpiryWarningDays)
+            j["options"]["waiverExpiryWarningDays"] = cfg.options.waiverExpiryWarningDays;
     }
     return j.dump(2) + "\n";
 }

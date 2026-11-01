@@ -413,7 +413,8 @@ int runEditTest(MainWindow& window, const QString& project) {
         same.waivers != orig.waivers || same.vivadoClockReports != orig.vivadoClockReports ||
         same.ipRepositories != orig.ipRepositories || same.tclSourceDirs != orig.tclSourceDirs ||
         same.defines.size() != orig.defines.size() ||
-        same.options.minSyncStages != orig.options.minSyncStages)
+        same.options.minSyncStages != orig.options.minSyncStages ||
+        same.options.waiverExpiryWarningDays != orig.options.waiverExpiryWarningDays)
         return fail("project editor changes a project it did not edit");
     if (orig.sources.empty())
         return fail("project has no sources");
@@ -459,6 +460,7 @@ int runEditTest(MainWindow& window, const QString& project) {
     editor.setParameter(QStringLiteral("OPENCDC_EDIT_TEST"), QStringLiteral("1"));
     editor.removeSource(-1);              // no-op
     editor.moveSource(0, -1);             // no-op
+    editor.setWaiverExpiryWarningDays(7); // saved as an option, kept on reopen
     if (!orig.constraints.empty())
         editor.addConstraints({QString::fromStdString(opencdc::toUtf8(orig.constraints.front()))}); // duplicate
     // an IP repository is added once (a duplicate is ignored) and saved with the project
@@ -472,7 +474,8 @@ int runEditTest(MainWindow& window, const QString& project) {
         return fail("IP repositories are not reflected in the configuration");
     edited.ipRepositories = orig.ipRepositories;
     if (edited.sources != orig.sources || edited.sourceLibraries.back() != "edit_lib" ||
-        edited.constraints != orig.constraints || edited.parameters.size() != orig.parameters.size() + 1)
+        edited.constraints != orig.constraints || edited.parameters.size() != orig.parameters.size() + 1 ||
+        edited.options.waiverExpiryWarningDays != 7)
         return fail("edits are not reflected in the configuration");
 
     // Keep the library only if it does not matter (Verilog file) for the analysis check below.
@@ -488,7 +491,8 @@ int runEditTest(MainWindow& window, const QString& project) {
         return fail("saved project could not be reopened");
     const auto& re = *window.project();
     if (re.sources != edited.sources || re.sourceLibraries != edited.sourceLibraries ||
-        re.constraints != edited.constraints || re.name != edited.name || re.language != edited.language)
+        re.constraints != edited.constraints || re.name != edited.name || re.language != edited.language ||
+        re.options.waiverExpiryWarningDays != 7)
         return fail("reopened project differs from the saved one");
     if (window.saveProjectAs(dir.filePath(QStringLiteral("missing/dir/x.ocdc.json"))))
         return fail("saving into a missing directory did not fail");
@@ -519,7 +523,7 @@ bool checkWaiverView(MainWindow& window, const opencdc::engine::AnalysisResult& 
     if (view->rowCount() != static_cast<int>(ws.size()))
         return false;
     auto* f = view->stateFilter();
-    for (const char* state : {"active", "unused", "expired"}) {
+    for (const char* state : {"active", "unused", "expiring", "expired"}) {
         f->setCurrentIndex(f->findData(QString::fromLatin1(state)));
         const auto expected = std::ranges::count_if(ws, [&](const auto& w) {
             return opencdc::gui::WaiverView::stateOf(w) == QString::fromLatin1(state);

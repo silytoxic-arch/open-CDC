@@ -196,6 +196,9 @@ struct WaiverRecord {
     std::string expires;     ///< YYYY-MM-DD, "" = never
     SourceLocation loc;      ///< where the waiver is defined
     bool expired = false;    ///< not applied: expiry date passed
+    /// Days until the expiry date (0 = expires today), when it is within the
+    /// project's warning period; -1 otherwise.
+    std::int32_t expiresInDays = -1;
     std::size_t uses = 0;    ///< rule hits it covers
 };
 

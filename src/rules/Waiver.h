@@ -3,6 +3,8 @@
 #include "cdc/CdcModel.h"
 #include "core/Diagnostic.h"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,8 +25,15 @@ namespace opencdc::rules {
 /// (YYYY-MM-DD) is before `today` are not applied (WAIVER-EXPIRED); waivers
 /// that cover nothing are reported (WAIVER-UNUSED). The records, with their
 /// use counts, are stored in result.waivers.
+/// Waivers still applied that expire within `expiryWarningDays` days of
+/// `today` (0 = no warning) are reported (WAIVER-EXPIRING) and get
+/// WaiverRecord::expiresInDays.
 void applyWaivers(std::vector<cdc::WaiverRecord> waivers, cdc::CdcResult& result, std::string_view today,
-                  DiagnosticSink& sink);
+                  DiagnosticSink& sink, std::uint32_t expiryWarningDays = 0);
+
+/// Days from date `from` to date `to` (both YYYY-MM-DD, proleptic
+/// Gregorian); nullopt if either is malformed.
+[[nodiscard]] std::optional<std::int64_t> daysBetween(std::string_view from, std::string_view to) noexcept;
 
 /// Reports the output crossings that no waiver covers (CDC-OUTPUT-CLOCK,
 /// warning) and counts them in result.stats.outputCrossings. Call after

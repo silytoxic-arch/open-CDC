@@ -972,6 +972,7 @@ WaiverView::WaiverView(QWidget* parent)
     auto* bar = new QHBoxLayout();
     stateFilter_->addItem(tr("Active"), QStringLiteral("active"));
     stateFilter_->addItem(tr("Unused (stale or too narrow)"), QStringLiteral("unused"));
+    stateFilter_->addItem(tr("Expiring soon"), QStringLiteral("expiring"));
     stateFilter_->addItem(tr("Expired"), QStringLiteral("expired"));
     bar->addWidget(stateFilter_);
     editButton_->setToolTip(tr("Change the id, reason, author or expiry date of the selected waiver"));
@@ -1013,7 +1014,9 @@ WaiverView::WaiverView(QWidget* parent)
 QString WaiverView::stateOf(const cdc::WaiverRecord& w) {
     if (w.expired)
         return QStringLiteral("expired");
-    return w.uses == 0 ? QStringLiteral("unused") : QStringLiteral("active");
+    if (w.uses == 0)
+        return QStringLiteral("unused");
+    return w.expiresInDays >= 0 ? QStringLiteral("expiring") : QStringLiteral("active");
 }
 
 void WaiverView::clear() {
@@ -1042,7 +1045,10 @@ void WaiverView::setResult(std::shared_ptr<const engine::AnalysisResult> result)
             sel << tr("destination %1").arg(qs(w.destination));
         const QString state = stateOf(w);
         const QStringList cells{qs(w.id),     state,          QString::number(w.uses), qs(w.rule),
-                                sel.join(QStringLiteral("; ")), qs(w.reason), qs(w.author), qs(w.expires),
+                                sel.join(QStringLiteral("; ")), qs(w.reason), qs(w.author),
+                                w.expiresInDays < 0     ? qs(w.expires)
+                                : w.expiresInDays == 0 ? tr("%1 (today)").arg(qs(w.expires))
+                                                       : tr("%1 (in %2 days)").arg(qs(w.expires)).arg(w.expiresInDays),
                                 qs(toString(w.loc))};
         for (int c = 0; c < cells.size(); ++c) {
             auto* item = new QTableWidgetItem(cells[c]);

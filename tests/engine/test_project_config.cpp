@@ -227,3 +227,23 @@ TEST_CASE("saveProjectFile writes a loadable file; unwritable location is PRJ-WR
     REQUIRE(err.has_value());
     CHECK(err->code == "PRJ-WRITE");
 }
+
+TEST_CASE("Project option waiverExpiryWarningDays: default, round trip, range", "[project]") {
+    auto d = engine::parseProjectJson(R"({"format": "opencdc-project", "version": 1, "name": "x", "sources": ["a.v"]})", "/p");
+    REQUIRE(d);
+    CHECK(d.value().options.waiverExpiryWarningDays == 30);
+    auto r = engine::parseProjectJson(R"({"format": "opencdc-project", "version": 1, "name": "x", "sources": ["a.v"],
+        "options": {"waiverExpiryWarningDays": 0}})", "/p");
+    REQUIRE(r);
+    CHECK(r.value().options.waiverExpiryWarningDays == 0);
+    auto back = engine::parseProjectJson(engine::projectToJson(r.value(), "/p"), "/p");
+    REQUIRE(back);
+    CHECK(back.value().options.waiverExpiryWarningDays == 0);
+    // the default is not written
+    CHECK(engine::projectToJson(d.value(), "/p").find("waiverExpiryWarningDays") == std::string::npos);
+    // negative: out of range, not an integer
+    CHECK(!engine::parseProjectJson(R"({"format": "opencdc-project", "version": 1, "name": "x", "sources": ["a.v"],
+        "options": {"waiverExpiryWarningDays": 5000}})", "/p"));
+    CHECK(!engine::parseProjectJson(R"({"format": "opencdc-project", "version": 1, "name": "x", "sources": ["a.v"],
+        "options": {"waiverExpiryWarningDays": "soon"}})", "/p"));
+}

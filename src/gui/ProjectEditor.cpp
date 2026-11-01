@@ -129,6 +129,13 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
     form->addRow(tr("Unknown clock relation:"), unknownClock_);
     form->addRow(tr("Minimum synchronizer stages:"), minStages_);
     form->addRow(tr("Reconvergence depth:"), reconvDepth_);
+    expiryWarn_ = new QSpinBox(this);
+    expiryWarn_->setRange(0, 3650);
+    expiryWarn_->setSuffix(tr(" days"));
+    expiryWarn_->setSpecialValueText(tr("never"));
+    expiryWarn_->setValue(static_cast<int>(config.options.waiverExpiryWarningDays));
+    expiryWarn_->setToolTip(tr("Waivers whose expiry date is this close are reported (WAIVER-EXPIRING)"));
+    form->addRow(tr("Warn before waivers expire:"), expiryWarn_);
     unknownModules_->addItem(tr("Error (stop the analysis)"), false);
     unknownModules_->addItem(tr("Black box (analyze the rest of the design)"), true);
     unknownModules_->setCurrentIndex(config.options.blackBoxUnknownModules ? 1 : 0);
@@ -394,6 +401,10 @@ void ProjectEditor::setParameter(const QString& name, const QString& value) {
     setRow(parameters_, parameters_->rowCount() - 1, name, value);
 }
 
+void ProjectEditor::setWaiverExpiryWarningDays(int days) {
+    expiryWarn_->setValue(days);
+}
+
 void ProjectEditor::setDefine(const QString& name, const QString& value, bool hasValue) {
     const QString v = hasValue ? value : QString();
     for (int r = 0; r < defines_->rowCount(); ++r)
@@ -440,6 +451,7 @@ engine::ProjectConfig ProjectEditor::config() const {
     c.options.unknownClockRelation = static_cast<engine::UnknownClockPolicy>(unknownClock_->currentData().toInt());
     c.options.minSyncStages = static_cast<std::uint32_t>(minStages_->value());
     c.options.reconvergenceDepth = static_cast<std::uint32_t>(reconvDepth_->value());
+    c.options.waiverExpiryWarningDays = static_cast<std::uint32_t>(expiryWarn_->value());
     c.options.blackBoxUnknownModules = unknownModules_->currentData().toBool();
     return c;
 }

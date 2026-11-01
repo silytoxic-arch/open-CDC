@@ -186,7 +186,8 @@ public:
     [[nodiscard]] QString currentId() const;
     /// Selects the row of waiver `id`; false if it is not in the table.
     bool selectWaiver(const QString& id);
-    /// "active", "unused" or "expired".
+    /// "active", "unused", "expiring" (used, expires within the warning
+    /// period) or "expired".
     [[nodiscard]] static QString stateOf(const cdc::WaiverRecord& w);
 
 signals:

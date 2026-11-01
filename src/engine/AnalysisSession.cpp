@@ -276,11 +276,13 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
             for (const auto& f : config.waivers)
                 readWaiverFile(f, waivers, sink);
             const std::size_t defined = waivers.size();
-            rules::applyWaivers(std::move(waivers), *cdcResult, todayUtc(), sink);
+            rules::applyWaivers(std::move(waivers), *cdcResult, todayUtc(), sink,
+                                config.options.waiverExpiryWarningDays);
             rules::reportOutputCrossings(*cdcResult, sink);
-            std::size_t expired = 0, unused = 0;
+            std::size_t expired = 0, unused = 0, expiring = 0;
             for (const auto& w : cdcResult->waivers) {
                 expired += w.expired ? 1 : 0;
+                expiring += w.expiresInDays >= 0 ? 1 : 0;
                 unused += !w.expired && w.uses == 0 ? 1 : 0;
             }
             pushStage(
@@ -289,7 +291,9 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
                      ? std::string("no waiver file in the project")
                      : std::to_string(defined) + " waiver(s) from " + std::to_string(config.waivers.size()) +
                            " file(s); " + std::to_string(cdcResult->stats.waivedHits) + " rule hit(s) waived, " +
-                           std::to_string(expired) + " expired, " + std::to_string(unused) + " unused"});
+                           std::to_string(expired) + " expired, " +
+                           (expiring > 0 ? std::to_string(expiring) + " expiring soon, " : std::string()) +
+                           std::to_string(unused) + " unused"});
             result->cdc = std::move(cdcResult);
             progress.update("CDC rule checks", 1.0);
         }

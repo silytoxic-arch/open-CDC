@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <ctime>
 #include <fstream>
 
 using namespace opencdc;
@@ -430,4 +431,86 @@ TEST_CASE("updateWaiver and removeWaiver edit one entry and keep the rest of the
     CHECK(v[0].id == "B");
     CHECK(engine::removeWaiver(file, "A2").find("no waiver") != std::string::npos);
     CHECK(readAll().size() == 1);
+}
+
+TEST_CASE("Dates: days between two YYYY-MM-DD dates", "[waiver]") {
+    CHECK(rules::daysBetween("2026-11-01", "2026-11-01") == 0);
+    CHECK(rules::daysBetween("2026-11-01", "2026-12-01") == 30);
+    CHECK(rules::daysBetween("2028-02-28", "2028-03-01") == 2); // leap year
+    CHECK(rules::daysBetween("2027-02-28", "2027-03-01") == 1);
+    CHECK(rules::daysBetween("2026-12-31", "2027-01-01") == 1);
+    CHECK(rules::daysBetween("2027-01-01", "2026-12-31") == -1);
+    CHECK(!rules::daysBetween("2026-13-01", "2026-12-01"));
+    CHECK(!rules::daysBetween("2026-1-1", "2026-12-01"));
+}
+
+TEST_CASE("Waivers about to expire are reported (WAIVER-EXPIRING)", "[waiver]") {
+    auto r = test::cdc::analyze(kTwoBugs);
+    auto make = [](const char* id, const char* expires) {
+        WaiverRecord w = waiver(id, "CDC-00*");
+        w.expires = expires;
+        return w;
+    };
+    // today 2026-11-01, warn 30 days ahead
+    CollectingDiagnosticSink sink;
+    applyWaivers({make("SOON", "2026-11-20"), make("TODAY", "2026-11-01"), make("LATER", "2027-06-30"),
+                  make("GONE", "2026-10-31"), make("NEVER", "")},
+                 *r.cdc, "2026-11-01", sink, 30);
+    const auto diags = sink.take();
+    CHECK(countCode(diags, "WAIVER-EXPIRING") == 2); // SOON and TODAY
+    CHECK(countCode(diags, "WAIVER-EXPIRED") == 1);  // GONE: expired, not "expiring"
+    auto rec = [&](const std::string& id) {
+        return *std::ranges::find(r.cdc->waivers, id, &WaiverRecord::id);
+    };
+    CHECK(rec("SOON").expiresInDays == 19);
+    CHECK(rec("TODAY").expiresInDays == 0);
+    CHECK(rec("LATER").expiresInDays == -1); // negative: too far ahead
+    CHECK(rec("GONE").expiresInDays == -1);
+    CHECK(rec("NEVER").expiresInDays == -1);
+    CHECK(rec("SOON").uses + rec("TODAY").uses + rec("LATER").uses > 0); // still applied
+    // 0 days: no warning
+    auto r2 = test::cdc::analyze(kTwoBugs);
+    CollectingDiagnosticSink s2;
+    applyWaivers({make("SOON", "2026-11-20")}, *r2.cdc, "2026-11-01", s2, 0);
+    CHECK(countCode(s2.take(), "WAIVER-EXPIRING") == 0);
+}
+
+TEST_CASE("Session: the project option sets how far ahead expiring waivers are reported", "[waiver][engine]") {
+    // a date 5 days from now (UTC), as the session's "today" is
+    const std::time_t t = std::time(nullptr) + 5 * 86400;
+    std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char date[16];
+    std::strftime(date, sizeof date, "%Y-%m-%d", &tm);
+    test::TempDir dir;
+    engine::ProjectConfig cfg;
+    cfg.name = "exp";
+    cfg.top = "top";
+    cfg.sources = {dir.write("t.v", kTwoBugs)};
+    cfg.sourceLibraries = {""};
+    cfg.constraints = {dir.write("c.sdc", "create_clock -name a -period 10 [get_ports clk_a]\n"
+                                          "create_clock -name b -period 7 [get_ports clk_b]\n"
+                                          "set_clock_groups -asynchronous -group a -group b\n")};
+    cfg.waivers = {dir.write("w.json", std::string("{\"format\": \"opencdc-waivers\", \"version\": 1, \"waivers\": "
+                                                   "[{\"id\": \"W-SOON\", \"rule\": \"CDC-00*\", \"reason\": \"r\", "
+                                                   "\"expires\": \"") +
+                                           date + "\"}]}")};
+    NullProgressSink progress;
+    CancellationToken cancel;
+    auto res = engine::AnalysisSession().run(cfg, progress, cancel); // default: 30 days
+    REQUIRE(res->cdc);
+    CHECK(countCode(res->diagnostics, "WAIVER-EXPIRING") == 1);
+    REQUIRE(res->cdc->waivers.size() == 1);
+    CHECK(res->cdc->waivers[0].expiresInDays >= 4); // 4 or 5 around midnight UTC
+    CHECK(res->cdc->waivers[0].expiresInDays <= 5);
+    const auto j = nlohmann::json::parse(engine::toJson(*res));
+    CHECK(j["cdc"]["waivers"][0]["expiresInDays"] == res->cdc->waivers[0].expiresInDays);
+    cfg.options.waiverExpiryWarningDays = 2; // negative: not within 2 days
+    auto res2 = engine::AnalysisSession().run(cfg, progress, cancel);
+    CHECK(countCode(res2->diagnostics, "WAIVER-EXPIRING") == 0);
+    CHECK(res2->cdc->waivers[0].expiresInDays == -1);
 }

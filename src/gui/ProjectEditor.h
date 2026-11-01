@@ -48,6 +48,8 @@ public:
     [[nodiscard]] QListWidget* ipRepositoryList() const { return ipRepos_; }
     void setParameter(const QString& name, const QString& value);
     void setDefine(const QString& name, const QString& value, bool hasValue);
+    /// Days before a waiver's expiry date it is reported (0 = never).
+    void setWaiverExpiryWarningDays(int days);
 
     [[nodiscard]] QTableWidget* sourceTable() const { return sources_; }
     /// Constraint files (column 0) with the module they are scoped to (column 1).
@@ -77,6 +79,7 @@ private:
     QComboBox* unknownClock_;
     QSpinBox* minStages_;
     QSpinBox* reconvDepth_;
+    QSpinBox* expiryWarn_ = nullptr;
     QComboBox* unknownModules_;
 };
 

@@ -28,6 +28,8 @@ struct AnalysisOptions {
     std::uint32_t reconvergenceDepth = 2; ///< register levels searched after synchronizers (CDC-005)
     /// Instances of modules defined nowhere: errors (false) or black boxes (true)
     bool blackBoxUnknownModules = false;
+    /// Waivers that expire within this many days are reported (WAIVER-EXPIRING); 0 = never
+    std::uint32_t waiverExpiryWarningDays = 30;
 };
 
 /// In-memory form of an OpenCDC project file (*.ocdc.json).
@@ -57,8 +59,10 @@ struct AnalysisOptions {
 ///   "options":     {"unknownClockRelation": "report",   (optional; report | assume_async | assume_sync)
 ///                   "minSyncStages": 2,                 (optional; 1..8)
 ///                   "reconvergenceDepth": 2,            (optional; 0..8)
-///                   "unknownModules": "error"}          (optional; error | blackbox: modules defined
+///                   "unknownModules": "error",          (optional; error | blackbox: modules defined
 ///                                                        nowhere, e.g. IP cores, are black boxes)
+///                   "waiverExpiryWarningDays": 30}      (optional; 0..3650: warn about waivers that
+///                                                        expire this soon, 0 = never)
 /// }
 struct ProjectConfig {
     std::filesystem::path projectFile; ///< absolute path of the .ocdc.json, empty if built in memory

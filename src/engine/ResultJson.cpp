@@ -377,6 +377,7 @@ json cdcSmall(const cdc::CdcResult& c) {
                            {"expires", w.expires},
                            {"location", locationJson(w.loc)},
                            {"expired", w.expired},
+                           {"expiresInDays", w.expiresInDays >= 0 ? json(w.expiresInDays) : json(nullptr)},
                            {"uses", w.uses}});
     j["waivers"] = std::move(waivers);
 
