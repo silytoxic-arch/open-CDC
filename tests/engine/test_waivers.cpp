@@ -299,8 +299,10 @@ TEST_CASE("appendWaiver: creates a file, appends keeping the file's entries, ref
                                            " \"waivers\": [{\"reason\": \"r\", \"id\": \"A\", \"source\": \"top.x\"}]}\n");
     w.id = "B";
     CHECK(engine::appendWaiver(own, w, {"A"}).empty());
-    std::ifstream in(own);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string text = [&] { // closed before the next write (Windows)
+        std::ifstream in(own);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }();
     CHECK(text.find("\"note\": \"team file\"") != std::string::npos);
     CHECK(text.find("\"reason\": \"r\",\n      \"id\": \"A\"") != std::string::npos); // order kept
     read.clear();
@@ -406,8 +408,11 @@ TEST_CASE("updateWaiver and removeWaiver edit one entry and keep the rest of the
     CHECK(v[0].reason == "edited");
     CHECK(v[0].expires == "2030-01-01");
     CHECK(v[0].rule == "CDC-001");
-    std::ifstream in(file);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // read and closed before the next write: Windows cannot replace a file that is open
+    const std::string text = [&] {
+        std::ifstream in(file);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }();
     CHECK(text.find("\"comment\": \"keep me\"") != std::string::npos);
     // a field cleared in the record is removed from the entry
     auto b = v[1];
@@ -513,4 +518,41 @@ TEST_CASE("Session: the project option sets how far ahead expiring waivers are r
     auto res2 = engine::AnalysisSession().run(cfg, progress, cancel);
     CHECK(countCode(res2->diagnostics, "WAIVER-EXPIRING") == 0);
     CHECK(res2->cdc->waivers[0].expiresInDays == -1);
+}
+
+TEST_CASE("Waiver and project files can be rewritten while another program has them open", "[waiver][engine]") {
+    // an editor showing the file: on Windows the file cannot be renamed over
+    // then, the write falls back to copying over it
+    test::TempDir dir;
+    const auto file = dir.write("w.json", "{\"format\": \"opencdc-waivers\", \"version\": 1, \"waivers\": "
+                                          "[{\"id\": \"A\", \"rule\": \"CDC-001\", \"reason\": \"a\"}]}\n");
+    std::ifstream holder(file); // stays open during the writes
+    REQUIRE(holder);
+    cdc::WaiverRecord b;
+    b.id = "B";
+    b.rule = "CDC-002";
+    b.reason = "b";
+    CHECK(engine::appendWaiver(file, b, {"A"}).empty());
+    b.reason = "b2";
+    CHECK(engine::updateWaiver(file, "B", b, {"A", "B"}).empty());
+    CHECK(engine::removeWaiver(file, "A").empty());
+    std::vector<cdc::WaiverRecord> v;
+    CollectingDiagnosticSink sink;
+    engine::readWaiverFile(file, v, sink);
+    REQUIRE(v.size() == 1);
+    CHECK(v[0].reason == "b2");
+    CHECK(!std::filesystem::exists(file.string() + ".tmp"));
+
+    engine::ProjectConfig cfg;
+    cfg.name = "p";
+    cfg.sources = {dir.path() / "a.v"};
+    cfg.sourceLibraries = {""};
+    const auto pf = dir.path() / "p.ocdc.json";
+    REQUIRE(!engine::saveProjectFile(cfg, pf));
+    std::ifstream projectHolder(pf);
+    cfg.waivers = {file};
+    CHECK(!engine::saveProjectFile(cfg, pf));
+    auto back = engine::loadProjectFile(pf);
+    REQUIRE(back);
+    CHECK(back.value().waivers.size() == 1);
 }

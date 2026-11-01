@@ -163,8 +163,13 @@ std::string writeAtomically(const std::filesystem::path& file, const nlohmann::o
     std::error_code ec;
     std::filesystem::rename(tmp, file, ec);
     if (ec) {
-        std::filesystem::remove(tmp, ec);
-        return "cannot replace '" + toUtf8(file) + "'";
+        // Windows refuses to rename over a file another program holds open
+        // (an editor showing it); copying over it still works then
+        std::error_code copyEc, rmEc;
+        std::filesystem::copy_file(tmp, file, std::filesystem::copy_options::overwrite_existing, copyEc);
+        std::filesystem::remove(tmp, rmEc);
+        if (copyEc)
+            return "cannot replace '" + toUtf8(file) + "': " + ec.message();
     }
     return {};
 }

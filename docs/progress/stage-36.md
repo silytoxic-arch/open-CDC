@@ -58,3 +58,19 @@
 ## 5. 已知限制
 
 - "今天"取 UTC 日期，与本地日期可能相差一天。
+
+## 6. 补丁 0.36.1：Windows CI 失败
+
+0.35.0 和 0.36.0 的 Windows CI 失败，Linux 的三个作业都通过。
+
+失败的测试是"updateWaiver and removeWaiver edit one entry and keep the rest of the file"。第二次 `updateWaiver` 和之后的 `removeWaiver` 都失败了。
+
+- **原因**：
+  - 测试中读取文件内容的 `std::ifstream` 一直保持打开；
+  - 而写入是先写临时文件，再改名覆盖原文件；
+  - Windows 不允许改名覆盖一个被打开的文件，Linux 允许，所以只在 Windows 上失败。
+- **影响用户的同一问题**：编辑器或查看器打开着豁免文件或工程文件时，在 Windows 上保存会失败。
+- **修复**：
+  - 测试：读取后立即关闭文件。
+  - 引擎：`WaiverFile` 的写入和 `saveProjectFile` 在改名失败时改为复制覆盖原文件，再删除临时文件。
+  - 新测试：在文件被另一个流保持打开时追加、更新、删除豁免并保存工程，都必须成功，且不留下 `.tmp` 文件。这个测试在 Windows CI 上会走复制覆盖的路径。

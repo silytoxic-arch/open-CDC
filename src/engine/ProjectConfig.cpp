@@ -407,8 +407,13 @@ std::optional<Diagnostic> saveProjectFile(const ProjectConfig& cfg, const std::f
     }
     std::filesystem::rename(tmp, abs, ec);
     if (ec) {
-        std::filesystem::remove(tmp, ec);
-        return projectError("PRJ-WRITE", "cannot replace project file: " + ec.message(), abs);
+        // Windows refuses to rename over a file another program holds open;
+        // copying over it still works then
+        std::error_code copyEc, rmEc;
+        std::filesystem::copy_file(tmp, abs, std::filesystem::copy_options::overwrite_existing, copyEc);
+        std::filesystem::remove(tmp, rmEc);
+        if (copyEc)
+            return projectError("PRJ-WRITE", "cannot replace project file: " + ec.message(), abs);
     }
     return std::nullopt;
 }
