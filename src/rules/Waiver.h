@@ -31,6 +31,10 @@ namespace opencdc::rules {
 void applyWaivers(std::vector<cdc::WaiverRecord> waivers, cdc::CdcResult& result, std::string_view today,
                   DiagnosticSink& sink, std::uint32_t expiryWarningDays = 0);
 
+/// State of an applied waiver: "expired" (not applied), "unused" (covers
+/// nothing), "expiring" (used, expires within the warning period) or "active".
+[[nodiscard]] std::string_view waiverState(const cdc::WaiverRecord& w) noexcept;
+
 /// Days from date `from` to date `to` (both YYYY-MM-DD, proleptic
 /// Gregorian); nullopt if either is malformed.
 [[nodiscard]] std::optional<std::int64_t> daysBetween(std::string_view from, std::string_view to) noexcept;

@@ -2,6 +2,7 @@
 #include "gui/ColumnSizing.h"
 
 #include "rules/RuleEngine.h"
+#include "rules/Waiver.h"
 
 #include <QComboBox>
 #include <QHBoxLayout>
@@ -1012,11 +1013,7 @@ WaiverView::WaiverView(QWidget* parent)
 }
 
 QString WaiverView::stateOf(const cdc::WaiverRecord& w) {
-    if (w.expired)
-        return QStringLiteral("expired");
-    if (w.uses == 0)
-        return QStringLiteral("unused");
-    return w.expiresInDays >= 0 ? QStringLiteral("expiring") : QStringLiteral("active");
+    return qs(rules::waiverState(w));
 }
 
 void WaiverView::clear() {

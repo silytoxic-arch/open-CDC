@@ -107,6 +107,12 @@ add_test(NAME cli.waive
         "-DEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/cdc_advanced"
         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/waive_work"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunWaive.cmake")
+add_test(NAME cli.waiver_audit
+    COMMAND ${CMAKE_COMMAND}
+        "-DEXE=$<TARGET_FILE:opencdc>"
+        "-DEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/cdc_advanced"
+        "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/waiver_audit_work"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunWaiverAudit.cmake")
 opencdc_cli_test(vivado_clocks 3
     "Vivado clock report check .*1/1 report\\(s\\), 5 Vivado clock\\(s\\), 4 matched, 0 period mismatch\\(es\\), 0 unmatched"
     analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json

@@ -60,6 +60,17 @@ Existing waivers are listed in the GUI's **Waivers** view: id, state (*active*, 
 
 In both cases the waiver is checked before anything is written: the id must not already be used in any of the project's waiver files, a reason is required, and the expiry date must be YYYY-MM-DD. An existing waiver file keeps its entries, their field order and any other fields. The file is replaced only once the new text has been written completely.
 
+## Auditing waivers
+
+`opencdc waivers <project>` runs the analysis and lists every waiver with its state (*active*, *expiring*, *unused*, *expired*), its use count, selectors, expiry date, location and reason, after the waiver diagnostics (unreadable files, invalid entries, expiry warnings). In CI, `--fail-on` makes the command fail with exit code 4 when a waiver is in one of the given states:
+
+```
+opencdc waivers my.ocdc.json --fail-on unused,expired,invalid   # stale or broken waivers fail the build
+opencdc waivers my.ocdc.json --fail-on expiring --json waivers.json
+```
+
+`invalid` counts waiver file errors: an unreadable file, invalid JSON, or an entry that is skipped (`WAIVER-INVALID`). `--json` writes the list (with `state`, `uses`, `expiresInDays`, `file`, `line`). The analysis result's JSON also has `cdc.waivers[].state`.
+
 ## Matching
 
 - A waiver covers a rule hit when every selector it specifies matches. Selectors it leaves out match anything.

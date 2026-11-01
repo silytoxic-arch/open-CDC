@@ -46,6 +46,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 | Every instance without a definition or built-in model is reported (`FE-UNRESOLVED-INSTANCE`), never silently a black box; a user module whose name differs from a vendor primitive only in case does not hide the primitive's model | ✅ |
 | Asynchronous reset crossings (grouped per reset source and clock), reconvergence (bit-level, configurable depth), multi-bit incoherency, pulse loss (with clock periods), multi-domain logic | ✅ |
 | Rules CDC-001 … CDC-010, all ten (specs in [docs/rules](docs/rules)) | ✅ |
+| Waiver audit for CI: `opencdc waivers <project> [--fail-on unused,expiring,expired,invalid] [--json …]` lists every waiver with its state and use count and fails (exit 4) on the given states | ✅ |
 | Waiver expiry warnings: waivers that expire within `options.waiverExpiryWarningDays` (default 30) are reported (`WAIVER-EXPIRING`), also in the JSON (`expiresInDays`), the HTML report and the GUI | ✅ |
 | Waivers written for you: **Waive...** in the GUI (rule violation or output crossing) or `opencdc waive <project> --fingerprint … --rule … --reason …`; by rule and path fingerprint, into the project's waiver file (created and added to the project when there is none). GUI Waivers view: state (active / unused / expiring / expired), uses, edit and remove (`opencdc waive --remove <id>`) | ✅ |
 | GUI CDC Path Viewer, Rule Violation Viewer and Output Ports viewer (outputs driven asynchronously to their `set_output_delay` clock, waived or not; example `examples/output_ports`) with filters, details (structure, reconvergence, grouped registers), fix suggestions and jump-to-source | ✅ |
@@ -138,6 +139,7 @@ The CLI exit codes are:
 * 1: the analysis reported errors (HDL or constraint).
 * 2: usage or project-file problems.
 * 3: error-severity CDC rule violations were found that are not waived.
+* 4: `opencdc waivers --fail-on …`: a waiver is in one of the given states.
 
 In the HTML report, a design with more than 5000 paths lists only the paths that need attention: those with rule hits, or a status other than safe. The CSV and JSON outputs always contain every path.
 

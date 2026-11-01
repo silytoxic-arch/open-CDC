@@ -74,6 +74,14 @@ std::optional<std::int64_t> dayNumber(std::string_view s) noexcept {
 }
 } // namespace
 
+std::string_view waiverState(const WaiverRecord& w) noexcept {
+    if (w.expired)
+        return "expired";
+    if (w.uses == 0)
+        return "unused";
+    return w.expiresInDays >= 0 ? "expiring" : "active";
+}
+
 std::optional<std::int64_t> daysBetween(std::string_view from, std::string_view to) noexcept {
     const auto a = dayNumber(from), b = dayNumber(to);
     if (!a || !b)

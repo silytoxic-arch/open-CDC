@@ -21,6 +21,9 @@
 #include "engine/SdcSuggest.h"
 #include "engine/ResultJson.h"
 #include "engine/WaiverFile.h"
+#include "rules/Waiver.h"
+
+#include <nlohmann/json.hpp>
 #include "ir/Dump.h"
 #include "schematic/Schematic.h"
 
@@ -31,6 +34,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -47,6 +51,7 @@ constexpr int kExitOk = 0;
 constexpr int kExitAnalysisErrors = 1;
 constexpr int kExitUsage = 2;
 constexpr int kExitViolations = 3;
+constexpr int kExitWaiverAudit = 4; ///< opencdc waivers --fail-on: a waiver is in one of the given states
 
 void printTree(const frontend::InstanceInfo& inst, const std::string& indent, std::ostream& os) {
     os << indent << inst.name << " (" << inst.definition << ")\n";
@@ -391,6 +396,109 @@ int runWaive(WaiveArgs args) {
     return kExitOk;
 }
 
+struct AuditArgs {
+    std::string project;
+    std::vector<std::string> failOn; ///< states that fail the audit
+    std::string json;
+};
+
+/// opencdc waivers: analyzes the project and lists its waivers with their
+/// state and use count; fails (exit 4) when one is in a --fail-on state.
+int runWaiverAudit(const AuditArgs& args) {
+    static const std::vector<std::string> kStates{"unused", "expiring", "expired", "invalid"};
+    for (const auto& s : args.failOn)
+        if (std::ranges::find(kStates, s) == kStates.end()) {
+            std::cerr << "error: --fail-on: unknown state '" << s << "' (unused, expiring, expired, invalid)\n";
+            return kExitUsage;
+        }
+    auto project = engine::loadProjectFile(fromUtf8(args.project));
+    if (!project) {
+        std::cerr << format(project.error()) << '\n';
+        return kExitUsage;
+    }
+    NullProgressSink progress;
+    CancellationToken cancel;
+    auto result = engine::AnalysisSession().run(project.value(), progress, cancel);
+    std::cout << "OpenCDC Analyzer " << kVersionString << " - waiver audit\nProject : " << project.value().name
+              << "\n";
+    // waiver file problems (unreadable files, invalid entries) and expiry warnings
+    std::size_t invalid = 0;
+    for (const auto& d : result->diagnostics)
+        if (d.code.starts_with("WAIVER-")) {
+            std::cout << "  " << format(d) << '\n';
+            invalid += d.severity == Severity::Error ? 1U : 0U; // WAIVER-OPEN/-SCHEMA/-INVALID errors
+        }
+    if (!result->cdc) {
+        std::cerr << "error: the CDC analysis did not run (see 'opencdc analyze'): waiver uses are unknown\n";
+        return kExitAnalysisErrors;
+    }
+    const auto& ws = result->cdc->waivers;
+    std::map<std::string, std::size_t> counts;
+    for (const auto& w : ws)
+        ++counts[std::string(rules::waiverState(w))];
+    std::cout << "Waivers : " << ws.size() << " from " << project.value().waivers.size() << " file(s): "
+              << counts["active"] << " active, " << counts["expiring"] << " expiring, " << counts["unused"]
+              << " unused, " << counts["expired"] << " expired; " << invalid << " invalid entr(y/ies) or file problem(s)\n";
+    for (const auto& w : ws) {
+        std::string sel;
+        auto add = [&](const char* k, const std::string& v) {
+            if (!v.empty())
+                sel += (sel.empty() ? "" : " ") + std::string(k) + "=" + v;
+        };
+        add("rule", w.rule);
+        add("fingerprint", w.fingerprint);
+        add("source", w.source);
+        add("destination", w.destination);
+        std::cout << "  " << w.id << " [" << rules::waiverState(w) << "] uses=" << w.uses << " " << sel;
+        if (!w.expires.empty())
+            std::cout << " expires=" << w.expires;
+        std::cout << "  (" << toString(w.loc) << ")\n      " << w.reason;
+        if (!w.author.empty())
+            std::cout << " -- " << w.author;
+        std::cout << '\n';
+    }
+    if (!args.json.empty()) {
+        nlohmann::json j;
+        j["project"] = project.value().name;
+        j["waivers"] = nlohmann::json::array();
+        for (const auto& w : ws)
+            j["waivers"].push_back({{"id", w.id},
+                                    {"state", std::string(rules::waiverState(w))},
+                                    {"uses", w.uses},
+                                    {"rule", w.rule},
+                                    {"fingerprint", w.fingerprint},
+                                    {"source", w.source},
+                                    {"destination", w.destination},
+                                    {"reason", w.reason},
+                                    {"author", w.author},
+                                    {"expires", w.expires},
+                                    {"expiresInDays", w.expiresInDays >= 0 ? nlohmann::json(w.expiresInDays)
+                                                                           : nlohmann::json(nullptr)},
+                                    {"file", w.loc.file},
+                                    {"line", w.loc.line}});
+        j["invalid"] = invalid;
+        std::ofstream out(fromUtf8(args.json), std::ios::binary);
+        if (!(out << j.dump(2) << '\n')) {
+            std::cerr << "error: cannot write " << args.json << '\n';
+            return kExitUsage;
+        }
+        std::cout << "JSON    : " << args.json << '\n';
+    }
+    std::vector<std::string> failed;
+    for (const auto& s : args.failOn)
+        if ((s == "invalid" && invalid > 0) || (s != "invalid" && counts[s] > 0))
+            failed.push_back(s);
+    if (!failed.empty()) {
+        std::cout << "Audit   : FAILED (";
+        for (std::size_t i = 0; i < failed.size(); ++i)
+            std::cout << (i ? ", " : "") << failed[i];
+        std::cout << ")\n";
+        return kExitWaiverAudit;
+    }
+    std::cout << "Audit   : passed\n";
+    return kExitOk;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -421,6 +529,17 @@ int main(int argc, char** argv) {
                         "Write the CDC schematic of every path as path-<id>.svg into this directory");
     analyze->add_flag("-q,--quiet", quiet, "Print only the summary");
 
+    AuditArgs audit;
+    auto* auditCmd = app.add_subcommand(
+        "waivers", "List the project's waivers with their state (active, expiring, unused, expired) and use count "
+                   "(runs the analysis); --fail-on makes the command fail (exit 4) for CI");
+    auditCmd->add_option("project", audit.project, "Project file")->required();
+    auditCmd->add_option("--fail-on", audit.failOn,
+                         "Fail when a waiver is in one of these states: unused, expiring, expired, invalid "
+                         "(comma-separated or repeated)")
+        ->delimiter(',');
+    auditCmd->add_option("--json", audit.json, "Write the waiver list as JSON to this file");
+
     WaiveArgs waive;
     auto* waiveCmd = app.add_subcommand(
         "waive", "Add a waiver to the project's waiver file (created next to the project and added to it when the "
@@ -449,5 +568,7 @@ int main(int argc, char** argv) {
         return runAnalyze(projectPath, outs, quiet);
     if (waiveCmd->parsed())
         return runWaive(std::move(waive));
+    if (auditCmd->parsed())
+        return runWaiverAudit(audit);
     return kExitUsage;
 }

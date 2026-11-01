@@ -6,6 +6,7 @@
 #include "core/Version.h"
 #include "ir/Dump.h"
 #include "rules/RuleEngine.h"
+#include "rules/Waiver.h"
 
 #include <nlohmann/json.hpp>
 
@@ -378,6 +379,7 @@ json cdcSmall(const cdc::CdcResult& c) {
                            {"location", locationJson(w.loc)},
                            {"expired", w.expired},
                            {"expiresInDays", w.expiresInDays >= 0 ? json(w.expiresInDays) : json(nullptr)},
+                           {"state", std::string(rules::waiverState(w))},
                            {"uses", w.uses}});
     j["waivers"] = std::move(waivers);
 
