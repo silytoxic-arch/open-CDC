@@ -9,6 +9,7 @@
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTableView;
 class QTableWidget;
 class QTextBrowser;
@@ -93,10 +94,16 @@ public:
     [[nodiscard]] QComboBox* ruleFilter() const { return ruleFilter_; }
     [[nodiscard]] QComboBox* severityFilter() const { return severityFilter_; }
     [[nodiscard]] QComboBox* waiverFilter() const { return waiverFilter_; }
+    /// The selected rule hit (path id, hit index), if any.
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> currentHit() const;
+    /// "Waive...": enabled for a selected hit that no waiver covers.
+    [[nodiscard]] QPushButton* waiveButton() const { return waiveButton_; }
 
 signals:
     void locationActivated(const QString& file, int line);
     void pathActivated(std::size_t pathId);
+    /// The user asked to waive hit `hit` of path `pathId`.
+    void waiveRequested(std::size_t pathId, std::size_t hit);
 
 private:
     void applyFilter();
@@ -108,6 +115,7 @@ private:
     QComboBox* statusFilter_;
     QComboBox* clockFilter_;
     QComboBox* waiverFilter_;
+    QPushButton* waiveButton_;
     QLabel* countLabel_;
     detail::HitModel* model_;
     detail::HitFilter* filter_;
@@ -134,9 +142,15 @@ public:
     [[nodiscard]] int rowCount() const;
     [[nodiscard]] int visibleRows() const;
     [[nodiscard]] QTextBrowser* details() const { return details_; }
+    /// Index (in CdcResult::outputs) of the selected record, if any.
+    [[nodiscard]] std::optional<std::size_t> currentOutput() const;
+    /// "Waive...": enabled for a selected record that no waiver covers.
+    [[nodiscard]] QPushButton* waiveButton() const { return waiveButton_; }
 
 signals:
     void locationActivated(const QString& file, int line);
+    /// The user asked to waive output crossing `index` (CdcResult::outputs).
+    void waiveRequested(std::size_t index);
 
 private:
     void applyFilter();
@@ -144,6 +158,7 @@ private:
 
     std::shared_ptr<const engine::AnalysisResult> result_;
     QComboBox* waiverFilter_;
+    QPushButton* waiveButton_;
     QLabel* countLabel_;
     QTableWidget* table_;
     QTextBrowser* details_;

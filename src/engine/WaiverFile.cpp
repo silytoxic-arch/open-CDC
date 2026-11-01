@@ -1,6 +1,7 @@
 #include "engine/WaiverFile.h"
 
 #include "core/PathUtil.h"
+#include "engine/ProjectConfig.h"
 
 #include <nlohmann/json.hpp>
 
@@ -105,6 +106,144 @@ void readWaiverFile(const std::filesystem::path& file, std::vector<cdc::WaiverRe
         }
         out.push_back(std::move(r));
     }
+}
+
+std::string waiverProblem(const cdc::WaiverRecord& w, const std::vector<std::string>& taken) {
+    static const std::regex date(R"(\d{4}-\d{2}-\d{2})");
+    if (w.id.empty())
+        return "the waiver needs an id";
+    if (std::ranges::find(taken, w.id) != taken.end())
+        return "a waiver with id '" + w.id + "' already exists";
+    if (w.reason.empty())
+        return "a reason is required";
+    if (w.rule.empty() && w.fingerprint.empty() && w.source.empty() && w.destination.empty())
+        return "it would cover every rule hit: give at least one of rule, fingerprint, source, destination";
+    if (!w.expires.empty() && !std::regex_match(w.expires, date))
+        return "the expiry date must be YYYY-MM-DD";
+    return {};
+}
+
+std::string appendWaiver(const std::filesystem::path& file, const cdc::WaiverRecord& w,
+                         const std::vector<std::string>& taken) {
+    if (auto problem = waiverProblem(w, taken); !problem.empty())
+        return problem;
+    const std::string name = toUtf8(file);
+    nlohmann::ordered_json root;
+    std::error_code ec;
+    if (std::filesystem::exists(file, ec)) {
+        std::ifstream in(file, std::ios::binary);
+        if (!in)
+            return "cannot read '" + name + "'";
+        std::stringstream buf;
+        buf << in.rdbuf();
+        try {
+            root = nlohmann::ordered_json::parse(buf.str());
+        }
+        catch (const nlohmann::json::parse_error& e) {
+            return "'" + name + "' is not valid JSON: " + e.what();
+        }
+        if (!root.is_object() || root.value("format", "") != kWaiverFormatName)
+            return "'" + name + "' is not an OpenCDC waiver file";
+        if (root.value("version", 0) != kWaiverFormatVersion)
+            return "'" + name + "' has an unsupported waiver file version";
+        if (!root.contains("waivers") || !root["waivers"].is_array())
+            return "'" + name + "': field 'waivers' must be an array";
+        for (const auto& e : root["waivers"])
+            if (e.is_object() && e.value("id", "") == w.id)
+                return "a waiver with id '" + w.id + "' already exists in '" + name + "'";
+    }
+    else {
+        root["format"] = kWaiverFormatName;
+        root["version"] = kWaiverFormatVersion;
+        root["waivers"] = nlohmann::ordered_json::array();
+    }
+    nlohmann::ordered_json e;
+    e["id"] = w.id;
+    for (const auto& [key, value] : {std::pair<const char*, const std::string*>{"rule", &w.rule},
+                                     {"fingerprint", &w.fingerprint},
+                                     {"source", &w.source},
+                                     {"destination", &w.destination},
+                                     {"reason", &w.reason},
+                                     {"author", &w.author},
+                                     {"expires", &w.expires}})
+        if (!value->empty())
+            e[key] = *value;
+    root["waivers"].push_back(std::move(e));
+    // written next to the file, then renamed over it
+    auto tmp = file;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out)
+            return "cannot write '" + toUtf8(tmp) + "'";
+        out << root.dump(2) << '\n';
+        if (!out.flush())
+            return "cannot write '" + toUtf8(tmp) + "'";
+    }
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        return "cannot replace '" + name + "'";
+    }
+    return {};
+}
+
+std::string nextWaiverId(const std::vector<std::string>& taken) {
+    for (std::size_t n = 1;; ++n) {
+        std::string id = "W-" + std::to_string(n);
+        if (std::ranges::find(taken, id) == taken.end())
+            return id;
+    }
+}
+
+cdc::WaiverRecord waiverFor(const cdc::CdcPath& path, const cdc::RuleHit& hit) {
+    cdc::WaiverRecord w;
+    w.rule = hit.ruleId;
+    w.fingerprint = path.fingerprint;
+    return w;
+}
+
+cdc::WaiverRecord waiverFor(const cdc::OutputCrossing& output) {
+    cdc::WaiverRecord w;
+    w.rule = "CDC-OUTPUT-CLOCK";
+    w.fingerprint = output.fingerprint;
+    return w;
+}
+
+AddedWaiver addProjectWaiver(ProjectConfig& cfg, cdc::WaiverRecord w, std::filesystem::path file) {
+    AddedWaiver r;
+    std::vector<std::string> taken;
+    for (const auto& f : cfg.waivers) {
+        std::error_code ec;
+        if (!std::filesystem::exists(f, ec))
+            continue;
+        std::vector<cdc::WaiverRecord> records;
+        CollectingDiagnosticSink ignored; // problems of the file are reported by the analysis
+        readWaiverFile(f, records, ignored);
+        for (auto& x : records)
+            taken.push_back(std::move(x.id));
+    }
+    if (w.id.empty())
+        w.id = nextWaiverId(taken);
+    if (file.empty())
+        file = !cfg.waivers.empty() ? cfg.waivers.front()
+               : cfg.projectFile.empty() ? std::filesystem::absolute("waivers.json")
+                                         : cfg.projectFile.parent_path() / "waivers.json";
+    if (!file.is_absolute()) {
+        std::error_code ec;
+        file = std::filesystem::absolute(file, ec);
+    }
+    file = file.lexically_normal();
+    r.error = appendWaiver(file, w, taken);
+    if (!r.error.empty())
+        return r;
+    r.id = w.id;
+    r.file = file;
+    if (std::ranges::none_of(cfg.waivers, [&](const std::filesystem::path& p) { return p.lexically_normal() == file; })) {
+        cfg.waivers.push_back(file);
+        r.projectChanged = true;
+    }
+    return r;
 }
 
 } // namespace opencdc::engine

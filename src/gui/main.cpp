@@ -3,6 +3,7 @@
 //   opencdc-gui [project.ocdc.json]
 //   opencdc-gui --smoke-test <project.ocdc.json>   (headless self-test, used by CTest)
 //   opencdc-gui --edit-test <project.ocdc.json>    (headless project editing self-test)
+//   opencdc-gui --waive-test <project.ocdc.json>   (headless waiver self-test, on a copy of the project)
 
 #include "core/Version.h"
 #include "gui/CdcViews.h"
@@ -15,6 +16,8 @@
 #include "frontend/Frontend.h"
 #include "gui/SchematicView.h"
 #include "gui/SourceViewer.h"
+#include "gui/WaiverDialog.h"
+#include "engine/WaiverFile.h"
 
 #include <QApplication>
 #include <QElapsedTimer>
@@ -503,6 +506,128 @@ int runEditTest(MainWindow& window, const QString& project) {
     return QApplication::exec();
 }
 
+/// Waivers from the GUI: on a copy of the project (saved into a temporary
+/// directory), the first open rule hit and the first open output crossing
+/// are waived through the waiver dialog into a new waiver file; the file is
+/// added to the project, the project is saved, the analysis runs again and
+/// shows them waived. Negative: no reason, a duplicate id.
+int runWaiveTest(MainWindow& window, const QString& project) {
+    if (!window.openProject(project))
+        return fail("project could not be loaded");
+    static QTemporaryDir dir;
+    if (!dir.isValid() || !window.saveProjectAs(dir.filePath(QStringLiteral("copy.ocdc.json"))))
+        return fail("project copy could not be saved");
+    const QString file = dir.filePath(QStringLiteral("new-waivers.json"));
+    struct State {
+        int stage = 0;
+        std::string hitRule, hitFingerprint, hitId, outFingerprint, outId;
+        std::size_t waivedBefore = 0;
+    };
+    static State st;
+    auto waivedHitsOf = [](const opencdc::engine::AnalysisResult& r) {
+        std::size_t n = 0;
+        for (const auto& p : r.cdc->paths)
+            n += static_cast<std::size_t>(std::ranges::count_if(p.hits, [](const auto& h) { return !h.waiver.empty(); }));
+        return n;
+    };
+    // fill and check a dialog, then add its waiver; "" on success
+    auto waiveThrough = [&](std::unique_ptr<opencdc::gui::WaiverDialog> dlg, std::string& id) -> const char* {
+        if (!dlg)
+            return "no waiver dialog";
+        if (dlg->validationError().isEmpty())
+            return "a waiver without a reason is accepted";
+        dlg->setReason(QStringLiteral("self-test: acceptable"));
+        dlg->setExpires(QStringLiteral("2099-1-1"));
+        if (dlg->validationError().isEmpty())
+            return "a malformed expiry date is accepted";
+        dlg->setExpires(QStringLiteral("2099-12-31"));
+        if (!dlg->validationError().isEmpty())
+            return "a complete waiver is refused";
+        auto w = dlg->waiver();
+        id = w.id;
+        if (!window.addWaiver(w, file).isEmpty())
+            return "the waiver could not be added";
+        return "";
+    };
+    auto finish = [](int code) { QApplication::exit(code); };
+    QObject::connect(
+        window.controller(), &opencdc::gui::AnalysisController::finished, &window,
+        [&, waivedHitsOf, waiveThrough, finish](const opencdc::gui::AnalysisController::ResultPtr& result) {
+            if (!result || !result->cdc)
+                return finish(fail("no CDC result"));
+            const auto& c = *result->cdc;
+            if (st.stage == 0) {
+                st.waivedBefore = waivedHitsOf(*result);
+                // first open rule hit, else first open output crossing
+                for (const auto& p : c.paths)
+                    for (std::size_t h = 0; h < p.hits.size() && st.hitRule.empty(); ++h)
+                        if (p.hits[h].waiver.empty()) {
+                            st.hitRule = p.hits[h].ruleId;
+                            st.hitFingerprint = p.fingerprint;
+                            if (const char* err = waiveThrough(window.waiverDialogForHit(p.id, h), st.hitId); *err)
+                                return finish(fail(err));
+                        }
+                if (!st.hitRule.empty()) {
+                    st.stage = 1;
+                    return; // addWaiver started the analysis again
+                }
+                st.stage = 1;
+            }
+            if (st.stage == 1) {
+                if (!st.hitRule.empty()) {
+                    bool waived = false;
+                    for (const auto& p : c.paths)
+                        if (p.fingerprint == st.hitFingerprint)
+                            for (const auto& h : p.hits)
+                                waived = waived || (h.ruleId == st.hitRule && h.waiver == st.hitId);
+                    if (!waived || waivedHitsOf(*result) <= st.waivedBefore)
+                        return finish(fail("the waived rule hit is not waived after the analysis"));
+                    if (!window.project() ||
+                        std::ranges::none_of(window.project()->waivers, [&](const auto& f) {
+                            return QFileInfo(QString::fromStdString(opencdc::toUtf8(f))) == QFileInfo(file);
+                        }))
+                        return finish(fail("the new waiver file is not in the project"));
+                    auto reloaded = opencdc::engine::loadProjectFile(window.project()->projectFile);
+                    if (!reloaded || reloaded.value().waivers != window.project()->waivers)
+                        return finish(fail("the project file does not list the new waiver file"));
+                    // negative: the same id again
+                    auto again = window.waiverDialogForHit(0, 0);
+                    if (again) {
+                        again->setReason(QStringLiteral("x"));
+                        again->setId(QString::fromStdString(st.hitId));
+                        if (again->validationError().isEmpty())
+                            return finish(fail("a duplicate waiver id is accepted"));
+                    }
+                }
+                st.stage = 2;
+                for (std::size_t i = 0; i < c.outputs.size(); ++i)
+                    if (c.outputs[i].waiver.empty()) {
+                        st.outFingerprint = c.outputs[i].fingerprint;
+                        if (const char* err = waiveThrough(window.waiverDialogForOutput(i), st.outId); *err)
+                            return finish(fail(err));
+                        return;
+                    }
+            }
+            if (st.stage == 2 && !st.outFingerprint.empty()) {
+                const auto it = std::ranges::find(c.outputs, st.outFingerprint, &opencdc::cdc::OutputCrossing::fingerprint);
+                if (it == c.outputs.end() || it->waiver != st.outId)
+                    return finish(fail("the waived output crossing is not waived after the analysis"));
+            }
+            if (st.hitRule.empty() && st.outFingerprint.empty())
+                return finish(fail("nothing to waive in this project"));
+            std::printf("GUI waive test passed: rule hit %s %s, output %s %s\n",
+                        st.hitRule.empty() ? "-" : st.hitRule.c_str(), st.hitId.c_str(),
+                        st.outFingerprint.empty() ? "-" : st.outFingerprint.c_str(), st.outId.c_str());
+            finish(0);
+        });
+    QTimer::singleShot(0, &window, [&window] { window.runAnalysis(); });
+    QTimer::singleShot(600000, &window, [] {
+        std::fprintf(stderr, "GUI smoke test FAILED: timeout\n");
+        QApplication::exit(1);
+    });
+    return QApplication::exec();
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -522,6 +647,9 @@ int main(int argc, char* argv[]) {
     QCommandLineOption editOption("edit-test", "Run a headless project editing self-test on <project> and exit.",
                                   "project");
     parser.addOption(editOption);
+    QCommandLineOption waiveOption("waive-test", "Run a headless waiver self-test on a copy of <project> and exit.",
+                                   "project");
+    parser.addOption(waiveOption);
     parser.addPositionalArgument("project", "Project file to open (*.ocdc.json).", "[project]");
     parser.process(app);
 
@@ -529,6 +657,8 @@ int main(int argc, char* argv[]) {
 
     if (parser.isSet(editOption))
         return runEditTest(window, parser.value(editOption));
+    if (parser.isSet(waiveOption))
+        return runWaiveTest(window, parser.value(waiveOption));
     if (parser.isSet(smokeOption))
         return runSmokeTest(window, parser.value(smokeOption), parser.value(screenshotOption));
 

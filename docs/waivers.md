@@ -49,6 +49,15 @@ A waiver file looks like this:
 
 In globs, `*` matches any sequence of characters (including `.`), and `?` matches exactly one character. All other characters, including `[` and `]`, are literal, so `top.g[0].*` works as written.
 
+## Adding a waiver
+
+A waiver for one rule hit (or one output crossing) can be written for you. It selects the rule and the path's fingerprint, so it covers that path only:
+
+- **GUI**: select the hit in *Rule Violations* (or the output in *Output Ports*) and press **Waive...**. Enter a reason (required), and optionally an author and an expiry date. Choose the waiver file: one of the project's, or `waivers.json` next to the project file. A new file is added to the project and the project is saved. The analysis then runs again. The project must have been saved to a file first.
+- **CLI**: `opencdc waive <project> --fingerprint <fp> --rule <rule> --reason "<text>" [--author …] [--expires YYYY-MM-DD] [--id …] [--file …]`. The fingerprint is printed at the end of every path line that has rule hits (`fingerprint=…`) and in every `CDC-OUTPUT-CLOCK` warning. Without `--file` the waiver goes to the project's first waiver file, or to a new `waivers.json` next to the project, which is then added to the project. Without `--id` the next free `W-<n>` is used.
+
+In both cases the waiver is checked before anything is written: the id must not already be used in any of the project's waiver files, a reason is required, and the expiry date must be YYYY-MM-DD. An existing waiver file keeps its entries, their field order and any other fields. The file is replaced only once the new text has been written completely.
+
 ## Matching
 
 - A waiver covers a rule hit when every selector it specifies matches. Selectors it leaves out match anything.

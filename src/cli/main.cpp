@@ -20,6 +20,7 @@
 #include "engine/Report.h"
 #include "engine/SdcSuggest.h"
 #include "engine/ResultJson.h"
+#include "engine/WaiverFile.h"
 #include "ir/Dump.h"
 #include "schematic/Schematic.h"
 
@@ -225,7 +226,10 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
                 if (p.groupSize > 1)
                     os << " (+" << (p.groupSize - 1) << " more)";
                 os << "  width=" << p.width << " sync=" << cdc::toString(p.syncType) << "/"
-                   << cdc::toString(p.syncStatus) << "\n";
+                   << cdc::toString(p.syncStatus);
+                if (!p.hits.empty() && !p.fingerprint.empty())
+                    os << " fingerprint=" << p.fingerprint; // for waivers (opencdc waive --fingerprint)
+                os << "\n";
                 for (const auto& h : p.hits) {
                     os << "      " << h.ruleId << " " << toString(h.severity) << " (" << cdc::toString(h.status)
                        << "): " << h.message;
@@ -334,6 +338,37 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
     return result->violations(Severity::Error) > 0 ? kExitViolations : kExitOk;
 }
 
+struct WaiveArgs {
+    std::string project;
+    cdc::WaiverRecord w;
+    std::string file;
+};
+
+/// opencdc waive: adds a waiver to the project's waiver file (created and
+/// added to the project when it has none).
+int runWaive(WaiveArgs args) {
+    auto project = engine::loadProjectFile(fromUtf8(args.project));
+    if (!project) {
+        std::cerr << format(project.error()) << '\n';
+        return kExitUsage;
+    }
+    auto& cfg = project.value();
+    const auto added = engine::addProjectWaiver(cfg, args.w, args.file.empty() ? std::filesystem::path() : fromUtf8(args.file));
+    if (!added.error.empty()) {
+        std::cerr << "error: " << added.error << '\n';
+        return kExitUsage;
+    }
+    std::cout << "waiver '" << added.id << "' added to " << toUtf8(added.file) << '\n';
+    if (added.projectChanged) {
+        if (auto err = engine::saveProjectFile(cfg, cfg.projectFile)) {
+            std::cerr << format(*err) << '\n';
+            return kExitAnalysisErrors;
+        }
+        std::cout << "waiver file added to project " << toUtf8(cfg.projectFile) << '\n';
+    }
+    return kExitOk;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -364,6 +399,21 @@ int main(int argc, char** argv) {
                         "Write the CDC schematic of every path as path-<id>.svg into this directory");
     analyze->add_flag("-q,--quiet", quiet, "Print only the summary");
 
+    WaiveArgs waive;
+    auto* waiveCmd = app.add_subcommand(
+        "waive", "Add a waiver to the project's waiver file (created next to the project and added to it when the "
+                 "project has none); the fingerprint is printed with each path and output warning");
+    waiveCmd->add_option("project", waive.project, "Project file")->required();
+    waiveCmd->add_option("--fingerprint", waive.w.fingerprint, "Path or output fingerprint (exact)");
+    waiveCmd->add_option("--rule", waive.w.rule, "Rule id or glob (e.g. CDC-007, CDC-OUTPUT-CLOCK)");
+    waiveCmd->add_option("--source", waive.w.source, "Glob on the source name");
+    waiveCmd->add_option("--destination", waive.w.destination, "Glob on the destination name");
+    waiveCmd->add_option("--reason", waive.w.reason, "Why the hit is acceptable")->required();
+    waiveCmd->add_option("--author", waive.w.author, "Who waived it");
+    waiveCmd->add_option("--expires", waive.w.expires, "Expiry date YYYY-MM-DD");
+    waiveCmd->add_option("--id", waive.w.id, "Waiver id (default: the next free W-<n>)");
+    waiveCmd->add_option("--file", waive.file, "Waiver file to write (default: the project's first waiver file)");
+
     try {
         app.parse(argc, argv);
     }
@@ -374,5 +424,7 @@ int main(int argc, char** argv) {
 
     if (analyze->parsed())
         return runAnalyze(projectPath, outs, quiet);
+    if (waiveCmd->parsed())
+        return runWaive(std::move(waive));
     return kExitUsage;
 }

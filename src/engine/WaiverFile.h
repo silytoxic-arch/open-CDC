@@ -31,4 +31,42 @@ inline constexpr int kWaiverFormatVersion = 1;
 /// location is the line of its "id".
 void readWaiverFile(const std::filesystem::path& file, std::vector<cdc::WaiverRecord>& out, DiagnosticSink& sink);
 
+/// Problems that would make readWaiverFile skip `w` (missing id or reason,
+/// no selector, malformed expiry date, id already in `taken`); empty if none.
+[[nodiscard]] std::string waiverProblem(const cdc::WaiverRecord& w, const std::vector<std::string>& taken);
+
+/// Appends a waiver to a waiver file. A missing file is created; an existing
+/// one keeps its entries, their field order and any other top-level fields.
+/// `taken`: ids of the waivers already in the project (ids are unique across
+/// all of its waiver files). The file is replaced only once the new text is
+/// completely written. Returns an error message, empty on success.
+[[nodiscard]] std::string appendWaiver(const std::filesystem::path& file, const cdc::WaiverRecord& w,
+                                       const std::vector<std::string>& taken);
+
+/// The first id "W-<n>" (n = 1, 2, ...) not in `taken`.
+[[nodiscard]] std::string nextWaiverId(const std::vector<std::string>& taken);
+
+/// A waiver for one CDC path's rule hit (rule + path fingerprint) or for one
+/// output crossing (CDC-OUTPUT-CLOCK + its fingerprint); id, reason, author
+/// and expiry are left to the caller.
+[[nodiscard]] cdc::WaiverRecord waiverFor(const cdc::CdcPath& path, const cdc::RuleHit& hit);
+[[nodiscard]] cdc::WaiverRecord waiverFor(const cdc::OutputCrossing& output);
+
+struct ProjectConfig;
+
+struct AddedWaiver {
+    std::string error;          ///< empty on success
+    std::string id;             ///< the waiver's id (generated when it had none)
+    std::filesystem::path file; ///< the waiver file written
+    bool projectChanged = false; ///< the file was added to the project's waiver files (save the project)
+};
+
+/// Adds a waiver to a project: to `file`, or (empty) to the project's first
+/// waiver file, or to "waivers.json" next to the project file. A file the
+/// project does not list yet is added to cfg.waivers. Without an id the
+/// waiver gets the next free "W-<n>" (ids are unique across all of the
+/// project's waiver files).
+[[nodiscard]] AddedWaiver addProjectWaiver(ProjectConfig& cfg, cdc::WaiverRecord w,
+                                           std::filesystem::path file = {});
+
 } // namespace opencdc::engine

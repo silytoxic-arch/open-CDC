@@ -274,3 +274,110 @@ TEST_CASE("output_ports example: one output reported, one waived, synchronized a
     CHECK(result->cdc->stats.outputCrossings == 1);
     CHECK(result->violations(Severity::Error) == 0); // the internal crossing is synchronized
 }
+
+TEST_CASE("appendWaiver: creates a file, appends keeping the file's entries, refuses invalid waivers",
+          "[waiver][engine]") {
+    test::TempDir dir;
+    const auto file = dir.path() / "w.json";
+    cdc::WaiverRecord w;
+    w.id = "W-1";
+    w.rule = "CDC-007";
+    w.fingerprint = "0123456789abcdef";
+    w.reason = "level";
+    CHECK(engine::appendWaiver(file, w, {}).empty());
+    std::vector<cdc::WaiverRecord> read;
+    CollectingDiagnosticSink sink;
+    engine::readWaiverFile(file, read, sink);
+    CHECK(sink.take().empty());
+    REQUIRE(read.size() == 1);
+    CHECK(read[0].fingerprint == "0123456789abcdef");
+    CHECK(read[0].source.empty()); // fields left empty are not written
+
+    // an existing file keeps its entries, field order and extra fields
+    const auto own = dir.write("own.json", "{\"format\": \"opencdc-waivers\", \"version\": 1, \"note\": \"team file\",\n"
+                                           " \"waivers\": [{\"reason\": \"r\", \"id\": \"A\", \"source\": \"top.x\"}]}\n");
+    w.id = "B";
+    CHECK(engine::appendWaiver(own, w, {"A"}).empty());
+    std::ifstream in(own);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(text.find("\"note\": \"team file\"") != std::string::npos);
+    CHECK(text.find("\"reason\": \"r\",\n      \"id\": \"A\"") != std::string::npos); // order kept
+    read.clear();
+    engine::readWaiverFile(own, read, sink);
+    CHECK(sink.take().empty());
+    REQUIRE(read.size() == 2);
+    CHECK(read[1].id == "B");
+
+    // negatives: duplicate id (in the file, or elsewhere in the project), no
+    // reason, no selector, bad date, not a waiver file
+    w.id = "A";
+    CHECK(engine::appendWaiver(own, w, {}).find("already exists") != std::string::npos);
+    w.id = "C";
+    CHECK(engine::appendWaiver(own, w, {"C"}).find("already exists") != std::string::npos);
+    auto noReason = w;
+    noReason.reason.clear();
+    CHECK(!engine::appendWaiver(own, noReason, {}).empty());
+    auto noSelector = w;
+    noSelector.rule.clear();
+    noSelector.fingerprint.clear();
+    CHECK(!engine::appendWaiver(own, noSelector, {}).empty());
+    auto badDate = w;
+    badDate.expires = "2027-1-1";
+    CHECK(!engine::appendWaiver(own, badDate, {}).empty());
+    const auto other = dir.write("other.json", "{\"format\": \"opencdc-project\"}");
+    CHECK(engine::appendWaiver(other, w, {}).find("not an OpenCDC waiver file") != std::string::npos);
+    read.clear();
+    engine::readWaiverFile(own, read, sink);
+    CHECK(read.size() == 2); // nothing was written by the refused calls
+
+    CHECK(engine::nextWaiverId({}) == "W-1");
+    CHECK(engine::nextWaiverId({"W-1", "W-2", "X"}) == "W-3");
+}
+
+TEST_CASE("A waiver made for one rule hit covers that path only (cdc_advanced, CDC-005 twice)",
+          "[waiver][engine][example]") {
+    test::TempDir dir;
+    auto cfg = engine::loadProjectFile(test::examplesDir() / "cdc_advanced" / "cdc_advanced.ocdc.json");
+    REQUIRE(cfg);
+    cfg.value().projectFile = dir.path() / "p.ocdc.json"; // waivers.json goes next to it
+    REQUIRE(cfg.value().waivers.empty());
+    NullProgressSink progress;
+    CancellationToken cancel;
+    auto before = engine::AnalysisSession().run(cfg.value(), progress, cancel);
+    REQUIRE(before->cdc);
+    // the two CDC-005 hits (start and mode reconverge)
+    std::vector<const cdc::CdcPath*> rc;
+    for (const auto& p : before->cdc->paths)
+        for (const auto& h : p.hits)
+            if (h.ruleId == "CDC-005")
+                rc.push_back(&p);
+    REQUIRE(rc.size() == 2);
+    const auto hit = std::ranges::find(rc[0]->hits, std::string("CDC-005"), &cdc::RuleHit::ruleId);
+    auto w = engine::waiverFor(*rc[0], *hit);
+    w.reason = "configuration phases";
+    const auto added = engine::addProjectWaiver(cfg.value(), w);
+    REQUIRE(added.error.empty());
+    CHECK(added.id == "W-1");
+    CHECK(added.projectChanged);
+    CHECK(added.file == (dir.path() / "waivers.json").lexically_normal());
+    REQUIRE(cfg.value().waivers.size() == 1);
+
+    auto after = engine::AnalysisSession().run(cfg.value(), progress, cancel);
+    REQUIRE(after->cdc);
+    int waived = 0, open = 0;
+    for (const auto& p : after->cdc->paths)
+        for (const auto& h : p.hits)
+            if (h.ruleId == "CDC-005")
+                (h.waiver == "W-1" ? waived : open) += 1;
+    CHECK(waived == 1); // this path
+    CHECK(open == 1);   // negative: the other path with the same rule stays open
+    CHECK(countCode(after->diagnostics, "WAIVER-UNUSED") == 0);
+
+    // a second waiver goes to the same file with the next id; the project does not change
+    auto w2 = w;
+    w2.fingerprint = rc[1]->fingerprint;
+    const auto again = engine::addProjectWaiver(cfg.value(), w2);
+    REQUIRE(again.error.empty());
+    CHECK(again.id == "W-2");
+    CHECK(!again.projectChanged);
+}

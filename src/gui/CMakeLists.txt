@@ -16,7 +16,9 @@ qt_add_executable(opencdc-gui
     SchematicView.cpp
     SchematicView.h
     SourceViewer.cpp
-    SourceViewer.h)
+    SourceViewer.h
+    WaiverDialog.cpp
+    WaiverDialog.h)
 
 target_link_libraries(opencdc-gui PRIVATE
     opencdc_engine

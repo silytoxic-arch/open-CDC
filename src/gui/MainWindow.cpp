@@ -12,6 +12,8 @@
 #include "gui/ClockView.h"
 #include "gui/SchematicView.h"
 #include "gui/SourceViewer.h"
+#include "gui/WaiverDialog.h"
+#include "engine/WaiverFile.h"
 
 #include <QAction>
 
@@ -319,6 +321,10 @@ void MainWindow::createDocks() {
     outputView_ = new OutputPortView(this);
     connect(outputView_, &OutputPortView::locationActivated, this, jump);
     auto* outputDock = addDock(tr("Output Ports"), "outputPorts", outputView_, Qt::BottomDockWidgetArea);
+    connect(violationView_, &ViolationView::waiveRequested, this,
+            [this](std::size_t pathId, std::size_t hit) { execWaiverDialog(waiverDialogForHit(pathId, hit)); });
+    connect(outputView_, &OutputPortView::waiveRequested, this,
+            [this](std::size_t index) { execWaiverDialog(waiverDialogForOutput(index)); });
     pathDock_ = pathDock;
     violationDock_ = violationDock;
     connect(violationView_, &ViolationView::pathActivated, this, [this](std::size_t id) {
@@ -431,6 +437,83 @@ QString projectDir(const std::optional<engine::ProjectConfig>& p) {
     return QString();
 }
 } // namespace
+
+std::unique_ptr<WaiverDialog> MainWindow::waiverDialog(cdc::WaiverRecord proposal, const QString& what) {
+    if (!project_ || !lastResult_ || !lastResult_->cdc)
+        return nullptr;
+    std::vector<std::string> taken;
+    for (const auto& w : lastResult_->cdc->waivers)
+        taken.push_back(w.id);
+    QStringList files;
+    for (const auto& f : project_->waivers)
+        files << qs(f);
+    const QString dir = projectDir(project_);
+    const QString newFile = dir.isEmpty() ? QString() : QDir(dir).filePath(QStringLiteral("waivers.json"));
+    return std::make_unique<WaiverDialog>(std::move(proposal), what, files, newFile, taken, this);
+}
+
+std::unique_ptr<WaiverDialog> MainWindow::waiverDialogForHit(std::size_t pathId, std::size_t hit) {
+    if (!lastResult_ || !lastResult_->cdc || pathId >= lastResult_->cdc->paths.size())
+        return nullptr;
+    const auto& p = lastResult_->cdc->paths[pathId];
+    if (hit >= p.hits.size())
+        return nullptr;
+    const auto& h = p.hits[hit];
+    return waiverDialog(engine::waiverFor(p, h), tr("Waive <b>%1</b> on path #%2: %3 &rarr; %4<br/><small>%5</small>")
+                                                     .arg(qs(h.ruleId))
+                                                     .arg(p.id)
+                                                     .arg(qs(p.srcName).toHtmlEscaped(), qs(p.dstName).toHtmlEscaped(),
+                                                          qs(h.message).toHtmlEscaped()));
+}
+
+std::unique_ptr<WaiverDialog> MainWindow::waiverDialogForOutput(std::size_t index) {
+    if (!lastResult_ || !lastResult_->cdc || index >= lastResult_->cdc->outputs.size())
+        return nullptr;
+    const auto& o = lastResult_->cdc->outputs[index];
+    return waiverDialog(engine::waiverFor(o),
+                        tr("Waive <b>CDC-OUTPUT-CLOCK</b>: %1 timed against %2, driven from %3")
+                            .arg(qs(o.ports.empty() ? std::string() : o.ports.front()).toHtmlEscaped(),
+                                 qs(o.outClock).toHtmlEscaped(), qs(o.srcClock).toHtmlEscaped()));
+}
+
+void MainWindow::execWaiverDialog(std::unique_ptr<WaiverDialog> dialog) {
+    if (!dialog)
+        return;
+    if (project_ && project_->projectFile.empty()) {
+        QMessageBox::information(this, tr("Add Waiver"), tr("Save the project first: waivers are stored in a "
+                                                              "waiver file listed by the project."));
+        return;
+    }
+    if (dialog->exec() != QDialog::Accepted)
+        return;
+    if (const QString err = addWaiver(dialog->waiver(), dialog->file()); !err.isEmpty())
+        QMessageBox::warning(this, tr("Add Waiver"), err);
+}
+
+QString MainWindow::addWaiver(const cdc::WaiverRecord& waiver, const QString& file) {
+    if (!project_)
+        return tr("No project is open.");
+    if (project_->projectFile.empty())
+        return tr("Save the project first: waivers are stored in a waiver file listed by the project.");
+    if (controller_->isRunning())
+        return tr("An analysis is running.");
+    auto cfg = *project_;
+    const auto added = engine::addProjectWaiver(cfg, waiver, fromUtf8(file.toStdString()));
+    if (!added.error.empty())
+        return qs(added.error);
+    if (added.projectChanged) {
+        if (auto err = engine::saveProjectFile(cfg, cfg.projectFile)) {
+            appendMessage(*err);
+            return tr("The waiver was written to %1, but the project could not be saved: %2")
+                .arg(qs(added.file), qs(err->message));
+        }
+    }
+    project_ = std::move(cfg);
+    showProjectInfo();
+    statusLabel_->setText(tr("Waiver %1 added to %2").arg(qs(added.id), qs(added.file)));
+    runAnalysis();
+    return {};
+}
 
 void MainWindow::onNewProject() {
     if (controller_->isRunning())

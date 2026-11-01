@@ -8,6 +8,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QSplitter>
 #include <QAbstractTableModel>
 #include <QSortFilterProxyModel>
@@ -635,8 +636,8 @@ void CdcPathView::showDetails(std::size_t id) {
 ViolationView::ViolationView(QWidget* parent)
     : QWidget(parent), ruleFilter_(combo(this, tr("All rules"))), severityFilter_(combo(this, tr("All severities"))),
       statusFilter_(combo(this, tr("All statuses"))), clockFilter_(combo(this, tr("All clocks"))),
-      waiverFilter_(combo(this, tr("Waived and not waived"))), countLabel_(new QLabel(this)),
-      model_(new detail::HitModel(this)), filter_(new detail::HitFilter(model_, this)), table_(new QTableView(this)),
+      waiverFilter_(combo(this, tr("Waived and not waived"))), waiveButton_(new QPushButton(tr("Waive..."), this)),
+      countLabel_(new QLabel(this)), model_(new detail::HitModel(this)), filter_(new detail::HitFilter(model_, this)), table_(new QTableView(this)),
       ruleInfo_(new QTextBrowser(this)) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(2, 2, 2, 2);
@@ -656,6 +657,10 @@ ViolationView::ViolationView(QWidget* parent)
     waiverFilter_->addItem(tr("Not waived"), QStringLiteral("open"));
     waiverFilter_->addItem(tr("Waived"), QStringLiteral("waived"));
     bar->addWidget(waiverFilter_);
+    waiveButton_->setToolTip(tr("Add a waiver for the selected rule hit (its rule and the path fingerprint) to the "
+                                "project's waiver file"));
+    waiveButton_->setEnabled(false);
+    bar->addWidget(waiveButton_);
     bar->addStretch(1);
     bar->addWidget(countLabel_);
     layout->addLayout(bar);
@@ -679,7 +684,13 @@ ViolationView::ViolationView(QWidget* parent)
                     return;
                 const auto& r = model_->row(filter_->mapToSource(current).row());
                 showRule(r.path, r.hit);
+                waiveButton_->setEnabled(result_ && result_->cdc &&
+                                         result_->cdc->paths.at(r.path).hits.at(r.hit).waiver.empty());
             });
+    connect(waiveButton_, &QPushButton::clicked, this, [this] {
+        if (const auto h = currentHit())
+            emit waiveRequested(h->first, h->second);
+    });
     connect(table_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
         if (!result_ || !result_->cdc || !index.isValid())
             return;
@@ -692,7 +703,16 @@ ViolationView::ViolationView(QWidget* parent)
     clear();
 }
 
+std::optional<std::pair<std::size_t, std::size_t>> ViolationView::currentHit() const {
+    const QModelIndex current = table_->currentIndex();
+    if (!result_ || !result_->cdc || !current.isValid())
+        return std::nullopt;
+    const auto& r = model_->row(filter_->mapToSource(current).row());
+    return std::pair{r.path, r.hit};
+}
+
 void ViolationView::clear() {
+    waiveButton_->setEnabled(false);
     result_.reset();
     model_->setResult(nullptr);
     ruleInfo_->setHtml(tr("<p>No rule results.</p>"));
@@ -789,7 +809,8 @@ QString joined(const std::vector<std::string>& v, std::size_t max = 4) {
 } // namespace
 
 OutputPortView::OutputPortView(QWidget* parent)
-    : QWidget(parent), waiverFilter_(combo(this, tr("Waived and not waived"))), countLabel_(new QLabel(this)),
+    : QWidget(parent), waiverFilter_(combo(this, tr("Waived and not waived"))),
+      waiveButton_(new QPushButton(tr("Waive..."), this)), countLabel_(new QLabel(this)),
       table_(new QTableWidget(0, 8, this)), details_(new QTextBrowser(this)) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(2, 2, 2, 2);
@@ -797,6 +818,10 @@ OutputPortView::OutputPortView(QWidget* parent)
     waiverFilter_->addItem(tr("Not waived"), QStringLiteral("open"));
     waiverFilter_->addItem(tr("Waived"), QStringLiteral("waived"));
     bar->addWidget(waiverFilter_);
+    waiveButton_->setToolTip(tr("Add a waiver for the selected output (rule CDC-OUTPUT-CLOCK and its fingerprint) "
+                                "to the project's waiver file"));
+    waiveButton_->setEnabled(false);
+    bar->addWidget(waiveButton_);
     bar->addStretch(1);
     bar->addWidget(countLabel_);
     layout->addLayout(bar);
@@ -812,7 +837,15 @@ OutputPortView::OutputPortView(QWidget* parent)
     split->setStretchFactor(1, 1);
     layout->addWidget(split, 1);
     connect(waiverFilter_, &QComboBox::currentIndexChanged, this, &OutputPortView::applyFilter);
-    connect(table_, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) { showDetails(row); });
+    connect(table_, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
+        showDetails(row);
+        const auto i = currentOutput();
+        waiveButton_->setEnabled(i && result_->cdc->outputs.at(*i).waiver.empty());
+    });
+    connect(waiveButton_, &QPushButton::clicked, this, [this] {
+        if (const auto i = currentOutput())
+            emit waiveRequested(*i);
+    });
     connect(table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
         if (!result_ || !result_->cdc || row < 0)
             return;
@@ -823,7 +856,15 @@ OutputPortView::OutputPortView(QWidget* parent)
     clear();
 }
 
+std::optional<std::size_t> OutputPortView::currentOutput() const {
+    const int row = table_->currentRow();
+    if (!result_ || !result_->cdc || row < 0 || row >= table_->rowCount() || !table_->item(row, 0))
+        return std::nullopt;
+    return static_cast<std::size_t>(table_->item(row, 0)->data(kIdRole).toInt());
+}
+
 void OutputPortView::clear() {
+    waiveButton_->setEnabled(false);
     result_.reset();
     table_->setRowCount(0);
     countLabel_->clear();

@@ -6,6 +6,7 @@
 #include <QMainWindow>
 #include <QString>
 
+#include <memory>
 #include <optional>
 
 class QAction;
@@ -25,6 +26,7 @@ class OutputPortView;
 class SchematicView;
 class ViolationView;
 class SourceViewer;
+class WaiverDialog;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -65,6 +67,15 @@ public:
     /// Writes the suggested constraints (engine::suggestConstraints) of the last result.
     bool exportSuggestedSdc(const QString& file) const;
 
+    /// The dialog that collects a waiver for hit `hit` of path `pathId` /
+    /// for output crossing `index` of the last result (null if there is none).
+    [[nodiscard]] std::unique_ptr<WaiverDialog> waiverDialogForHit(std::size_t pathId, std::size_t hit);
+    [[nodiscard]] std::unique_ptr<WaiverDialog> waiverDialogForOutput(std::size_t index);
+    /// Adds a waiver to `file` (engine::addProjectWaiver), saves the project
+    /// when the file is new to it, and analyzes again. Returns an error
+    /// message, empty on success. The project must have been saved to a file.
+    QString addWaiver(const cdc::WaiverRecord& waiver, const QString& file);
+
 private slots:
     void onOpenProject();
     void onNewProject();
@@ -76,6 +87,8 @@ private slots:
     void onAbout();
 
 private:
+    std::unique_ptr<WaiverDialog> waiverDialog(cdc::WaiverRecord proposal, const QString& what);
+    void execWaiverDialog(std::unique_ptr<WaiverDialog> dialog);
     void createActions();
     void createDocks();
     QDockWidget* addDock(const QString& title, const QString& objectName, QWidget* widget,
