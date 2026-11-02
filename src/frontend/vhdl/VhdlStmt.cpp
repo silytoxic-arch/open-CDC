@@ -1292,9 +1292,9 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
         if (!o.isSignal || o.storage.empty() || !v)
             continue;
         if (std::ranges::find(objs, idx) != objs.end()) {
-            error("VHDL-MULTI-ASSIGN", "'" + o.name + "' is assigned inside and after the clocked if of process '" +
-                                           label + "'",
-                  l);
+            warn("VHDL-CLOCKED-TAIL", "'" + o.name + "' is assigned inside and after the clocked if of process '" +
+                                          label + "'; the assignment after it is ignored",
+                 l);
             continue;
         }
         const BitMask* allMask = tailSt.all.find(idx);
@@ -1313,13 +1313,16 @@ bool Elaborator::tailReadsOnlyVariables(const Stmt& s, Scope& scope, Ctx& /*ctx*
     // every name read by the value: a process variable, a constant, a function,
     // a type or an enumeration literal (no signal)
     bool ok = true;
+    bool variable = false;
     std::function<void(const Expr*)> walk = [&](const Expr* e) {
         if (!e || !ok)
             return;
         if (e->kind == ExprKind::Simple) {
-            for (Symbol* sym : lookup(scope, e->ident.key))
+            for (Symbol* sym : lookup(scope, e->ident.key)) {
                 if (sym->kind == SymKind::Signal)
                     ok = false;
+                variable = variable || sym->kind == SymKind::Variable;
+            }
             return;
         }
         walk(e->prefix.get());
@@ -1338,7 +1341,7 @@ bool Elaborator::tailReadsOnlyVariables(const Stmt& s, Scope& scope, Ctx& /*ctx*
     if (s.target && s.target->kind == ExprKind::Call)
         for (const auto& a : s.target->args)
             walk(a.actual.get());
-    return ok;
+    return ok && variable; // a copy of a process variable (a constant there is not the idiom)
 }
 
 void Elaborator::lowerConcurrentAssign(const Stmt& s, Scope& scope) {

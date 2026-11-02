@@ -480,7 +480,7 @@ public:
     /// (`d(FIELD_C)` with `subtype FIELD_C is natural range 7 downto 4`).
     bool isSliceRange(const Expr& e, Ctx& ctx);
     bool targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, const Type** type = nullptr);
-    /// The value of a signal assignment after the clocked if reads no signal.
+    /// The value of a signal assignment after the clocked if reads process variables and no signal.
     bool tailReadsOnlyVariables(const Stmt& s, Scope& scope, Ctx& ctx);
     SVal convert(const SVal& v, const Type* to, Ctx& ctx, Loc l, bool implicit = true);
     ir::SigSpec bitsOf(const SVal& v, Loc l);
