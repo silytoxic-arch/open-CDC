@@ -106,7 +106,7 @@ rm -rf "$BUILD/_CPack_Packages"
 for f in "$BUILD"/OpenCDC-*-macos-*.tar.gz; do
     [ -f "$f" ] || continue
     T=$(mktemp -d)
-    tar -xzf "$f" -C "$T" && COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$f" -C "$T" . || fail "重新打包 $f"
+    tar -xzf "$f" -C "$T" && COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --no-acls -czf "$f" -C "$T" . || fail "重新打包 $f"
     rm -rf "$T"
 done
 mkdir -p dist
