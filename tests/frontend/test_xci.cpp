@@ -1892,3 +1892,76 @@ TEST_CASE("XCI: gig_ethernet_pcs_pma LVDS clocks derived from the reference in a
     CHECK(other->cdc->stats.unsynchronized == 1);
     CHECK(other->cdc->stats.unknownRelation == 0);
 }
+
+namespace {
+
+std::string xauiXci(const std::string& inst, const std::string& dxaui = "false") {
+    return spirit(inst, "xaui", "12.3", {{"c_family", "kintexu"}, {"c_is_dxaui", dxaui}, {"c_has_mdio", "false"}});
+}
+
+// SURF XauiGthUltraScale156p25MHz10GigECore (xaui 12.3, shared logic in the core), a part of the ports
+const char* kXauiComponent =
+    "  component xa\n    port (\n"
+    "      dclk : in std_logic; reset : in std_logic; clk156_out : out std_logic; clk156_lock : out std_logic;\n"
+    "      refclk : in std_logic; xgmii_txd : in std_logic_vector(63 downto 0); xgmii_txc : in std_logic_vector(7 downto 0);\n"
+    "      xgmii_rxd : out std_logic_vector(63 downto 0); xgmii_rxc : out std_logic_vector(7 downto 0);\n"
+    "      xaui_tx_l0_p : out std_logic; xaui_rx_l0_p : in std_logic; signal_detect : in std_logic_vector(3 downto 0);\n"
+    "      debug : out std_logic_vector(5 downto 0); gt0_drpaddr : in std_logic_vector(9 downto 0);\n"
+    "      gt0_drpen : in std_logic; gt0_drpdo : out std_logic_vector(15 downto 0); gt3_drprdy : out std_logic;\n"
+    "      gt_reset_tx_datapath : in std_logic; gt_txresetdone : out std_logic_vector(3 downto 0);\n"
+    "      gt_rxpmaresetdone : out std_logic_vector(3 downto 0); gt_rxbufstatus : out std_logic_vector(11 downto 0);\n"
+    "      gt_qplllock : out std_logic; gt_loopback : in std_logic_vector(11 downto 0);\n"
+    "      gt_rxpolarity : in std_logic_vector(3 downto 0); gt_txdiffctrl : in std_logic_vector(19 downto 0);\n"
+    "      gt_dmonitorout : out std_logic_vector(63 downto 0); gt_rxdisperr : out std_logic_vector(7 downto 0);\n"
+    "      gt_powergood_out : out std_logic_vector(3 downto 0);\n"
+    "      configuration_vector : in std_logic_vector(6 downto 0); status_vector : out std_logic_vector(7 downto 0));\n"
+    "  end component;\n";
+
+} // namespace
+
+TEST_CASE("XCI: XAUI (xaui) with the shared logic: everything in clk156_out", "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(pkg(kXauiComponent), "p.vhd");
+    auto m = frontend::modelFromXci(dir.write("xa.xci", xauiXci("xa")), ctx);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"OPENCDC_CLOCK_PIN = \"clk156_out\", OPENCDC_CLOCK_PERIOD = 6.4",
+                          "always @(posedge oc_clk156_out_c) oc_dom_clk156_out <= ^{xgmii_txd, xgmii_txc, gt_rxpolarity, "
+                          "configuration_vector}",
+                          "always @(posedge oc_clk156_out_c) oc_xgmii_rxd_q", "always @(posedge oc_clk156_out_c) oc_status_vector_q",
+                          "always @(posedge oc_clk156_out_c) oc_debug_q", "always @(posedge oc_clk156_out_c) oc_gt_txresetdone_q",
+                          "always @(posedge oc_clk156_out_c) oc_gt_rxbufstatus_q",
+                          "always @(posedge oc_clk156_out_c) oc_gt_rxdisperr_q",
+                          "always @(posedge dclk[0]) oc_dom_dclk <= ^{gt0_drpaddr, gt0_drpen}",
+                          "always @(posedge dclk[0]) oc_gt0_drpdo_q", "always @(posedge dclk[0]) oc_gt3_drprdy_q",
+                          "opencdc_async_source u_oc_clk156_lock", "opencdc_async_source u_oc_gt_rxpmaresetdone",
+                          "opencdc_async_source u_oc_gt_qplllock", "opencdc_async_source u_oc_gt_dmonitorout",
+                          "opencdc_async_source u_oc_gt_powergood_out", "assign xaui_tx_l0_p = 1'b0;"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: reset, signal_detect, the transceiver resets and static controls are read by no register
+    for (const char* p : {"reset", "signal_detect", "gt_reset_tx_datapath", "gt_loopback", "gt_txdiffctrl", "refclk"})
+        CHECK(v.find(std::string(", ") + p + ",") == std::string::npos);
+    CHECK(v.find("{reset") == std::string::npos);
+    CHECK(m.value().summary.find("XAUI, 4 lanes at 3.125 Gb/s, clk156_out 156.25 MHz") != std::string::npos);
+    // DXAUI: 6.25 Gb/s lanes, 312.5 MHz
+    auto dx = frontend::modelFromXci(dir.write("xd.xci", xauiXci("xa", "true")), ctx);
+    REQUIRE(dx);
+    CHECK(dx.value().verilog.find("OPENCDC_CLOCK_PIN = \"clk156_out\", OPENCDC_CLOCK_PERIOD = 3.2") != std::string::npos);
+    // negative: the core without the shared logic, MDIO ports
+    frontend::XciContext core;
+    core.vhdlComponents = frontend::vhdlComponentPorts(
+        pkg("  component xa port (usrclk : in std_logic; xgmii_txd : in std_logic_vector(63 downto 0)); end component;\n"),
+        "p.vhd");
+    auto nc = frontend::modelFromXci(dir.write("xn.xci", xauiXci("xa")), core);
+    REQUIRE_FALSE(nc);
+    CHECK(nc.error().message.find("only the core with the shared logic") != std::string::npos);
+    frontend::XciContext md;
+    md.vhdlComponents = frontend::vhdlComponentPorts(
+        pkg("  component xa port (clk156_out : out std_logic; mdc : in std_logic; mdio_in : in std_logic); end component;\n"),
+        "p.vhd");
+    auto mm = frontend::modelFromXci(dir.write("xm.xci", xauiXci("xa")), md);
+    REQUIRE_FALSE(mm);
+    CHECK(mm.error().message.find("mdc, mdio_in") != std::string::npos);
+}

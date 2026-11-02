@@ -78,7 +78,7 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
     const auto& lib = frontend::PrimitiveLibrary::instance();
     for (const char* n : {"FDRE", "FDCE", "FDPE", "FDSE", "BUFG", "BUFGMUX", "IBUF", "xpm_cdc_single",
                           "xpm_cdc_array_single", "xpm_cdc_gray", "xpm_cdc_handshake", "xpm_cdc_pulse",
-                          "xpm_cdc_async_rst", "xpm_cdc_sync_rst", "xpm_fifo_async", "dcfifo",
+                          "xpm_cdc_async_rst", "xpm_cdc_sync_rst", "xpm_fifo_async", "xpm_fifo_sync", "dcfifo",
                           "altera_std_synchronizer", "IDDR", "ODDR", "IDDRE1", "ODDRE1", "IDELAYE2", "ODELAYE2",
                           "IDELAYE3", "ODELAYE3", "IDELAYCTRL", "RAMB18E1", "RAMB36E1", "RAMB18E2", "RAMB36E2",
                           "xpm_memory_sdpram", "xpm_memory_tdpram", "xpm_memory_spram", "xpm_memory_dpdistram",
@@ -1326,4 +1326,35 @@ TEST_CASE("Primitives: Intel megafunction parameters in another case", "[primiti
     CHECK(bits(".WIDTH(5), .POWER_UP_HIGH(\"OFF\"), .OE_REG(\"UNUSED\")") == 10); // two 5-bit registers
     CHECK(bits(".width(5)") == 10);                                                // the declared spelling
     CHECK(bits(".NOT_A_PARAMETER(5)") == 2);                                       // negative: no such parameter
+}
+
+TEST_CASE("Primitives: xpm_fifo_sync from VHDL is a one-clock FIFO", "[primitives][vhdl]") {
+    // SURF FifoXpm (GEN_SYNC_FIFO_G): xpm_fifo_sync from the xpm component library
+    auto fifo = [](const std::string& readClk) {
+        return analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "library xpm; use xpm.vcomponents.all;\n"
+                       "entity top is port (clk_a, clk_b, we, re, rst : in std_logic; d : in std_logic_vector(7 downto 0);\n"
+                       "  q : out std_logic_vector(7 downto 0)); end;\n"
+                       "architecture rtl of top is\n"
+                       "  signal din, dout : std_logic_vector(7 downto 0);\n"
+                       "begin\n"
+                       "  process (clk_a) begin if rising_edge(clk_a) then din <= d; end if; end process;\n"
+                       "  u : xpm_fifo_sync generic map (FIFO_WRITE_DEPTH => 16, WRITE_DATA_WIDTH => 8, READ_DATA_WIDTH => 8)\n"
+                       "    port map (rst => rst, wr_clk => clk_a, wr_en => we, din => din, rd_en => re, dout => dout,\n"
+                       "      sleep => '0', injectsbiterr => '0', injectdbiterr => '0');\n"
+                       "  process (" + readClk + ") begin if rising_edge(" + readClk + ") then q <= dout; end if; end process;\n"
+                       "end;\n",
+                       "top");
+    };
+    auto same = fifo("clk_a");
+    REQUIRE(same->r->cdc);
+    CHECK(same->count("IR-UNRESOLVED-INSTANCE") == 0);
+    CHECK(same->count("VHDL-COMPONENT") == 0);
+    CHECK(same->r->cdc->stats.paths == 0);
+    // negative: the FIFO does not cross clocks, its output read in another clock is a crossing
+    auto other = fifo("clk_b");
+    REQUIRE(other->r->cdc);
+    CHECK(other->path("top.u.dout_ff", "top.q") != nullptr);
+    CHECK(other->r->cdc->stats.unsynchronized >= 1);
 }

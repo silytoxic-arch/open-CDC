@@ -228,6 +228,64 @@ module xpm_fifo_async #(parameter integer CASCADE_HEIGHT = 0, parameter integer 
     assign wr_ack = 1'b0;
 endmodule
 
+// One-clock FIFO: everything in wr_clk (UG974: "wr_clk ... used for both write
+// and read operations"); outputs registered, so no crossing through the FIFO.
+module xpm_fifo_sync #(parameter integer CASCADE_HEIGHT = 0, parameter DOUT_RESET_VALUE = "0",
+                       parameter ECC_MODE = "no_ecc", parameter FIFO_MEMORY_TYPE = "auto",
+                       parameter integer FIFO_READ_LATENCY = 1, parameter integer FIFO_WRITE_DEPTH = 2048,
+                       parameter integer FULL_RESET_VALUE = 0, parameter integer PROG_EMPTY_THRESH = 10,
+                       parameter integer PROG_FULL_THRESH = 10, parameter integer RD_DATA_COUNT_WIDTH = 1,
+                       parameter integer READ_DATA_WIDTH = 32, parameter READ_MODE = "std",
+                       parameter integer SIM_ASSERT_CHK = 0, parameter USE_ADV_FEATURES = "0707",
+                       parameter integer WAKEUP_TIME = 0, parameter integer WRITE_DATA_WIDTH = 32,
+                       parameter integer WR_DATA_COUNT_WIDTH = 1)
+                      (output almost_empty, output almost_full, output data_valid, output dbiterr,
+                       output [READ_DATA_WIDTH-1:0] dout, output empty, output full, output overflow,
+                       output prog_empty, output prog_full, output [RD_DATA_COUNT_WIDTH-1:0] rd_data_count,
+                       output rd_rst_busy, output sbiterr, output underflow, output wr_ack,
+                       output [WR_DATA_COUNT_WIDTH-1:0] wr_data_count, output wr_rst_busy,
+                       input [WRITE_DATA_WIDTH-1:0] din, input injectdbiterr, input injectsbiterr,
+                       input rd_en, input rst, input sleep, input wr_clk, input wr_en);
+    localparam integer AW = $clog2(FIFO_WRITE_DEPTH);
+    reg [WRITE_DATA_WIDTH-1:0] mem [0:FIFO_WRITE_DEPTH-1];
+    reg [AW:0] wbin, rbin;
+    reg [WRITE_DATA_WIDTH-1:0] dout_ff;
+    reg valid_ff;
+    wire empty_i = wbin == rbin;
+    wire full_i = wbin == {~rbin[AW], rbin[AW-1:0]};
+    always @(posedge wr_clk)
+        if (rst) begin
+            wbin <= {(AW+1){1'b0}};
+            rbin <= {(AW+1){1'b0}};
+            valid_ff <= 1'b0;
+        end else begin
+            if (wr_en && !full_i) wbin <= wbin + 1'b1;
+            if (rd_en && !empty_i) rbin <= rbin + 1'b1;
+            valid_ff <= rd_en && !empty_i;
+        end
+    always @(posedge wr_clk) begin
+        if (wr_en && !full_i) mem[wbin[AW-1:0]] <= din;
+        if (rd_en && !empty_i) dout_ff <= mem[rbin[AW-1:0]];
+    end
+    assign dout = dout_ff;
+    assign full = full_i;
+    assign empty = empty_i;
+    assign almost_empty = empty_i;
+    assign almost_full = full_i;
+    assign data_valid = valid_ff;
+    assign dbiterr = 1'b0;
+    assign sbiterr = 1'b0;
+    assign overflow = 1'b0;
+    assign underflow = 1'b0;
+    assign prog_empty = empty_i;
+    assign prog_full = full_i;
+    assign rd_data_count = {RD_DATA_COUNT_WIDTH{1'b0}};
+    assign wr_data_count = {WR_DATA_COUNT_WIDTH{1'b0}};
+    assign rd_rst_busy = rst;
+    assign wr_rst_busy = rst;
+    assign wr_ack = 1'b0;
+endmodule
+
 // ---------------------------------------------------------------- XPM memories
 // Each write port writes its own array; every read port reads all arrays, so
 // data written in one clock and read in the other is a crossing. Output

@@ -3542,6 +3542,82 @@ Result<XciModel> gigEthernetPcsPma(const XciInfo& info) {
     return r;
 }
 
+/// XAUI (xaui, PG053) with the shared logic in the core (UltraScale): the IP's
+/// clk156_out (lane 0's TXOUTCLK, line rate / 20) is the user clock of all four
+/// transceivers (the RX elastic buffers cross into it); XGMII, configuration,
+/// status, debug and the transceiver status/control in clk156_out; the DRP in dclk.
+Result<XciModel> xaui(const XciInfo& info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const auto unsupportedIp = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): " + why,
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    };
+    bool clk156 = false;
+    for (const auto& b : info.ports)
+        clk156 = clk156 || (b.output && lower(b.name) == "clk156_out");
+    if (!info.ports.empty() && !clk156)
+        return unsupportedIp("only the core with the shared logic (the output clock clk156_out) is modelled; without "
+                             "it the user clock comes from the design");
+    // DXAUI: 6.25 Gb/s per lane; XAUI 3.125 Gb/s; 8b/10b, 2-byte transceiver interface
+    const bool dxaui = lower(text(m, "c_is_dxaui", "false")) == "true";
+    const double laneGbps = dxaui ? 6.25 : 3.125;
+    const double mhz = laneGbps * 1000.0 / 20.0;
+    static const std::set<std::string> syncGt = {
+        "txresetdone", "rxresetdone", "rxbufstatus", "rxprbserr",   "rxdisperr",       "rxnotintable",
+        "rxcommadet",  "rxpolarity",  "txpolarity",  "rxprbssel",   "txprbssel",       "txprbsforceerr",
+        "rxprbscntreset"};
+    static const std::set<std::string> asyncGt = {"rxpmaresetdone", "txphaligndone",    "txphinitdone",
+                                                  "txdlysresetdone", "qplllock",        "eyescandataerror",
+                                                  "dmonitorout",    "powergood_out"};
+    static const std::set<std::string> ignoredGt = {
+        "reset_tx_datapath", "reset_tx_pll_and_datapath", "reset_rx_datapath", "reset_rx_pll_and_datapath",
+        "txpmareset",        "txpcsreset",                "rxpmareset",        "rxpcsreset",
+        "eyescantrigger",    "eyescanreset",              "rxrate",            "loopback",
+        "rxlpmen",           "rxdfelpmreset",             "txpostcursor",      "txprecursor",
+        "txdiffctrl",        "txinhibit",                 "rxcdrhold",         "pcsrsvdin"};
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "refclk" || n == "dclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n == "clk156_out")
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, mhz, {}, 0}) : std::nullopt;
+        if (n == "xgmii_txd" || n == "xgmii_txc" || n == "xgmii_rxd" || n == "xgmii_rxc" ||
+            n == "configuration_vector" || n == "status_vector" || n == "debug")
+            return PortClass{K::Sync, "clk156_out", 0, {}, 0};
+        if (n == "clk156_lock")
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
+        if (n == "reset" || n == "signal_detect" || n.starts_with("xaui_rx_l"))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
+        if (n.starts_with("xaui_tx_l"))
+            return out ? std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0}) : std::nullopt;
+        // gt<N>_drp*: the DRP of lane N, in dclk
+        if (n.size() > 3 && n.starts_with("gt") && std::isdigit(static_cast<unsigned char>(n[2])) &&
+            n.substr(3).starts_with("_drp"))
+            return PortClass{K::Sync, "dclk", 0, {}, 0};
+        if (!n.starts_with("gt_"))
+            return std::nullopt;
+        const std::string g = n.substr(3);
+        if (syncGt.contains(g))
+            return PortClass{K::Sync, "clk156_out", 0, {}, 0};
+        if (asyncGt.contains(g))
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
+        if (ignoredGt.contains(g))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    r.value().summary = std::string(dxaui ? "DXAUI" : "XAUI") + ", 4 lanes at " + fmtReal(laneGbps) +
+                        " Gb/s, clk156_out " + fmtReal(mhz) + " MHz, XGMII in clk156_out";
+    r.value().notes.push_back("clk156_out is a clock of its own (lane 0's TXOUTCLK) and the user clock of all lanes "
+                              "(PG053); XGMII, configuration, status, debug and the transceiver status/control are "
+                              "in clk156_out; the DRP in dclk; reset and signal_detect are synchronized in the IP");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -3594,6 +3670,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return xxvEthernet(info);
     if (info.name == "gig_ethernet_pcs_pma")
         return gigEthernetPcsPma(info);
+    if (info.name == "xaui")
+        return xaui(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +

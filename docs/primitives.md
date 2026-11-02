@@ -71,6 +71,7 @@ Sources:
 | `xpm_cdc_pulse` | Toggle + edge detection | Toggle |
 | `xpm_cdc_async_rst`, `xpm_cdc_sync_rst` | Reset synchronizers | Reset synchronizer / flop chain |
 | `xpm_fifo_async` | Memory, Gray pointers synchronized in both directions, reset bridge | Asynchronous FIFO (one structure holding every pointer bit) |
+| `xpm_fifo_sync` | Memory and pointers in `wr_clk`, registered outputs | One-clock FIFO: no crossing through it |
 | `xpm_memory_sdpram`, `xpm_memory_tdpram`, `xpm_memory_dpdistram` | As block RAM; `CLOCKING_MODE = "independent_clock"` uses `clkb` for port B, `"common_clock"` uses `clka` | `READ_LATENCY` output pipeline; `dpdistram` latency 0 is an asynchronous read |
 | `xpm_memory_spram` | Single-port memory | |
 

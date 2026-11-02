@@ -275,7 +275,9 @@ def surf_deps(top, prefer):
         if e in seen or e not in ents:
             return
         seen.add(e)
-        cand = sorted(ents[e])
+        # ruckus (Vivado 2019.1 or later) loads the real entity, a dummy only where none exists
+        # (FifoXpm, not FifoXpmDummy; the Altera dummies)
+        cand = sorted(ents[e], key=lambda c: ("/dummy/" in c, c))
         path = ([c for c in cand if prefer in c] or cand)[0]
         es, ks = uses(path)
         for k in sorted(ks):
@@ -329,6 +331,23 @@ for name, top, d, xci in [("surf_gigeth_gtp7w", "GigEthGtp7Wrapper", "gtp7/", "g
                           ("surf_gigeth_lvds", "GigEthLvdsUltraScale", "lvdsUltraScale/",
                            "lvdsUltraScale/ip/GigEthLvdsUltraScaleCore.xci")]:
     surf_project(name, top, surf_deps(top, "GigEthCore/" + d) + [ge + xci], name + ".sdc")
+# XAUI (xaui, shared logic in the core) on GTH UltraScale, GTH/GTY UltraScale+
+xa = "ethernet/XauiCore/"
+open(os.path.join(work, "surf_xaui.sdc"), "w").write(
+    "create_clock -name gtclk -period 6.4 [get_ports gtClkP]\n"
+    "create_clock -name stable -period 6.4 [get_ports stableClk]\n"
+    "create_clock -name axil -period 8 [get_ports axiLiteClk]\n"
+    "create_clock -name dma -period 5 [get_ports dmaClk]\n"
+    "set_clock_groups -asynchronous -group gtclk -group stable -group axil -group dma "
+    "-group [get_clocks -of_objects [get_pins -hier *Core/clk156_out]]\n")
+for name, top, d, xci in [
+        ("surf_xaui_gthus", "XauiGthUltraScaleWrapper", "gthUltraScale/",
+         "gthUltraScale/ip/XauiGthUltraScale156p25MHz10GigECore.xci"),
+        ("surf_xaui_gthusp", "XauiGthUltraScaleWrapper", "gthUltraScale+/",
+         "gthUltraScale+/ip/XauiGthUltraScale156p25MHz10GigECore.xci"),
+        ("surf_xaui_gtyusp", "XauiGtyUltraScaleWrapper", "gtyUltraScale+/",
+         "gtyUltraScale+/ip/XauiGtyUltraScale156p25MHz10GigECore.xci")]:
+    surf_project(name, top, surf_deps(top, "XauiCore/" + d) + [xa + xci], "surf_xaui.sdc")
 # every Transceivers Wizard .xci of surf alone (the IP is the top)
 gtx = []
 for x in sorted(glob.glob(os.path.join(sw, "**", "*.xci"), recursive=True)):
@@ -542,14 +561,21 @@ check surf_pgp3_gtp7_wrapper.ocdc.json "Clocks  : 6 \\(269/269 registers resolve
 check surf_tengig_gtx7.ocdc.json  "Clocks  : 5 \\(738/738 registers resolved\\).*ten_gig_eth_pcs_pma:6.0.*XGMII in coreclk.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 51 crossing path\\(s\\), 37 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 check surf_tengig_gth7.ocdc.json  "Clocks  : 4 \\(731/731 registers resolved\\).*Summary : 0 error\\(s\\), 0 warning.*CDC     : 51 crossing path\\(s\\), 37 synchronized"
 check surf_tengig_gthus.ocdc.json "Clocks  : 6 \\(767/767 registers resolved\\).*CLK156_BUFG_GT.O  \\[divider\\] alias=txClockGt.*period=6.20606.*XGMII in txusrclk2.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 53 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 3 warning violation"
-check surf_tengig_gthusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*tx_mii_clk/rx_clk_out 156.25 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
-check surf_tengig_gtyusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
+# with SURF's real FifoXpm (xpm_fifo_async / xpm_fifo_sync, as ruckus loads it, not FifoXpmDummy): 2 more
+# CDC errors, FifoXpm's output pipeline in rd_clk reset by the write side's rst (FifoOutputPipeline, RST_ASYNC_G false)
+check surf_tengig_gthusp.ocdc.json "Clocks  : 5 \\(649/649 registers resolved\\).*xxv_ethernet:2.5.*tx_mii_clk/rx_clk_out 156.25 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 64 crossing path\\(s\\), 50 synchronized.*Rules   : 4 error violation"
+check surf_tengig_gtyusp.ocdc.json "Clocks  : 5 \\(649/649 registers resolved\\).*xxv_ethernet:2.5.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 64 crossing path\\(s\\), 50 synchronized.*Rules   : 4 error violation"
 # 1G Ethernet: GMII in userclk2 (GTP7) or clk125_out derived from refclk625 by the IP's MMCM (LVDS); the 14
 # unsynchronized paths are the Gray pointers of the AXI-Lite and MAC asynchronous FIFOs; the wrapper's 34
 # constant registers are ClockManager7's AxiLiteToDrp, whose axilClk SURF leaves unconnected (default '0')
 check surf_gigeth_gtp7w.ocdc.json "Clocks  : 5 \\(690/724 registers resolved\\).*CLKOUT1 .*period=16ns.*gig_ethernet_pcs_pma:16.0.*GMII in userclk2.*CLK-CONSTANT.: 34 register.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 50 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 check surf_gigeth_gtp7.ocdc.json  "Clocks  : 4 \\(668/668 registers resolved\\).*Summary : 0 error\\(s\\), 0 warning.*CDC     : 50 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 check surf_gigeth_lvds.ocdc.json  "Clocks  : 4 \\(653/653 registers resolved\\).*U_GigEthLvdsUltraScaleCore.clk125_out  \\[divider\\] alias=sysClk125.*period=8ns.*SGMII over UltraScale LVDS.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 47 crossing path\\(s\\), 33 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
+# XAUI: XGMII and the transceiver status in clk156_out; GTH UltraScale (inferred FIFOs): the 4 paths to review are
+# the MAC FIFOs' Gray pointers; UltraScale+ (FifoXpm): the 2 errors are FifoXpm's read-side pipeline reset
+check surf_xaui_gthus.ocdc.json  "Clocks  : 5 \\(578/578 registers resolved\\).*xaui:12.2.*XAUI, 4 lanes at 3.125 Gb/s, clk156_out 156.25 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 16 crossing path\\(s\\), 12 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
+check surf_xaui_gthusp.ocdc.json "Clocks  : 5 \\(485/485 registers resolved\\).*xaui:12.3.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 30 crossing path\\(s\\), 28 synchronized.*Rules   : 2 error violation"
+check surf_xaui_gtyusp.ocdc.json "Clocks  : 5 \\(485/485 registers resolved\\).*xaui:12.3.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 30 crossing path\\(s\\), 28 synchronized.*Rules   : 2 error violation"
 n=$(cat gtx_count.txt)
 [ "$n" = 30 ] || { echo "::error::expected 30 Transceivers Wizard .xci files in surf, found $n"; fail=1; }
 for f in gtx_*.ocdc.json; do
