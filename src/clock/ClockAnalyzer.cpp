@@ -598,6 +598,18 @@ private:
                 const auto& reg = body.registers[r];
                 RegisterClocking& rc = model_->registers[view_.globalRegister(inst, r)];
                 Trace t;
+                // the divider register of a model that passes its input through
+                // (BUFG_GT with DIV = 0) is not part of the design: no domain
+                if (reg.q.width() == 1 && reg.q.chunks().size() == 1 && !reg.q.chunks()[0].isConst())
+                    if (const auto* rp = body.net(reg.q.chunks()[0].net).findAttr("OPENCDC_CLOCK_DIVIDE_PORT")) {
+                        std::string port = rp->value;
+                        std::erase(port, '"');
+                        if (const auto v = constantPort(inst, port); v && *v == 0) {
+                            rc.status = ClockStatus::Resolved;
+                            rc.reason = "divider of a clock buffer that passes its input through (" + port + " = 0)";
+                            continue;
+                        }
+                    }
                 if (auto clk = view_.bitOf(inst, reg.clock.signal, 0)) {
                     t = trace(*clk, 0);
                 }

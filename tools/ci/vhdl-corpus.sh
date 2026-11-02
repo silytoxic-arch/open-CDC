@@ -507,16 +507,17 @@ check olo_intf_sync.ocdc.json "Summary : 0 error\\(s\\), 0 warning"
 check surf_pgp3_gth_wrapper.ocdc.json "Clocks  : 6 \\(195/195 registers resolved\\).*IP 'Pgp3GthUsIp10G' \\(xilinx.com:ip:gtwizard_ultrascale:1.7\\) modelled.*GTHE4.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 32 crossing path\\(s\\), 22 synchronized"
 # the core: the 9 errors are genuine in SURF's configuration (pgpRxClk is the TX usrclk2)
 check surf_pgp3_gth_core.ocdc.json    "Clocks  : 6 \\(2158/2158 registers resolved\\).*Summary : 0 error\\(s\\), 1 warning.*CDC     : 209 crossing path\\(s\\), 145 synchronized.*Rules   : 9 error violation"
-check surf_pgp2fc_gty_wrapper.ocdc.json "Clocks  : 5 \\(458/458 registers resolved\\).*IP 'Pgp2fcGtyCore'.*user clocking outside the IP.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 52 crossing path\\(s\\), 36 synchronized"
+check surf_pgp2fc_gty_wrapper.ocdc.json "Clocks  : 5 \\(459/459 registers resolved\\).*IP 'Pgp2fcGtyCore'.*user clocking outside the IP.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 52 crossing path\\(s\\), 36 synchronized"
 # ClockManager7's own DRP is left unconnected in SURF's wrapper (axilClk at its default '0'): CLK-CONSTANT
 check surf_pgp3_gtx7_wrapper.ocdc.json "Clocks  : 6 \\(200/216 registers resolved\\).*IP 'Pgp3Gtx7Ip10G' \\(xilinx.com:ip:gtwizard:3.6\\) modelled.*gt0_rxoutclk_out 322.265625 MHz.*VHDL component declaration.*CLK-CONSTANT.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 34 crossing path\\(s\\), 24 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation\\(s\\), 9 path\\(s\\) at potential risk, 1 path\\(s\\) need review"
 check surf_pgp3_gtp7_wrapper.ocdc.json "Clocks  : 6 \\(269/269 registers resolved\\).*IP 'Pgp3Gtp7Ip6G' \\(xilinx.com:ip:gtwizard:3.6\\) modelled.*7-series GTP.*gt0_rxoutclk_out 390.625 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 43 crossing path\\(s\\), 31 synchronized"
-# SURF 10G Ethernet: MAC + PCS/PMA IP. UltraScale: XGMII in txusrclk2 (PG068); the 3 CDC-002 are
+# SURF 10G Ethernet: MAC + PCS/PMA IP. UltraScale: XGMII in txusrclk2 (PG068), phyClock is TXOUTCLK / 2
+# through BUFG_GT DIV "001" (CLK312_BUFG_GT, DIV "000", is TXOUTCLK itself); the 3 CDC-002 are
 # SURF's own one-flop captures of quasi-static reset flags (statusReg); UltraScale+: the 2 CDC-004
 # are 'txRstdone and rxRstdone' combined before their synchronizer (TenGigEthGthUltraScaleRst)
 check surf_tengig_gtx7.ocdc.json  "Clocks  : 5 \\(738/738 registers resolved\\).*ten_gig_eth_pcs_pma:6.0.*XGMII in coreclk.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 51 crossing path\\(s\\), 37 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 check surf_tengig_gth7.ocdc.json  "Clocks  : 4 \\(731/731 registers resolved\\).*Summary : 0 error\\(s\\), 0 warning.*CDC     : 51 crossing path\\(s\\), 37 synchronized"
-check surf_tengig_gthus.ocdc.json "Clocks  : 5 \\(765/765 registers resolved\\).*XGMII in txusrclk2.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 53 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 3 warning violation"
+check surf_tengig_gthus.ocdc.json "Clocks  : 6 \\(767/767 registers resolved\\).*CLK156_BUFG_GT.O  \\[divider\\] alias=txClockGt.*period=6.20606.*XGMII in txusrclk2.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 53 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 3 warning violation"
 check surf_tengig_gthusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*tx_mii_clk/rx_clk_out 156.25 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
 check surf_tengig_gtyusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
 n=$(cat gtx_count.txt)

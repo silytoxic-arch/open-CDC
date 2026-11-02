@@ -206,8 +206,12 @@ module IBUFGDS #(parameter DIFF_TERM = "FALSE", parameter IBUF_LOW_PWR = "TRUE",
 endmodule
 
 module IBUFDS_GTE2 (output O, output ODIV2, input CEB, input I, input IB);
+    // UG476: ODIV2 is O divided by 2
     assign O = I;
-    assign ODIV2 = I;
+    (* OPENCDC_CLOCK_PIN = "ODIV2", OPENCDC_CLOCK_RATIO = 2.0 *)
+    reg ODIV2_q = 1'b0;
+    always @(posedge I) ODIV2_q <= ~ODIV2_q;
+    assign ODIV2 = ODIV2_q;
 endmodule
 
 module OBUF #(parameter DRIVE = 12, parameter IOSTANDARD = "DEFAULT", parameter SLEW = "SLOW") (output O, input I);
@@ -2012,15 +2016,39 @@ endmodule
 module IBUFDS_GTE3 #(parameter REFCLK_EN_TX_PATH = 1'b0, parameter [1:0] REFCLK_HROW_CK_SEL = 2'b00,
                 parameter [1:0] REFCLK_ICNTL_RX = 2'b00)
                (output O, output ODIV2, input CEB, input I, input IB);
+    // UG576/UG578: REFCLK_HROW_CK_SEL 00: ODIV2 = O; 01: O divided by 2; 10: low
     assign O = I;
-    assign ODIV2 = I; // HROW divider not modelled
+    generate
+        if (REFCLK_HROW_CK_SEL == 2'b01) begin : g_div2
+            (* OPENCDC_CLOCK_PIN = "ODIV2", OPENCDC_CLOCK_RATIO = 2.0 *)
+            reg ODIV2_q = 1'b0;
+            always @(posedge I) ODIV2_q <= ~ODIV2_q;
+            assign ODIV2 = ODIV2_q;
+        end else if (REFCLK_HROW_CK_SEL == 2'b10) begin : g_low
+            assign ODIV2 = 1'b0;
+        end else begin : g_o
+            assign ODIV2 = I;
+        end
+    endgenerate
 endmodule
 
 module IBUFDS_GTE4 #(parameter REFCLK_EN_TX_PATH = 1'b0, parameter [1:0] REFCLK_HROW_CK_SEL = 2'b00,
                 parameter [1:0] REFCLK_ICNTL_RX = 2'b00)
                (output O, output ODIV2, input CEB, input I, input IB);
+    // UG576/UG578: REFCLK_HROW_CK_SEL 00: ODIV2 = O; 01: O divided by 2; 10: low
     assign O = I;
-    assign ODIV2 = I; // HROW divider not modelled
+    generate
+        if (REFCLK_HROW_CK_SEL == 2'b01) begin : g_div2
+            (* OPENCDC_CLOCK_PIN = "ODIV2", OPENCDC_CLOCK_RATIO = 2.0 *)
+            reg ODIV2_q = 1'b0;
+            always @(posedge I) ODIV2_q <= ~ODIV2_q;
+            assign ODIV2 = ODIV2_q;
+        end else if (REFCLK_HROW_CK_SEL == 2'b10) begin : g_low
+            assign ODIV2 = 1'b0;
+        end else begin : g_o
+            assign ODIV2 = I;
+        end
+    endgenerate
 endmodule
 
 // ---------------------------------------------------------------- system monitor

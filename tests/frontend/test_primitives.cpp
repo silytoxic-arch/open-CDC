@@ -658,9 +658,43 @@ TEST_CASE("Primitives: BUFG_GT divides by its DIV port + 1", "[primitives]") {
     REQUIRE(periods.contains("top.bx.O"));
     CHECK_FALSE(periods["top.bx.O"].has_value());
     CHECK(run->count("CLK-DIVIDE-UNKNOWN") == 1);
+    // the divider register of b0 (DIV 0) belongs to no domain: it is not part of the design
+    const auto& regs = run->r->clocks->registers;
+    CHECK(std::ranges::count_if(regs, [](const clock::RegisterClocking& rc) {
+              return rc.clocks.empty() && rc.reason.find("passes its input through") != std::string::npos;
+          }) == 1);
+    CHECK(run->r->clocks->resolvedRegisters() == regs.size());
     // q0 (clk_a) -> q1 (clk_a / 2): synchronous, no crossing
     REQUIRE(run->r->cdc);
     CHECK(run->path("top.q0", "top.q1") == nullptr);
+}
+
+TEST_CASE("Primitives: IBUFDS_GTE ODIV2 dividers", "[primitives]") {
+    // SURF TenGigEthGtx7Clk: refClockDiv2 from IBUFDS_GTE2 ODIV2; UltraScale REFCLK_HROW_CK_SEL
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input d, output reg q2, output reg q3, output reg q4,\n"
+                       "           output reg q5);\n"
+                       "  wire o2, h2, h3, z3, u;\n"
+                       "  IBUFDS_GTE2 g2 (.O(u), .ODIV2(h2), .CEB(1'b0), .I(clk_a), .IB(1'b0));\n"
+                       "  IBUFDS_GTE3 #(.REFCLK_HROW_CK_SEL(2'b01)) g3 (.O(), .ODIV2(h3), .CEB(1'b0), .I(clk_b), .IB(1'b0));\n"
+                       "  IBUFDS_GTE4 #(.REFCLK_HROW_CK_SEL(2'b00)) g4 (.O(), .ODIV2(o2), .CEB(1'b0), .I(clk_b), .IB(1'b0));\n"
+                       "  IBUFDS_GTE4 #(.REFCLK_HROW_CK_SEL(2'b10)) g5 (.O(), .ODIV2(z3), .CEB(1'b0), .I(clk_b), .IB(1'b0));\n"
+                       "  always @(posedge h2) q2 <= d;\n"
+                       "  always @(posedge h3) q3 <= d;\n"
+                       "  always @(posedge o2) q4 <= d;\n"
+                       "  always @(posedge z3) q5 <= d;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->clocks);
+    std::map<std::string, std::optional<double>> periods;
+    for (const auto& c : run->r->clocks->clocks)
+        periods[c.name] = c.periodNs;
+    CHECK(periods["top.g2.ODIV2"] == 20.0); // clk_a 10 ns / 2
+    CHECK(periods["top.g3.ODIV2"] == 14.0); // clk_b 7 ns / 2
+    // negative: 00 is clk_b itself, 10 drives a constant (q5 has no clock)
+    CHECK_FALSE(periods.contains("top.g4.ODIV2"));
+    CHECK_FALSE(periods.contains("top.g5.ODIV2"));
+    CHECK(run->count("CLK-CONSTANT") == 1);
 }
 
 TEST_CASE("Primitives: BUFG_GT divider from VHDL through unisim", "[primitives][vhdl]") {

@@ -33,7 +33,7 @@ Sources:
 | `BUFR` | `BUFR_DIVIDE` `"BYPASS"`/`"1"`: wire; `"2"`–`"8"`: divided clock, period = input period × divide | |
 | `BUFGCE_DIV` | `BUFGCE_DIVIDE` 1: wire; 2–8: divided clock | |
 | `IBUF`, `IBUFG`, `IBUFDS`, `IBUFGDS`, `OBUF`, `OBUFT`, `OBUFDS`, `OBUFTDS`, `IOBUF`, `IOBUFDS` | I/O buffers: wires | |
-| `IBUFDS_GTE2`, `IBUFDS_GTE3`, `IBUFDS_GTE4` | Reference clock buffers: `O` and `ODIV2` follow `I` | The `ODIV2` divider is not modelled |
+| `IBUFDS_GTE2`, `IBUFDS_GTE3`, `IBUFDS_GTE4` | Reference clock buffers: `O` follows `I`. `ODIV2`: `IBUFDS_GTE2` divides by 2 (UG476); `IBUFDS_GTE3/4` by `REFCLK_HROW_CK_SEL`: `00` = `O`, `01` = `O` / 2, `10` = low (UG576/UG578) | |
 | `SRL16E`, `SRLC32E` | Shift register in the clock domain of `CLK` | |
 | `LUT1`, `LUT2`, `LUT3`, `LUT4`, `LUT5`, `LUT6`, `LUT6_2`, `MUXF7`, `MUXF8`, `VCC`, `GND` | Combinational | |
 | `IDDR`, `IDDRE1` | Falling-edge capture, rising-edge outputs `Q1`/`Q2` | |
