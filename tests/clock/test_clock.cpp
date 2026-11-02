@@ -382,6 +382,32 @@ TEST_CASE("set_clock_groups with get_clocks -of_objects", "[clock][constraints]"
     CHECK(p.countCode("CON-UNMATCHED") == 0);
 }
 
+TEST_CASE("get_clocks -of_objects on another name of a clock net (an instance pin)", "[clock][constraints]") {
+    // SURF Pgp3Gtx7IpWrapper: get_pins .../gt0_rxoutclk_out names the IP's output pin; the
+    // registers are clocked through the parent's net connected to it
+    const char* design = "module sub(input ci, output co);\n  assign co = ci;\nendmodule\n"
+                         "module top(input clk_a, input clk_b, input d, output reg q1, output reg q2);\n"
+                         "  wire c1;\n  sub u (.ci(clk_a), .co(c1));\n  wire c2 = c1;\n"
+                         "  always @(posedge c2) q1 <= d;\n"
+                         "  always @(posedge clk_b) q2 <= q1;\n"
+                         "endmodule\n";
+    const char* clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                         "create_clock -name clk_b -period 7 [get_ports clk_b]\n";
+    auto r = analyze(design, std::string(clocks) +
+                                 "set_clock_groups -asynchronous -group [get_clocks -of_objects [get_pins u/co]] "
+                                 "-group clk_b\n");
+    CHECK(r.countCode("CON-UNMATCHED") == 0);
+    CHECK(r.rel("clk_a", "clk_b") == ClockRelation::Asynchronous);
+    // negative: a data net driven by a register names no clock, also through an alias
+    std::string withAlias = design;
+    withAlias.replace(withAlias.rfind("endmodule"), 9, "  wire q1_alias = q1;\nendmodule");
+    auto n = analyze(withAlias,
+                     std::string(clocks) +
+                         "set_clock_groups -asynchronous -group [get_clocks -of_objects [get_nets q1_alias]] -group clk_b\n");
+    CHECK(n.countCode("CON-UNMATCHED") == 1);
+    CHECK(n.rel("clk_a", "clk_b") == ClockRelation::Unknown);
+}
+
 TEST_CASE("Clock-level false paths and datapath-only max delays declare asynchronous pairs", "[clock][constraints]") {
     const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
                                "create_clock -name clk_b -period 7 [get_ports clk_b]\n";

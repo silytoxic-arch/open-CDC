@@ -2,6 +2,7 @@
 
 #include "core/PathUtil.h"
 #include "core/TextEncoding.h"
+#include "frontend/vhdl/VhdlParser.h"
 
 #include <nlohmann/json.hpp>
 
@@ -32,12 +33,7 @@ Diagnostic unsupported(std::string message, std::vector<std::string> notes = {})
 // Reading the configuration
 // ---------------------------------------------------------------------------
 
-struct BoundaryPort {
-    std::string name;
-    bool output = false;
-    bool inout = false;
-    std::optional<std::pair<long long, long long>> range; ///< [left:right], absent for scalars
-};
+using BoundaryPort = XciPort;
 
 /// Ports of the IP-XACT component file Vivado writes next to an XML .xci
 /// (<instance>.xml): resolved widths, disabled ports (isEnabled false) left out.
@@ -2358,6 +2354,130 @@ bool isXciFile(const std::filesystem::path& file) {
 
 namespace {
 
+/// An integer expression of literals (8, 16-1, 2*8-1, -1); nothing else.
+std::optional<long long> literalInt(const vhdl::Expr* e) {
+    if (!e)
+        return std::nullopt;
+    switch (e->kind) {
+    case vhdl::ExprKind::Integer:
+        if (e->overflow)
+            return std::nullopt;
+        return e->ival;
+    case vhdl::ExprKind::Unary: {
+        auto v = literalInt(e->lhs.get());
+        if (!v)
+            return std::nullopt;
+        if (e->op == vhdl::Op::Minus)
+            return -*v;
+        if (e->op == vhdl::Op::Plus)
+            return *v;
+        return std::nullopt;
+    }
+    case vhdl::ExprKind::Binary: {
+        auto l = literalInt(e->lhs.get());
+        auto r = literalInt(e->rhs.get());
+        if (!l || !r || std::llabs(*l) > (1LL << 30) || std::llabs(*r) > (1LL << 30))
+            return std::nullopt;
+        switch (e->op) {
+        case vhdl::Op::Add: return *l + *r;
+        case vhdl::Op::Sub: return *l - *r;
+        case vhdl::Op::Mul: return *l * *r;
+        default: return std::nullopt;
+        }
+    }
+    default:
+        return std::nullopt;
+    }
+}
+
+/// The port's width from its subtype: a scalar bit type or a one-dimensional
+/// bit-vector type with a literal range. Anything else: unknown.
+bool portShape(const vhdl::SubtypeIndication* st, XciPort& p) {
+    if (!st || !st->mark || st->range)
+        return false;
+    const vhdl::Expr& m = *st->mark;
+    static const std::set<std::string> scalars = {"std_logic", "std_ulogic", "bit"};
+    static const std::set<std::string> vectors = {"std_logic_vector", "std_ulogic_vector", "bit_vector", "unsigned",
+                                                  "signed"};
+    auto markKey = [](const vhdl::Expr& e) -> std::string {
+        if (e.kind == vhdl::ExprKind::Simple)
+            return e.ident.key;
+        if (e.kind == vhdl::ExprKind::Selected) // ieee.std_logic_1164.std_logic
+            return e.ident.key;
+        return {};
+    };
+    if (m.kind == vhdl::ExprKind::Simple || m.kind == vhdl::ExprKind::Selected)
+        return scalars.contains(markKey(m));
+    if (m.kind != vhdl::ExprKind::Call || !m.prefix || !vectors.contains(markKey(*m.prefix)) || m.args.size() != 1 ||
+        !m.args[0].actual || m.args[0].formal)
+        return false;
+    const vhdl::Expr& r = *m.args[0].actual;
+    if (r.kind != vhdl::ExprKind::Range)
+        return false;
+    auto l = literalInt(r.lhs.get());
+    auto h = literalInt(r.rhs.get());
+    if (!l || !h)
+        return false;
+    p.range = std::pair{*l, *h};
+    return true;
+}
+
+void collectComponents(const std::vector<vhdl::DeclPtr>& decls, const std::string& fileName,
+                       std::map<std::string, XciComponent>& out, std::set<std::string>& conflicting) {
+    for (const auto& d : decls) {
+        if (!d || d->kind != vhdl::DeclKind::Component || d->names.empty())
+            continue;
+        XciComponent c;
+        c.where = fileName + ":" + std::to_string(d->loc.line);
+        bool ok = !d->ports.empty();
+        for (const auto& i : d->ports) {
+            if (!ok)
+                break;
+            for (const auto& n : i.names) {
+                XciPort p;
+                p.name = n.text;
+                p.output = i.mode == vhdl::Mode::Out || i.mode == vhdl::Mode::Buffer;
+                p.inout = i.mode == vhdl::Mode::InOut;
+                if (!portShape(i.subtype.get(), p)) {
+                    ok = false; // a width that is not literal: do not guess
+                    break;
+                }
+                c.ports.push_back(std::move(p));
+            }
+        }
+        if (!ok)
+            continue;
+        const std::string key = d->names.front().key;
+        auto [it, inserted] = out.emplace(key, c);
+        if (!inserted) {
+            // the same component declared again (another architecture, a package):
+            // only identical port lists are kept
+            auto same = it->second.ports.size() == c.ports.size() &&
+                        std::ranges::equal(it->second.ports, c.ports, [](const XciPort& a, const XciPort& b) {
+                            return lower(a.name) == lower(b.name) && a.output == b.output && a.inout == b.inout &&
+                                   a.range == b.range;
+                        });
+            if (!same)
+                conflicting.insert(key);
+        }
+    }
+}
+
+} // namespace
+
+std::map<std::string, XciComponent> vhdlComponentPorts(std::string_view text, const std::string& fileName) {
+    std::map<std::string, XciComponent> out;
+    std::set<std::string> conflicting;
+    const auto parsed = vhdl::parseVhdl(text, 0);
+    for (const auto& u : parsed.file.units)
+        collectComponents(u.decls, fileName, out, conflicting);
+    for (const auto& k : conflicting)
+        out.erase(k);
+    return out;
+}
+
+namespace {
+
 Result<XciInfo> parseXci(std::string_view text) {
     std::string t(text);
     const auto first = t.find_first_not_of(" \t\r\n");
@@ -2369,12 +2489,21 @@ Result<XciInfo> parseXci(std::string_view text) {
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir);
 
 Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const XciContext* context = nullptr) {
-    // XML .xci: the port list from the component file next to it, when present
+    // XML .xci: the port list from the component file next to it, when present,
+    // otherwise from a VHDL component declaration of the IP in the design
     if (!info.json && info.ports.empty() && dir)
         if (auto t = readSourceText(*dir / (info.instance + ".xml")))
             if (auto ports = parseComponentPorts(t->utf8))
                 info.ports = std::move(*ports);
+    std::string fromComponent;
+    if (!info.json && info.ports.empty() && context)
+        if (const auto it = context->vhdlComponents.find(lower(info.instance)); it != context->vhdlComponents.end()) {
+            info.ports = it->second.ports;
+            fromComponent = it->second.where;
+        }
     auto r = dispatchModelled(info, dir);
+    if (r && !fromComponent.empty())
+        r.value().notes.push_back("ports from the VHDL component declaration at " + fromComponent);
     if (r || !context || context->ipRepositories.empty() || r.error().code != "FE-XCI-UNSUPPORTED")
         return r;
     // not modelled: the IP itself, from an IP repository
@@ -2694,6 +2823,250 @@ Result<XciModel> gtWizard(const XciInfo& info) {
     return model;
 }
 
+/// 7-series transceiver wizard (gtwizard 3.x: GTP, GTX, GTH). Its port list
+/// does not follow from a few parameters, so the model needs the ports of the
+/// instance (a JSON .xci, the component file, or a VHDL component declaration).
+/// Ports are gt<N>_<port> per channel; their clock domains as for the
+/// UltraScale wizard: user data in the channel's TX/RX USRCLK2 (the user's
+/// clocks, inputs of the IP), DRP in drpclk, the reset state machines'
+/// outputs in sysclk_in; TXOUTCLK/RXOUTCLK are clocks of their own.
+Result<XciModel> gtWizard7(const XciInfo& info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const auto unsupportedGt = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): " + why,
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    };
+    if (info.ports.empty())
+        return unsupportedGt("the 7-series Transceivers Wizard is modelled from the ports of the instance: give a "
+                             "JSON .xci, the component file next to the XML .xci (" + info.instance +
+                             ".xml), or a VHDL component declaration of the IP in the sources");
+    auto real = [&](const std::string& key) {
+        try {
+            return std::stod(text(m, key, "0"));
+        }
+        catch (...) {
+            return 0.0;
+        }
+    };
+    enum class D { TxUser, RxUser, Drp, Sys, Async, Ignored, ClockIn, ClockOut };
+    // the port without its channel prefix
+    static const std::regex chanRe(R"(^gt([0-9]+)_(.*)$)");
+    auto split = [](const std::string& name) -> std::pair<int, std::string> {
+        std::smatch mm;
+        const std::string l = lower(name);
+        if (std::regex_match(l, mm, chanRe))
+            return {std::stoi(mm[1].str()), mm[2].str()};
+        return {-1, l};
+    };
+    static const std::set<std::string> tx = {
+        "txdata_in",       "txheader_in",       "txsequence_in",    "txstartseq_in",     "txgearboxready_out",
+        "txcharisk_in",    "txchardispmode_in", "txchardispval_in", "tx8b10ben_in",      "txpolarity_in",
+        "txresetdone_out", "txbufstatus_out",   "txprbssel_in",     "txprbsforceerr_in", "txelecidle_in"};
+    static const std::set<std::string> rx = {
+        "rxdata_out",          "rxheader_out",       "rxheadervalid_out",  "rxdatavalid_out",  "rxstartofseq_out",
+        "rxgearboxslip_in",    "rxpolarity_in",      "rxresetdone_out",    "rxcharisk_out",    "rxchariscomma_out",
+        "rxdisperr_out",       "rxnotintable_out",   "rxbyteisaligned_out", "rxbyterealign_out", "rxcommadet_out",
+        "rxmcommaalignen_in",  "rxpcommaalignen_in", "rxbufstatus_out",    "rxclkcorcnt_out",  "rxprbserr_out",
+        "rxprbssel_in",        "rxprbscntreset_in",  "rx8b10ben_in",       "rxslide_in",       "rxvalid_out"};
+    static const std::set<std::string> sys = {"tx_fsm_reset_done_out", "rx_fsm_reset_done_out", "tx_mmcm_reset_out",
+                                              "rx_mmcm_reset_out",     "qpllreset_out",         "pll0reset_out",
+                                              "pll1reset_out",         "cpllreset_out"};
+    // UG476 / UG482: asynchronous status outputs of the channel
+    static const std::set<std::string> asyncOut = {
+        "eyescandataerror_out", "dmonitorout_out",   "rxmonitorout_out",    "cplllock_out",         "cpllfbclklost_out",
+        "cpllrefclklost_out",   "rxpmaresetdone_out", "txpmaresetdone_out", "rxcdrlock_out",        "rxelecidle_out",
+        "rxphaligndone_out",    "rxdlysresetdone_out", "rxsyncdone_out",    "txphaligndone_out",    "txdlysresetdone_out",
+        "txsyncdone_out",       "rxoutclkpcs_out",    "rxphmonitor_out",     "rxphslipmonitor_out"};
+    // synchronized in the IP, static or analog controls, reference clocks, serial pins
+    static const std::set<std::string> ignored = {
+        "soft_reset_in",       "soft_reset_tx_in",    "soft_reset_rx_in",    "dont_reset_on_data_error_in",
+        "data_valid_in",       "tx_mmcm_lock_in",     "rx_mmcm_lock_in",     "qplllock_in",
+        "qpllrefclklost_in",   "pll0lock_in",         "pll1lock_in",         "pll0refclklost_in",
+        "pll1refclklost_in",   "loopback_in",         "eyescanreset_in",     "eyescantrigger_in",
+        "rxcdrovrden_in",      "rxcdrhold_in",        "rxdfelpmreset_in",    "rxmonitorsel_in",
+        "rxlpmen_in",          "rxlpmhfhold_in",      "rxlpmlfhold_in",      "rxlpmhfovrden_in",
+        "rxlpmlfklovrden_in",  "rxdfeagcovrden_in",   "rxlpmreset_in",       "txdiffctrl_in",
+        "txpostcursor_in",     "txprecursor_in",      "txmaincursor_in",     "gtrxreset_in",
+        "gttxreset_in",        "rxuserrdy_in",        "txuserrdy_in",        "rxpcsreset_in",
+        "rxpmareset_in",       "txpcsreset_in",       "txpmareset_in",       "rxbufreset_in",
+        "cpllreset_in",        "cpllpd_in",           "cplllockdetclk_in",   "txinhibit_in",
+        "qplloutclk_in",       "qplloutrefclk_in",    "gtrefclk0_in",        "gtrefclk1_in",
+        "gtnorthrefclk0_in",   "gtnorthrefclk1_in",   "gtsouthrefclk0_in",   "gtsouthrefclk1_in",
+        "gtgrefclk_in",        "pll0clk_in",          "pll0refclk_in",       "pll1clk_in",
+        "pll1refclk_in",       "gtxrxp_in",           "gtxrxn_in",           "gtprxp_in",
+        "gtprxn_in",           "gthrxp_in",           "gthrxn_in",           "gtxtxp_out",
+        "gtxtxn_out",          "gtptxp_out",          "gtptxn_out",          "gthtxp_out",
+        "gthtxn_out",          "pll0outclk_in",       "pll0outrefclk_in",    "pll1outclk_in",
+        "pll1outrefclk_in"};
+    static const std::set<std::string> clockIn = {"sysclk_in",  "drpclk_in",    "txusrclk_in",
+                                                  "txusrclk2_in", "rxusrclk_in", "rxusrclk2_in"};
+    static const std::set<std::string> clockOut = {"txoutclk_out", "rxoutclk_out", "txoutclkfabric_out",
+                                                   "rxoutclkfabric_out", "txoutclkpcs_out"};
+    auto domainOf = [&](const std::string& port) -> std::optional<D> {
+        if (tx.contains(port))
+            return D::TxUser;
+        if (rx.contains(port))
+            return D::RxUser;
+        if (port.starts_with("drp") && port != "drpclk_in")
+            return D::Drp;
+        if (sys.contains(port))
+            return D::Sys;
+        if (asyncOut.contains(port))
+            return D::Async;
+        if (clockIn.contains(port))
+            return D::ClockIn;
+        if (clockOut.contains(port))
+            return D::ClockOut;
+        if (ignored.contains(port))
+            return D::Ignored;
+        return std::nullopt;
+    };
+    struct P {
+        std::string name; ///< as declared
+        int channel;      ///< -1: wizard level
+        std::string port; ///< lower case, without the channel prefix
+        bool out;
+        unsigned width;
+        D d;
+    };
+    std::vector<P> ports;
+    std::vector<std::string> unknown;
+    std::set<int> channels;
+    for (const auto& b : info.ports) {
+        auto [ch, port] = split(b.name);
+        const auto d = domainOf(port);
+        if (!d || b.inout || (b.output != port.ends_with("_out"))) {
+            unknown.push_back(b.name);
+            continue;
+        }
+        if (ch >= 0)
+            channels.insert(ch);
+        ports.push_back({b.name, ch, port, b.output,
+                         b.range ? static_cast<unsigned>(std::llabs(b.range->first - b.range->second) + 1) : 1U, *d});
+    }
+    if (!unknown.empty()) {
+        std::string list;
+        for (const auto& u : unknown)
+            list += (list.empty() ? "" : ", ") + u;
+        return unsupportedGt("ports whose clock domain is not modelled: " + list);
+    }
+    auto find = [&](int ch, const std::string& port) -> const P* {
+        for (const auto& p : ports)
+            if (p.channel == ch && p.port == port)
+                return &p;
+        return nullptr;
+    };
+
+    std::ostringstream v;
+    v << "// Generated by OpenCDC from a Vivado IP configuration (.xci): a CDC model, not a functional model.\n"
+      << "module " << info.instance << " (\n";
+    for (std::size_t i = 0; i < ports.size(); ++i)
+        v << "  " << (ports[i].out ? "output wire " : "input  wire ") << vec(ports[i].width) << " " << ports[i].name
+          << (i + 1 < ports.size() ? ",\n" : "\n");
+    v << ");\n";
+
+    // domain registers: one per (domain, channel)
+    std::string missing;
+    auto domain = [&](D d, int ch, const P* clk, const std::string& tag) {
+        bool any = false;
+        std::string inputs;
+        for (const auto& p : ports)
+            if (p.d == d && (p.channel == ch || (d == D::Sys && ch == -1))) {
+                any = true;
+                if (!p.out)
+                    inputs += (inputs.empty() ? "" : ", ") + p.name;
+            }
+        if (!any)
+            return;
+        if (!clk) {
+            missing += (missing.empty() ? "" : ", ") + tag;
+            return;
+        }
+        const std::string c = clk->name + "[0]";
+        v << "  reg oc_" << tag << " = 1'b0;\n  always @(posedge " << c << ") oc_" << tag << " <= "
+          << (inputs.empty() ? std::string("~oc_" + tag) : "^{" + inputs + "}") << ";\n";
+        for (const auto& p : ports)
+            if (p.out && p.d == d && (p.channel == ch || (d == D::Sys && ch == -1)))
+                v << "  reg " << vec(p.width) << " oc_" << p.name << "_q = " << p.width << "'b0;\n  always @(posedge "
+                  << c << ") oc_" << p.name << "_q <= {" << p.width << "{oc_" << tag << "}};\n  assign " << p.name
+                  << " = oc_" << p.name << "_q;\n";
+    };
+    // the reset state machines run on sysclk_in: their outputs of every channel
+    {
+        const P* sysclk = find(-1, "sysclk_in");
+        bool any = false;
+        for (auto& p : ports)
+            if (p.d == D::Sys) {
+                any = true;
+                p.channel = -1; // one domain
+            }
+        if (any)
+            domain(D::Sys, -1, sysclk, "sysclk_in");
+    }
+    for (int ch : channels) {
+        const std::string n = std::to_string(ch);
+        domain(D::TxUser, ch, find(ch, "txusrclk2_in"), "gt" + n + "_txusrclk2_in");
+        domain(D::RxUser, ch, find(ch, "rxusrclk2_in"), "gt" + n + "_rxusrclk2_in");
+        domain(D::Drp, ch, find(ch, "drpclk_in"), "gt" + n + "_drpclk_in");
+    }
+    if (!missing.empty())
+        return unsupportedGt("ports of a clock domain without their clock port: " + missing);
+
+    std::string summary;
+    for (const auto& p : ports) {
+        if (!p.out)
+            continue;
+        if (p.d == D::Async) {
+            v << "  wire oc_" << p.name << "_a;\n  opencdc_async_source u_oc_" << p.name << " (oc_" << p.name
+              << "_a);\n  assign " << p.name << " = {" << p.width << "{oc_" << p.name << "_a}};\n";
+        }
+        else if (p.d == D::Ignored) {
+            v << "  assign " << p.name << " = " << p.width << "'b0;\n"; // serial pins
+        }
+        else if (p.d == D::ClockOut) {
+            // TXOUTCLK/RXOUTCLK (PMA): line rate / internal data width; the fabric
+            // outputs: the reference clock; TXOUTCLKPCS: no configured frequency
+            const std::string g = "gt" + std::to_string(p.channel) + "_val_";
+            const std::string dir = p.port.starts_with("tx") ? "tx" : "rx";
+            double mhz = 0;
+            if (p.port == dir + "outclk_out") {
+                const std::string src = lower(text(m, g + dir + "outclk_source", "AUTO"));
+                const double rate = real(g + dir + "_line_rate");
+                const double width = real(g + dir + "_int_datawidth");
+                if ((src == "auto" || src == dir + "outclkpma") && rate > 0 && width > 0)
+                    mhz = rate * 1000.0 / width;
+            }
+            else if (p.port == dir + "outclkfabric_out") {
+                mhz = real(g + dir + "_reference_clock");
+            }
+            v << "  (* OPENCDC_CLOCK_PIN = \"" << p.name << "\"";
+            if (mhz > 0)
+                v << ", OPENCDC_CLOCK_PERIOD = " << fmtReal(1000.0 / mhz);
+            v << " *) wire oc_" << p.name << "_c;\n  opencdc_async_source u_oc_" << p.name << " (oc_" << p.name
+              << "_c);\n  assign " << p.name << " = {" << p.width << "{oc_" << p.name << "_c}};\n";
+            if (mhz > 0 && p.port == dir + "outclk_out")
+                summary += ", " + p.name + " " + fmtReal(mhz) + " MHz";
+        }
+    }
+    v << "endmodule\n";
+
+    XciModel model;
+    model.module = info.instance;
+    model.ip = vlnv;
+    const std::string type = text(m, "gt_type", text(info.user, "gt_type", "GT"));
+    std::string rate = text(m, "gt" + std::to_string(channels.empty() ? 0 : *channels.begin()) + "_val_tx_line_rate", "?");
+    model.summary = std::to_string(channels.size()) + " channel(s), 7-series " + type + ", line rate " + rate +
+                    " Gb/s" + summary;
+    model.verilog = v.str();
+    model.notes.push_back("the transceiver output clocks are clocks of their own, the user clocks are the clocks the "
+                          "design connects (relate them with set_clock_groups or create_clock as Vivado does); the "
+                          "reset state machines' outputs are in sysclk_in; PMA status and eye scan outputs are "
+                          "asynchronous");
+    return model;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -2738,6 +3111,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return debugCore(info, info.name == "vio");
     if (info.name == "gtwizard_ultrascale")
         return gtWizard(info);
+    if (info.name == "gtwizard")
+        return gtWizard7(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +

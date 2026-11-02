@@ -802,12 +802,29 @@ private:
     /// get_clocks -of_objects in set_clock_groups: the clocks on the named
     /// nets/pins/ports, per constraint and group
     void resolveGroupObjects() {
+        // A named net that is not itself on a traced clock path may be another
+        // name of one (a port of an instance connected to it, an assign): the
+        // nets with the same driver carry the same clocks. Through aliases
+        // only, so a data net never names a clock.
+        std::unordered_map<BitRef, const Trace*, BitRefHash> byDriver;
+        for (const auto& [bit, t] : memo_)
+            if (!t.sources.empty())
+                byDriver.emplace(driverOf(bit).bit, &t);
+        auto traced = [&](const BitRef& b) -> const Trace* {
+            if (const auto it = memo_.find(b); it != memo_.end())
+                return &it->second;
+            if (sourceClocks_.contains(b))
+                return nullptr;
+            if (const auto it = byDriver.find(driverOf(b).bit); it != byDriver.end())
+                return it->second;
+            return nullptr;
+        };
         // clock exceptions with get_clocks -of_objects
         exceptionClocks_.assign(cons_.clockExceptions.size(), {});
         auto clocksOn = [&](const std::vector<BitRef>& bits, std::vector<ClockId>& out) {
             for (const auto& b : bits) {
-                if (const auto it = memo_.find(b); it != memo_.end())
-                    for (const auto& [c, inv] : it->second.sources)
+                if (const Trace* t = traced(b))
+                    for (const auto& [c, inv] : t->sources)
                         out.push_back(c);
                 else if (const auto sc = sourceClocks_.find(b); sc != sourceClocks_.end())
                     out.insert(out.end(), sc->second.begin(), sc->second.end());
@@ -827,8 +844,8 @@ private:
         for (std::size_t i = 0; i < cons_.inputDelays.size(); ++i) {
             const auto& d = cons_.inputDelays[i];
             for (const auto& b : d.clockBits) {
-                if (const auto it = memo_.find(b); it != memo_.end() && !it->second.sources.empty())
-                    model_->inputDelayClocks[i] = it->second.sources.front().first;
+                if (const Trace* t = traced(b); t && !t->sources.empty())
+                    model_->inputDelayClocks[i] = t->sources.front().first;
                 else if (const auto sc = sourceClocks_.find(b); sc != sourceClocks_.end() && !sc->second.empty())
                     model_->inputDelayClocks[i] = sc->second.front();
                 if (model_->inputDelayClocks[i])
@@ -849,8 +866,8 @@ private:
                     // only nets already on a clock path (or constraint sources)
                     // name clocks: tracing a data net would invent a clock
                     Trace t;
-                    if (const auto it = memo_.find(b); it != memo_.end())
-                        t = it->second;
+                    if (const Trace* tr = traced(b))
+                        t = *tr;
                     else if (const auto sc = sourceClocks_.find(b); sc != sourceClocks_.end())
                         for (const ClockId c : sc->second)
                             t.sources.emplace_back(c, false);

@@ -12,6 +12,7 @@
 // was not in the wrapper yet triggers another round (fixpoint).
 
 #include "core/PathUtil.h"
+#include "core/TextEncoding.h"
 #include "frontend/Frontend.h"
 #include "frontend/MixedSupport.h"
 #include "frontend/Primitives.h"
@@ -867,6 +868,12 @@ public:
             input.sourceLibraries.clear();
             XciContext context;
             context.ipRepositories = original.ipRepositories;
+            // VHDL component declarations give the ports of an XML .xci without a component file
+            for (const auto& f : original.sourceFiles)
+                if (isVhdlFile(f))
+                    if (const auto t = readSourceText(f))
+                        for (auto& [k, c] : vhdlComponentPorts(t->utf8, toUtf8(f)))
+                            context.vhdlComponents.emplace(k, std::move(c));
             // sources in order; an IP from a repository adds its own files
             // (which may contain further .xci) right after its configuration
             std::vector<std::pair<std::filesystem::path, std::string>> queue;

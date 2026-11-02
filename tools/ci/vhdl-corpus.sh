@@ -214,6 +214,25 @@ surf_project("surf_pgp2fc_gty_wrapper", "Pgp2fcGtyCoreWrapper",
               "xilinx/general/rtl/GtRxAlignCheck.vhd", fc + "rtl/Pgp2fcGtyCoreWrapper.vhd",
               fc + "ip/Pgp2fcGtyCore/Pgp2fcGtyCore.xci", fc + "ip/Pgp2fcGtyCore_refclk2x/Pgp2fcGtyCore_refclk2x.xci"],
              "pgp2fc.sdc")
+# PGPv3 on 7-series GTX/GTP: the 7-series Transceivers Wizard (gtwizard), ports from the
+# wrapper's VHDL component declarations (the XML .xci has no port list)
+for typ, rates, gen in [("gtx7", ["3G", "6G", "10G"], {}),
+                        ("gtp7", ["3G", "6G"], {"CLKIN_PERIOD_G": "2.56", "BANDWIDTH_G": '"OPTIMIZED"',
+                                                "CLKFBOUT_MULT_G": "3", "CLKOUT0_DIVIDE_G": "12",
+                                                "CLKOUT1_DIVIDE_G": "3", "CLKOUT2_DIVIDE_G": "6"})]:
+    T = "Pgp3" + typ.capitalize()
+    d = "protocols/pgp/pgp3/%s/" % typ
+    extra = [d + "rtl/%sTxGearbox.vhd" % T, d + "rtl/%sRxGearbox.vhd" % T] if typ == "gtp7" else []
+    open(os.path.join(work, typ + ".sdc"), "w").write(
+        "create_clock -name stable -period 6.4 [get_ports stableClk]\n"
+        "create_clock -name axil -period 8 [get_ports axilClk]\n"
+        "create_clock -name txPll -period 3.103 [get_ports {txPllClk[*]}]\n"
+        "# the receiver clocks are derived from the transceiver's RXOUTCLK\n"
+        "set_clock_groups -asynchronous -group [get_clocks stable] -group [get_clocks axil] -group [get_clocks txPll] "
+        "-group [get_clocks -include_generated_clocks -of_objects [get_pins -hier *U_%sIp*/gt0_rxoutclk_out]]\n" % T)
+    surf_project("surf_pgp3_%s_wrapper" % typ, T + "IpWrapper",
+                 surf[:-1] + extra + [d + "rtl/%sIpWrapper.vhd" % T] + [d + "ip/%sIp%s.xci" % (T, r) for r in rates],
+                 typ + ".sdc", gen)
 # every Transceivers Wizard .xci of surf alone (the IP is the top)
 gtx = []
 for x in sorted(glob.glob(os.path.join(sw, "**", "*.xci"), recursive=True)):
@@ -417,6 +436,9 @@ check surf_pgp3_gth_wrapper.ocdc.json "Clocks  : 6 \\(195/195 registers resolved
 # the core: the 9 errors are genuine in SURF's configuration (pgpRxClk is the TX usrclk2)
 check surf_pgp3_gth_core.ocdc.json    "Clocks  : 6 \\(2158/2158 registers resolved\\).*Summary : 0 error\\(s\\), 1 warning.*CDC     : 209 crossing path\\(s\\), 145 synchronized.*Rules   : 9 error violation"
 check surf_pgp2fc_gty_wrapper.ocdc.json "Clocks  : 5 \\(458/458 registers resolved\\).*IP 'Pgp2fcGtyCore'.*user clocking outside the IP.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 52 crossing path\\(s\\), 36 synchronized"
+# ClockManager7's own DRP is left unconnected in SURF's wrapper (axilClk at its default '0'): CLK-CONSTANT
+check surf_pgp3_gtx7_wrapper.ocdc.json "Clocks  : 6 \\(200/216 registers resolved\\).*IP 'Pgp3Gtx7Ip10G' \\(xilinx.com:ip:gtwizard:3.6\\) modelled.*gt0_rxoutclk_out 322.265625 MHz.*VHDL component declaration.*CLK-CONSTANT.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 34 crossing path\\(s\\), 24 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation\\(s\\), 9 path\\(s\\) at potential risk, 1 path\\(s\\) need review"
+check surf_pgp3_gtp7_wrapper.ocdc.json "Clocks  : 6 \\(269/269 registers resolved\\).*IP 'Pgp3Gtp7Ip6G' \\(xilinx.com:ip:gtwizard:3.6\\) modelled.*7-series GTP.*gt0_rxoutclk_out 390.625 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 43 crossing path\\(s\\), 31 synchronized"
 n=$(cat gtx_count.txt)
 [ "$n" = 30 ] || { echo "::error::expected 30 Transceivers Wizard .xci files in surf, found $n"; fail=1; }
 for f in gtx_*.ocdc.json; do

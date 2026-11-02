@@ -21,8 +21,11 @@
 #include "core/Result.h"
 
 #include <filesystem>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace opencdc::frontend {
@@ -39,12 +42,33 @@ struct XciModel {
     std::vector<std::string> extraLibraries;
 };
 
+/// A port of an IP instance.
+struct XciPort {
+    std::string name;
+    bool output = false;
+    bool inout = false;
+    std::optional<std::pair<long long, long long>> range; ///< [left:right], absent for scalars
+};
+
+/// The ports of an IP as a VHDL component declaration in the design gives them.
+struct XciComponent {
+    std::vector<XciPort> ports;
+    std::string where; ///< "file:line" of the declaration
+};
+
 /// Where IP that OpenCDC does not model is looked up: IP repositories
 /// (directories searched for the IP's component.xml, as Vivado's
-/// ip_repo_paths).
+/// ip_repo_paths). VHDL component declarations of the design give the ports
+/// of an XML .xci that has no component file next to it.
 struct XciContext {
     std::vector<std::filesystem::path> ipRepositories;
+    std::map<std::string, XciComponent> vhdlComponents; ///< lower-case component name -> ports
 };
+
+/// Component declarations in a VHDL design file whose port widths are
+/// literal (std_logic, std_logic_vector(8 downto 0), ...), by lower-case name.
+/// A component with a width that depends on a generic or a constant is left out.
+[[nodiscard]] std::map<std::string, XciComponent> vhdlComponentPorts(std::string_view text, const std::string& fileName);
 
 /// True for .xci files.
 [[nodiscard]] bool isXciFile(const std::filesystem::path& file);

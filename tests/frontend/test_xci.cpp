@@ -1338,3 +1338,192 @@ TEST_CASE("XCI: Transceivers Wizard user clocks in a design", "[frontend][xci][g
     CHECK(other->cdc->stats.unknownRelation == 0);
     CHECK(count(*other, "CON-UNMATCHED") == 0);
 }
+
+TEST_CASE("XCI: VHDL component declarations give IP ports", "[frontend][xci][component]") {
+    const std::string vhdl = "library ieee;\nuse ieee.std_logic_1164.all;\n"
+                             "package p is\n"
+                             "  component ip_a\n"
+                             "    port (clk : in std_logic; d : in std_logic_vector(16-1 downto 0);\n"
+                             "          q : out std_logic_vector(0 to 3); io : inout std_logic; b : buffer bit;\n"
+                             "          u : out ieee.std_logic_1164.std_ulogic);\n"
+                             "  end component;\n"
+                             "  component ip_generic\n" // a width from a generic: not guessed
+                             "    generic (W : natural := 8);\n"
+                             "    port (clk : in std_logic; d : in std_logic_vector(W-1 downto 0));\n"
+                             "  end component;\n"
+                             "  component ip_twice port (a : in std_logic); end component;\n"
+                             "end package;\n"
+                             "library ieee;\nuse ieee.std_logic_1164.all;\n"
+                             "entity e is end;\n"
+                             "architecture r of e is\n"
+                             "  component IP_A\n" // the same component again: identical, kept
+                             "    port (clk : in std_logic; d : in std_logic_vector(15 downto 0);\n"
+                             "          q : out std_logic_vector(0 to 3); io : inout std_logic; b : buffer bit;\n"
+                             "          u : out ieee.std_logic_1164.std_ulogic);\n"
+                             "  end component;\n"
+                             "  component ip_twice port (a : in std_logic_vector(1 downto 0)); end component;\n"
+                             "begin\nend;\n";
+    const auto c = frontend::vhdlComponentPorts(vhdl, "p.vhd");
+    REQUIRE(c.contains("ip_a"));
+    const auto& a = c.at("ip_a");
+    REQUIRE(a.ports.size() == 6);
+    CHECK(a.where == "p.vhd:4");
+    CHECK((a.ports[0].name == "clk" && !a.ports[0].output && !a.ports[0].range));
+    CHECK((a.ports[1].range == std::pair<long long, long long>{15, 0}));
+    CHECK((a.ports[2].output && a.ports[2].range == std::pair<long long, long long>{0, 3}));
+    CHECK(a.ports[3].inout);
+    CHECK((a.ports[4].output && !a.ports[4].range));
+    CHECK((a.ports[5].output && !a.ports[5].range));
+    // negative: a generic width, and two different declarations of one name
+    CHECK_FALSE(c.contains("ip_generic"));
+    CHECK_FALSE(c.contains("ip_twice"));
+}
+
+namespace {
+
+// 7-series Transceivers Wizard after SURF's Pgp3Gtx7Ip6G (gtwizard 3.6, GTX, 6.25 Gb/s, 64B/66B)
+std::string gt7Xci(const std::string& inst) {
+    return spirit(inst, "gtwizard", "3.6",
+                  {{"gt_type", "GTX"},                      {"gt0_val", "true"},
+                   {"gt0_val_tx_line_rate", "6.25"},        {"gt0_val_rx_line_rate", "6.25"},
+                   {"gt0_val_tx_int_datawidth", "32"},      {"gt0_val_rx_int_datawidth", "32"},
+                   {"gt0_val_tx_reference_clock", "156.250"}, {"gt0_val_rx_reference_clock", "156.250"},
+                   {"gt0_val_txoutclk_source", "AUTO"},     {"gt0_val_rxoutclk_source", "AUTO"}});
+}
+
+std::string gt7Component(const std::string& inst, const std::string& extra = "", bool txClock = true) {
+    return "  component " + inst + "\n    port (\n"
+           "      SYSCLK_IN : in std_logic; SOFT_RESET_TX_IN : in std_logic;\n"
+           "      GT0_TX_FSM_RESET_DONE_OUT : out std_logic; GT0_QPLLRESET_OUT : out std_logic;\n"
+           "      gt0_drpaddr_in : in std_logic_vector(8 downto 0); gt0_drpclk_in : in std_logic;\n"
+           "      gt0_drpen_in : in std_logic; gt0_drpdo_out : out std_logic_vector(15 downto 0);\n"
+           "      gt0_drprdy_out : out std_logic;\n"
+           "      gt0_rxusrclk_in : in std_logic; gt0_rxusrclk2_in : in std_logic;\n"
+           "      gt0_rxdata_out : out std_logic_vector(63 downto 0);\n"
+           "      gt0_gtxrxp_in : in std_logic; gt0_gtxrxn_in : in std_logic;\n"
+           "      gt0_rxoutclk_out : out std_logic; gt0_rxoutclkfabric_out : out std_logic;\n"
+           "      gt0_eyescandataerror_out : out std_logic; gt0_loopback_in : in std_logic_vector(2 downto 0);\n" +
+           (txClock ? "      gt0_txusrclk_in : in std_logic; gt0_txusrclk2_in : in std_logic;\n" : "") + extra +
+           "      gt0_txdata_in : in std_logic_vector(63 downto 0);\n"
+           "      gt0_gtxtxp_out : out std_logic; gt0_gtxtxn_out : out std_logic);\n"
+           "  end component;\n";
+}
+
+std::string gt7Top(const std::string& readClk) {
+    return "library ieee;\nuse ieee.std_logic_1164.all;\n"
+           "entity top is\n  port (sysclk, txclk, clk_a, rxp, rxn : in std_logic; q : out std_logic_vector(7 downto 0));\n"
+           "end;\narchitecture rtl of top is\n" +
+           gt7Component("gt7") +
+           "  signal rxclk : std_logic;\n  signal rxd : std_logic_vector(63 downto 0);\n"
+           "  signal r : std_logic_vector(7 downto 0);\nbegin\n"
+           "  u : gt7 port map (SYSCLK_IN => sysclk, SOFT_RESET_TX_IN => '0', GT0_TX_FSM_RESET_DONE_OUT => open,\n"
+           "    GT0_QPLLRESET_OUT => open, gt0_drpaddr_in => (others => '0'), gt0_drpclk_in => sysclk,\n"
+           "    gt0_drpen_in => '0', gt0_drpdo_out => open, gt0_drprdy_out => open,\n"
+           "    gt0_rxusrclk_in => rxclk, gt0_rxusrclk2_in => rxclk, gt0_rxdata_out => rxd, gt0_gtxrxp_in => rxp,\n"
+           "    gt0_gtxrxn_in => rxn, gt0_rxoutclk_out => rxclk, gt0_rxoutclkfabric_out => open,\n"
+           "    gt0_eyescandataerror_out => open, gt0_loopback_in => \"000\", gt0_txusrclk_in => txclk,\n"
+           "    gt0_txusrclk2_in => txclk, gt0_txdata_in => (others => '0'), gt0_gtxtxp_out => open,\n"
+           "    gt0_gtxtxn_out => open);\n"
+           "  process (rxclk) begin if rising_edge(rxclk) then r <= rxd(7 downto 0); end if; end process;\n"
+           "  process (" + readClk + ") begin if rising_edge(" + readClk + ") then q <= r; end if; end process;\n"
+           "end;\n";
+}
+
+} // namespace
+
+TEST_CASE("XCI: 7-series Transceivers Wizard from a VHDL component declaration", "[frontend][xci][gt]") {
+    test::TempDir dir;
+    const auto xci = dir.write("gt7.xci", gt7Xci("gt7"));
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(gt7Top("rxclk"), "top.vhd");
+    auto m = frontend::modelFromXci(xci, ctx);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"input  wire [8:0] gt0_drpaddr_in", "output wire [63:0] gt0_rxdata_out",
+                          "input  wire [0:0] SYSCLK_IN", "output wire [0:0] GT0_TX_FSM_RESET_DONE_OUT",
+                          // RXOUTCLK: 6.25 Gb/s / 32 bits = 195.3125 MHz; the fabric clock: the reference clock
+                          "OPENCDC_CLOCK_PIN = \"gt0_rxoutclk_out\", OPENCDC_CLOCK_PERIOD = 5.12",
+                          "OPENCDC_CLOCK_PIN = \"gt0_rxoutclkfabric_out\", OPENCDC_CLOCK_PERIOD = 6.4",
+                          // the reset state machines on sysclk_in, user data on the channel's usrclk2, DRP on drpclk
+                          "always @(posedge SYSCLK_IN[0]) oc_GT0_TX_FSM_RESET_DONE_OUT_q",
+                          "always @(posedge SYSCLK_IN[0]) oc_GT0_QPLLRESET_OUT_q",
+                          "always @(posedge gt0_rxusrclk2_in[0]) oc_gt0_rxdata_out_q",
+                          "always @(posedge gt0_txusrclk2_in[0]) oc_gt0_txusrclk2_in <= ^{gt0_txdata_in}",
+                          "always @(posedge gt0_drpclk_in[0]) oc_gt0_drpclk_in <= ^{gt0_drpaddr_in, gt0_drpen_in}",
+                          "opencdc_async_source u_oc_gt0_eyescandataerror_out"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: resets, analog controls and serial pins are read by no register
+    std::string mixed; // the inputs of every domain register
+    for (std::size_t at = v.find("<= ^{"); at != std::string::npos; at = v.find("<= ^{", at + 1))
+        mixed += v.substr(at, v.find(';', at) - at);
+    CHECK(mixed.find("gt0_txdata_in") != std::string::npos);
+    for (const char* p : {"SOFT_RESET_TX_IN", "gt0_loopback_in", "gt0_gtxrxp_in", "gt0_rxusrclk_in"})
+        CHECK(mixed.find(p) == std::string::npos);
+    CHECK(m.value().summary.find("1 channel(s), 7-series GTX, line rate 6.25 Gb/s, gt0_rxoutclk_out 195.3125 MHz") !=
+          std::string::npos);
+    CHECK(std::ranges::any_of(m.value().notes, [](const std::string& n) {
+        return n.starts_with("ports from the VHDL component declaration at top.vhd:");
+    }));
+}
+
+TEST_CASE("XCI negative: 7-series Transceivers Wizard without usable ports", "[frontend][xci][gt]") {
+    test::TempDir dir;
+    const auto xci = dir.write("gt7.xci", gt7Xci("gt7"));
+    // no port list at all: the message names the three ways to give one
+    auto none = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE_FALSE(none);
+    CHECK(none.error().code == "FE-XCI-UNSUPPORTED");
+    CHECK(none.error().message.find("VHDL component declaration") != std::string::npos);
+    auto wrap = [](const std::string& comp) {
+        return "library ieee;\nuse ieee.std_logic_1164.all;\npackage p is\n" + comp + "end package;\n";
+    };
+    // a port that is not modelled is named
+    frontend::XciContext odd;
+    odd.vhdlComponents = frontend::vhdlComponentPorts(
+        wrap(gt7Component("gt7", "      gt0_rxosintdone_out : out std_logic;\n")), "p.vhd");
+    auto u = frontend::modelFromXci(xci, odd);
+    REQUIRE_FALSE(u);
+    CHECK(u.error().message.find("gt0_rxosintdone_out") != std::string::npos);
+    // TX data without the TX user clock port
+    frontend::XciContext noClk;
+    noClk.vhdlComponents = frontend::vhdlComponentPorts(wrap(gt7Component("gt7", "", false)), "p.vhd");
+    auto c = frontend::modelFromXci(xci, noClk);
+    REQUIRE_FALSE(c);
+    CHECK(c.error().message.find("without their clock port: gt0_txusrclk2_in") != std::string::npos);
+}
+
+TEST_CASE("XCI: 7-series Transceivers Wizard in a VHDL design", "[frontend][xci][gt]") {
+    auto e2e = [](const std::string& readClk, const std::string& sdc) {
+        test::TempDir dir;
+        engine::ProjectConfig cfg;
+        cfg.name = "gt7";
+        cfg.top = "top";
+        cfg.sources = {dir.write("top.vhd", gt7Top(readClk)), dir.write("gt7.xci", gt7Xci("gt7"))};
+        cfg.sourceLibraries = {"", ""};
+        cfg.constraints = {dir.write("c.sdc", sdc)};
+        return run(cfg);
+    };
+    const std::string base = "create_clock -name a -period 10 [get_ports clk_a]\n"
+                             "create_clock -name sys -period 8 [get_ports sysclk]\n"
+                             "create_clock -name tx -period 5.12 [get_ports txclk]\n";
+    auto same = e2e("rxclk", base);
+    REQUIRE(same->cdc);
+    CHECK(same->cdc->stats.paths == 0);
+    CHECK(count(*same, "FE-XCI-MODEL") == 1);
+    REQUIRE(same->clocks);
+    bool rx = false;
+    for (const auto& c : same->clocks->clocks)
+        if (c.name.find("gt0_rxoutclk_out") != std::string::npos && c.periodNs) {
+            CHECK((*c.periodNs > 5.11 && *c.periodNs < 5.13));
+            rx = true;
+        }
+    CHECK(rx);
+    // the RX clock asynchronous to the others by get_clocks -of_objects on the IP's pin, as in Vivado
+    auto other = e2e("clk_a", base + "set_clock_groups -asynchronous -group a -group sys -group tx "
+                                     "-group [get_clocks -of_objects [get_pins u/gt0_rxoutclk_out]]\n");
+    REQUIRE(other->cdc);
+    CHECK(other->cdc->stats.unsynchronized == 1);
+    CHECK(other->cdc->stats.unknownRelation == 0);
+    CHECK(count(*other, "CON-UNMATCHED") == 0);
+}
