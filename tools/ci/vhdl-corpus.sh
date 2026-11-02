@@ -348,6 +348,17 @@ for name, top, d, xci in [
         ("surf_xaui_gtyusp", "XauiGtyUltraScaleWrapper", "gtyUltraScale+/",
          "gtyUltraScale+/ip/XauiGtyUltraScale156p25MHz10GigECore.xci")]:
     surf_project(name, top, surf_deps(top, "XauiCore/" + d) + [xa + xci], "surf_xaui.sdc")
+# 100G Ethernet (cmac_usplus, CAUI-4, AXI4-Stream) with both reference clock configurations
+ca = "ethernet/Caui4Core/gtyUltraScale+/ip/"
+for name, period, gen in [("surf_caui4_161", "6.206", None), ("surf_caui4_156", "6.4", {"REFCLK_TYPE_G": '"156.25MHz"'})]:
+    open(os.path.join(work, name + ".sdc"), "w").write(
+        "create_clock -name stable -period 6.4 [get_ports stableClk]\n"
+        "create_clock -name ref -period %s [get_ports gtRefClkP]\n"
+        "set_clock_groups -asynchronous -group stable -group [get_clocks -include_generated_clocks ref] "
+        "-group [get_clocks -include_generated_clocks -of_objects [get_pins -hier *U_CAUI4/gt_txusrclk2]] "
+        "-group [get_clocks -of_objects [get_pins -hier *U_CAUI4/gt_rxusrclk2]]\n" % period)
+    surf_project(name, "Caui4GtyIpWrapper", surf_deps("Caui4GtyIpWrapper", "Caui4Core/") +
+                 [ca + "Caui4GtyIpCore161MHz.xci", ca + "Caui4GtyIpCore156MHz.xci"], name + ".sdc", gen)
 # every Transceivers Wizard .xci of surf alone (the IP is the top)
 gtx = []
 for x in sorted(glob.glob(os.path.join(sw, "**", "*.xci"), recursive=True)):
@@ -576,6 +587,10 @@ check surf_gigeth_lvds.ocdc.json  "Clocks  : 4 \\(653/653 registers resolved\\).
 check surf_xaui_gthus.ocdc.json  "Clocks  : 5 \\(578/578 registers resolved\\).*xaui:12.2.*XAUI, 4 lanes at 3.125 Gb/s, clk156_out 156.25 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 16 crossing path\\(s\\), 12 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 check surf_xaui_gthusp.ocdc.json "Clocks  : 5 \\(485/485 registers resolved\\).*xaui:12.3.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 30 crossing path\\(s\\), 28 synchronized.*Rules   : 2 error violation"
 check surf_xaui_gtyusp.ocdc.json "Clocks  : 5 \\(485/485 registers resolved\\).*xaui:12.3.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 30 crossing path\\(s\\), 28 synchronized.*Rules   : 2 error violation"
+# 100G: everything of the wrapper in gt_txusrclk2 (rx_clk is gt_txusrclk2) and the PLL's phyClk derived from it; the
+# 16 constant registers are ClockManagerUltraScale's AxiLiteToDrp, whose axilClk SURF leaves unconnected
+check surf_caui4_161.ocdc.json "Clocks  : 5 \\(389/405 registers resolved\\).*USE_REFCLK161MHz.U_CAUI4.gt_txusrclk2 .*period=3.10303ns.*U_Pll.CLKOUT0 .*master=Caui4GtyIpWrapper.USE_REFCLK161MHz.U_CAUI4.gt_txusrclk2.*cmac_usplus:3.1.*gt_ref_clk_out 161.1328125 MHz.*CLK-CONSTANT.: 16 register.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 2 crossing path\\(s\\), 2 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
+check surf_caui4_156.ocdc.json "Clocks  : 5 \\(389/405 registers resolved\\).*USE_REFCLK156MHz.U_CAUI4.gt_txusrclk2 .*Summary : 0 error\\(s\\), 1 warning.*CDC     : 2 crossing path\\(s\\), 2 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 n=$(cat gtx_count.txt)
 [ "$n" = 30 ] || { echo "::error::expected 30 Transceivers Wizard .xci files in surf, found $n"; fail=1; }
 for f in gtx_*.ocdc.json; do

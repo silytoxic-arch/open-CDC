@@ -1965,3 +1965,97 @@ TEST_CASE("XCI: XAUI (xaui) with the shared logic: everything in clk156_out", "[
     REQUIRE_FALSE(mm);
     CHECK(mm.error().message.find("mdc, mdio_in") != std::string::npos);
 }
+
+namespace {
+
+std::string cmacXci(const std::string& inst, std::map<std::string, std::string> over = {}) {
+    std::map<std::string, std::string> p = {{"C_USER_INTERFACE", "AXIS"}, {"C_CMAC_CAUI4_MODE", "1"},
+                                            {"C_NUM_LANES", "4"},         {"C_LINE_RATE", "25.78125"},
+                                            {"C_GT_REF_CLK_FREQ", "161.1328125"}, {"C_CLOCKING_MODE", "Asynchronous"},
+                                            {"C_INCLUDE_SHARED_LOGIC", "2"}};
+    for (auto& [k, v] : over)
+        p[k] = v;
+    return spirit(inst, "cmac_usplus", "3.1", {p.begin(), p.end()});
+}
+
+// SURF Caui4GtyIpCore161MHz (cmac_usplus 3.1, CAUI-4, AXI4-Stream, shared logic in the core), a part of the ports
+const char* kCmacComponent =
+    "  component cm\n    port (\n"
+    "      gt_txp_out : out std_logic_vector(3 downto 0); gt_rxp_in : in std_logic_vector(3 downto 0);\n"
+    "      gt_txusrclk2 : out std_logic; gt_loopback_in : in std_logic_vector(11 downto 0);\n"
+    "      gt_rxpolarity : in std_logic_vector(3 downto 0); gt_txpolarity : in std_logic_vector(3 downto 0);\n"
+    "      gt_txdiffctrl : in std_logic_vector(19 downto 0); gt_eyescandataerror : out std_logic_vector(3 downto 0);\n"
+    "      gt_ref_clk_out : out std_logic; gt_rxrecclkout : out std_logic_vector(3 downto 0);\n"
+    "      gt_powergoodout : out std_logic_vector(3 downto 0); gt_txbufstatus : out std_logic_vector(7 downto 0);\n"
+    "      gt_rxresetdone : out std_logic_vector(3 downto 0); gtwiz_reset_tx_datapath : in std_logic;\n"
+    "      gt_drpclk : in std_logic; gt0_drpdo : out std_logic_vector(15 downto 0); gt0_drpen : in std_logic;\n"
+    "      ctl_tx_rsfec_enable : in std_logic; ctl_rx_rsfec_enable : in std_logic;\n"
+    "      stat_rx_rsfec_hi_ser : out std_logic; sys_reset : in std_logic; gt_ref_clk_p : in std_logic;\n"
+    "      gt_ref_clk_n : in std_logic; init_clk : in std_logic; common0_drpen : in std_logic;\n"
+    "      common0_drpdo : out std_logic_vector(15 downto 0); rx_axis_tvalid : out std_logic;\n"
+    "      rx_axis_tdata : out std_logic_vector(511 downto 0); rx_otn_ena : out std_logic;\n"
+    "      usr_rx_reset : out std_logic; gt_rxusrclk2 : out std_logic; stat_rx_aligned : out std_logic;\n"
+    "      ctl_rx_enable : in std_logic; core_rx_reset : in std_logic; rx_clk : in std_logic;\n"
+    "      stat_tx_local_fault : out std_logic; ctl_tx_enable : in std_logic; core_tx_reset : in std_logic;\n"
+    "      tx_axis_tready : out std_logic; tx_axis_tvalid : in std_logic; tx_axis_tdata : in std_logic_vector(511 downto 0);\n"
+    "      tx_ovfout : out std_logic; usr_tx_reset : out std_logic; core_drp_reset : in std_logic; drp_clk : in std_logic;\n"
+    "      drp_en : in std_logic; drp_do : out std_logic_vector(15 downto 0));\n  end component;\n";
+
+} // namespace
+
+TEST_CASE("XCI: 100G Ethernet (cmac_usplus) CAUI-4 with AXI4-Stream", "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(pkg(kCmacComponent), "p.vhd");
+    auto m = frontend::modelFromXci(dir.write("cm.xci", cmacXci("cm")), ctx);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"OPENCDC_CLOCK_PIN = \"gt_txusrclk2\", OPENCDC_CLOCK_PERIOD = 3.103030303",
+                          "OPENCDC_CLOCK_PIN = \"gt_rxusrclk2\", OPENCDC_CLOCK_PERIOD = 3.103030303",
+                          "OPENCDC_CLOCK_PIN = \"gt_rxrecclkout\" *)",
+                          // the reference clock through the IP: derived from gt_ref_clk_p, ratio 1
+                          "OPENCDC_CLOCK_PIN = \"gt_ref_clk_out\", OPENCDC_CLOCK_RATIO = 1.0, "
+                          "OPENCDC_CLOCK_INPUT_PERIOD = 6.206060606",
+                          "always @(posedge gt_ref_clk_p[0]) oc_gt_ref_clk_out_d",
+                          "always @(posedge oc_gt_txusrclk2_c) oc_dom_gt_txusrclk2 <= ^{gt_txpolarity, "
+                          "ctl_tx_rsfec_enable, ctl_tx_enable, tx_axis_tvalid, tx_axis_tdata}",
+                          "always @(posedge oc_gt_txusrclk2_c) oc_tx_axis_tready_q",
+                          "always @(posedge oc_gt_txusrclk2_c) oc_usr_tx_reset_q",
+                          "always @(posedge oc_gt_txusrclk2_c) oc_stat_tx_local_fault_q",
+                          "always @(posedge oc_gt_txusrclk2_c) oc_gt_txbufstatus_q",
+                          "always @(posedge rx_clk[0]) oc_dom_rx_clk <= ^{ctl_rx_rsfec_enable, ctl_rx_enable}",
+                          "always @(posedge rx_clk[0]) oc_rx_axis_tdata_q", "always @(posedge rx_clk[0]) oc_usr_rx_reset_q",
+                          "always @(posedge rx_clk[0]) oc_stat_rx_aligned_q", "always @(posedge rx_clk[0]) oc_rx_otn_ena_q",
+                          "always @(posedge oc_gt_rxusrclk2_c) oc_gt_rxresetdone_q",
+                          "always @(posedge gt_drpclk[0]) oc_gt0_drpdo_q", "always @(posedge gt_drpclk[0]) oc_common0_drpdo_q",
+                          "always @(posedge drp_clk[0]) oc_drp_do_q",
+                          "opencdc_async_source u_oc_gt_eyescandataerror", "opencdc_async_source u_oc_gt_powergoodout"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: resets, the reference's negative pin and static transceiver controls are read by no register
+    for (const char* p : {"sys_reset", "core_rx_reset", "core_tx_reset", "core_drp_reset", "gtwiz_reset_tx_datapath",
+                          "gt_ref_clk_n", "gt_loopback_in", "gt_txdiffctrl"}) {
+        const std::string n = p;
+        CHECK(v.find("{" + n) == std::string::npos);
+        CHECK(v.find(", " + n + ",") == std::string::npos);
+        CHECK(v.find(", " + n + "}") == std::string::npos);
+    }
+    CHECK(m.value().summary.find("gt_txusrclk2/gt_rxusrclk2 322.265625 MHz, gt_ref_clk_out 161.1328125 MHz") !=
+          std::string::npos);
+    // negative: LBUS, CAUI-10, ports that are not modelled (auto-negotiation)
+    auto lbus = frontend::modelFromXci(dir.write("cl.xci", cmacXci("cm", {{"C_USER_INTERFACE", "LBUS"}})), ctx);
+    REQUIRE_FALSE(lbus);
+    CHECK(lbus.error().message.find("only the AXI4-Stream user interface") != std::string::npos);
+    auto c10 = frontend::modelFromXci(
+        dir.write("c10.xci", cmacXci("cm", {{"C_CMAC_CAUI4_MODE", "0"}, {"C_NUM_LANES", "10"}})), ctx);
+    REQUIRE_FALSE(c10);
+    CHECK(c10.error().message.find("only CAUI-4") != std::string::npos);
+    frontend::XciContext an;
+    an.vhdlComponents = frontend::vhdlComponentPorts(
+        pkg("  component cm port (gt_txusrclk2 : out std_logic; an_clk : in std_logic; ctl_autoneg_enable : in std_logic); "
+            "end component;\n"),
+        "p.vhd");
+    auto ma = frontend::modelFromXci(dir.write("ca.xci", cmacXci("cm")), an);
+    REQUIRE_FALSE(ma);
+    CHECK(ma.error().message.find("an_clk, ctl_autoneg_enable") != std::string::npos);
+}

@@ -3618,6 +3618,101 @@ Result<XciModel> xaui(const XciInfo& info) {
     return r;
 }
 
+/// 100G Ethernet (cmac_usplus, PG203) as CAUI-4 with the AXI4-Stream user
+/// interface: TX AXIS, TX control/status and usr_tx_reset in gt_txusrclk2 (an
+/// output, the transmitter's user clock); RX AXIS, RX control/status and
+/// usr_rx_reset in rx_clk (an input: gt_txusrclk2 in synchronous mode, any clock
+/// with the RX FIFO in asynchronous mode); RX transceiver debug ports in
+/// gt_rxusrclk2; the core DRP in drp_clk, the transceiver DRPs in gt_drpclk;
+/// gt_ref_clk_out is the reference clock passed through the IP.
+Result<XciModel> cmacUsplus(const XciInfo& info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const auto unsupportedIp = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): " + why,
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    };
+    if (lower(text(m, "C_USER_INTERFACE", "AXIS")) != "axis")
+        return unsupportedIp("only the AXI4-Stream user interface is modelled (C_USER_INTERFACE '" +
+                             text(m, "C_USER_INTERFACE", "?") + "')");
+    if (text(m, "C_CMAC_CAUI4_MODE", "1") != "1" || num(m, "C_NUM_LANES", 4) != 4)
+        return unsupportedIp("only CAUI-4 (4 lanes) is modelled (C_CMAC_CAUI4_MODE " + text(m, "C_CMAC_CAUI4_MODE", "?") +
+                             ", C_NUM_LANES " + text(m, "C_NUM_LANES", "?") + ")");
+    double rate = 25.78125, ref = 0;
+    try {
+        rate = std::stod(text(m, "C_LINE_RATE", "25.78125"));
+        ref = std::stod(text(m, "C_GT_REF_CLK_FREQ", "0"));
+    }
+    catch (...) {
+    }
+    // the GTY's 80-bit internal data path at 25.78125 Gb/s: 322.265625 MHz
+    const double usrMhz = rate * 1000.0 / 80.0;
+    static const std::set<std::string> txGt = {"txbufstatus", "txresetdone", "txprbssel", "txprbsforceerr",
+                                               "txpolarity"};
+    static const std::set<std::string> rxGt = {"rxbufstatus", "rxresetdone", "rxprbssel", "rxprbscntreset",
+                                               "rxprbserr",   "rxpolarity"};
+    static const std::set<std::string> asyncGt = {"eyescandataerror", "powergoodout"};
+    static const std::set<std::string> ignoredGt = {"loopback_in", "eyescanreset", "eyescantrigger", "rxcdrhold",
+                                                    "rxrate",      "txdiffctrl",   "txinhibit",      "txpippmen",
+                                                    "txpippmsel",  "txpostcursor", "txprecursor",    "rxdfelpmreset",
+                                                    "rxlpmen",     "rxp_in",       "rxn_in"};
+    static const std::set<std::string> ignored = {"sys_reset",     "core_rx_reset", "core_tx_reset", "core_drp_reset",
+                                                  "gt_ref_clk_n",  "gtwiz_reset_tx_datapath",
+                                                  "gtwiz_reset_rx_datapath"};
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "gt_ref_clk_p" || n == "init_clk" || n == "gt_drpclk" || n == "drp_clk" || n == "rx_clk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n == "gt_txusrclk2" || n == "gt_rxusrclk2")
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, usrMhz, {}, 0}) : std::nullopt;
+        if (n == "gt_rxrecclkout")
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, 0, {}, 0}) : std::nullopt;
+        if (n == "gt_ref_clk_out")
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, ref, "gt_ref_clk_p", 1.0}) : std::nullopt;
+        if (n.starts_with("tx_axis_") || n == "tx_preamblein" || n == "tx_ovfout" || n == "tx_unfout" ||
+            n == "usr_tx_reset" || n.starts_with("ctl_tx_") || n.starts_with("stat_tx_"))
+            return PortClass{K::Sync, "gt_txusrclk2", 0, {}, 0};
+        if (n.starts_with("rx_axis_") || n == "rx_preambleout" || n.starts_with("rx_otn_") || n == "usr_rx_reset" ||
+            n.starts_with("ctl_rx_") || n.starts_with("stat_rx_") || n == "ctl_rsfec_ieee_error_indication_mode")
+            return PortClass{K::Sync, "rx_clk", 0, {}, 0};
+        if (n.starts_with("drp_"))
+            return PortClass{K::Sync, "drp_clk", 0, {}, 0};
+        if (n.starts_with("common0_drp") ||
+            (n.size() > 3 && n.starts_with("gt") && std::isdigit(static_cast<unsigned char>(n[2])) &&
+             n.substr(3).starts_with("_drp")))
+            return PortClass{K::Sync, "gt_drpclk", 0, {}, 0};
+        if (ignored.contains(n))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
+        if (n == "gt_txp_out" || n == "gt_txn_out")
+            return out ? std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0}) : std::nullopt;
+        if (!n.starts_with("gt_"))
+            return std::nullopt;
+        const std::string g = n.substr(3);
+        if (txGt.contains(g))
+            return PortClass{K::Sync, "gt_txusrclk2", 0, {}, 0};
+        if (rxGt.contains(g))
+            return PortClass{K::Sync, "gt_rxusrclk2", 0, {}, 0};
+        if (asyncGt.contains(g))
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
+        if (ignoredGt.contains(g))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    r.value().summary = "100G CAUI-4, " + fmtReal(rate) + " Gb/s lanes, AXI4-Stream, gt_txusrclk2/gt_rxusrclk2 " +
+                        fmtReal(usrMhz) + " MHz" +
+                        (ref > 0 ? ", gt_ref_clk_out " + fmtReal(ref) + " MHz from gt_ref_clk_p" : std::string()) +
+                        ", " + text(m, "C_CLOCKING_MODE", "?") + " clocking";
+    r.value().notes.push_back("TX AXI4-Stream, ctl_tx/stat_tx and usr_tx_reset are in gt_txusrclk2, RX AXI4-Stream, "
+                              "ctl_rx/stat_rx and usr_rx_reset in rx_clk (PG203); gt_txusrclk2 and gt_rxusrclk2 are "
+                              "clocks of their own, gt_ref_clk_out is derived from gt_ref_clk_p; the core DRP in "
+                              "drp_clk, the transceiver DRPs in gt_drpclk");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -3672,6 +3767,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return gigEthernetPcsPma(info);
     if (info.name == "xaui")
         return xaui(info);
+    if (info.name == "cmac_usplus")
+        return cmacUsplus(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +
