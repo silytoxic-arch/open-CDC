@@ -33,8 +33,22 @@ note "系统: $(sw_vers -productVersion 2>/dev/null) $(uname -m), $(sysctl -n hw
 if ! xcode-select -p >/dev/null 2>&1; then
     fail "没有 Xcode 命令行工具。请在终端运行 xcode-select --install，安装完成后重新运行本脚本"
 fi
-clang++ --version | head -1
+clang_major() { clang++ --version 2>/dev/null | head -1 | sed -E 's/.*clang version ([0-9]+).*/\1/'; }
 note "编译器: $(clang++ --version | head -1)"
+# slang（SystemVerilog 前端）需要 C++20 的 std::views::join 等，Apple clang 16（Xcode 16）起才有
+if [ "$(clang_major)" -lt 16 ] 2>/dev/null; then
+    note "Apple clang $(clang_major) 太旧，需要 16 或更新（Xcode 16 的命令行工具）。正在查找命令行工具的更新..."
+    LABEL=$(softwareupdate --list 2>&1 | sed -n 's/^\* Label: \(Command Line Tools.*\)$/\1/p' | sort -V | tail -1)
+    if [ -n "$LABEL" ]; then
+        note "找到更新: $LABEL。安装需要管理员密码（输入时不显示字符）："
+        sudo softwareupdate -i "$LABEL" --verbose || fail "安装 $LABEL"
+        hash -r
+    fi
+    if [ "$(clang_major)" -lt 16 ] 2>/dev/null; then
+        fail "命令行工具仍是 Apple clang $(clang_major)。请打开 系统设置 > 通用 > 软件更新 安装 Command Line Tools；或在终端运行 sudo rm -rf /Library/Developer/CommandLineTools 后运行 xcode-select --install 重新安装，然后重新运行本脚本"
+    fi
+    note "编译器已更新: $(clang++ --version | head -1)"
+fi
 
 step "依赖（Homebrew）"
 BREW=$(command -v brew || true)
@@ -54,6 +68,15 @@ QT_PREFIX=$(brew --prefix qt)
 note "cmake $(cmake --version | head -1 | awk '{print $3}'), ninja $(ninja --version), Qt $(brew list --versions qt | awk '{print $2}') ($QT_PREFIX)"
 
 BUILD="$SRC/build/macos"
+# 编译器或最低系统版本变了时，旧的配置缓存不能再用
+if [ -f "$BUILD/CMakeCache.txt" ] && ! grep -q "CMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.3" "$BUILD/CMakeCache.txt"; then
+    rm -rf "$BUILD"
+fi
+COMPILER_ID="$(clang++ --version | head -1)"
+if [ -f "$BUILD/CMakeCache.txt" ] && [ "$(cat "$BUILD/.opencdc-compiler" 2>/dev/null)" != "$COMPILER_ID" ]; then
+    rm -rf "$BUILD"
+fi
+mkdir -p "$BUILD" && echo "$COMPILER_ID" > "$BUILD/.opencdc-compiler"
 step "配置"
 cmake --preset macos -DCMAKE_PREFIX_PATH="$QT_PREFIX" || fail "配置（cmake --preset macos）"
 

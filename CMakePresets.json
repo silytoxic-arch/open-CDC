@@ -99,7 +99,7 @@
       "inherits": "base",
       "generator": "Ninja Multi-Config",
       "cacheVariables": {
-        "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0"
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "13.3"
       },
       "condition": {
         "type": "equals",
