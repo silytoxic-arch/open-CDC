@@ -170,7 +170,30 @@ private:
         return id;
     }
 
-    ClockId dividerClock(const Driver& d, int depth) {
+    /// The constant value of an input port of the instance (its bits traced
+    /// to constants in the instantiating modules); nullopt when not constant.
+    std::optional<std::uint64_t> constantPort(ir::InstanceId inst, std::string_view port) const {
+        const ir::ModuleBody& b = view_.bodyOf(inst);
+        for (const auto& p : b.ports) {
+            if (p.name != port)
+                continue;
+            const auto w = b.net(p.net).width;
+            if (w == 0 || w > 64)
+                return std::nullopt;
+            std::uint64_t v = 0;
+            for (std::uint32_t i = 0; i < w; ++i) {
+                const Driver drv = driverOf(BitRef{inst, p.net, i});
+                if (drv.kind != DriverKind::Constant || (drv.constant != ir::Logic::L0 && drv.constant != ir::Logic::L1))
+                    return std::nullopt;
+                if (drv.constant == ir::Logic::L1)
+                    v |= std::uint64_t{1} << i;
+            }
+            return v;
+        }
+        return std::nullopt;
+    }
+
+    ClockId dividerClock(const Driver& d, int depth, std::optional<double> ratioOverride = std::nullopt) {
         if (auto it = divider_.find(d.bit); it != divider_.end())
             return it->second;
         Clock c;
@@ -225,7 +248,7 @@ private:
                 return std::nullopt;
             }
         };
-        auto ratio = attrNumber("OPENCDC_CLOCK_RATIO");
+        auto ratio = ratioOverride ? ratioOverride : attrNumber("OPENCDC_CLOCK_RATIO");
         auto inPeriod = attrNumber("OPENCDC_CLOCK_INPUT_PERIOD");
         if (const auto fin = attrFrequencyMHz("OPENCDC_CLOCK_FREQ_IN")) {
             if (const auto fout = attrFrequencyMHz("OPENCDC_CLOCK_FREQ_OUT"); fout && !ratio)
@@ -409,10 +432,38 @@ private:
                 case DriverKind::Latch:
                     t = unresolved("clock is driven by latch output '" + view_.name(d.bit) + "'");
                     break;
-                case DriverKind::Register:
+                case DriverKind::Register: {
+                    // a divider whose ratio is a port of the model (BUFG_GT: DIV + 1):
+                    // DIV = 0 passes the input clock through
+                    const ir::Net& qn = view_.bodyOf(d.bit.inst).net(d.bit.net);
+                    if (const auto* rp = qn.findAttr("OPENCDC_CLOCK_DIVIDE_PORT")) {
+                        std::string port = rp->value;
+                        std::erase(port, '"');
+                        const auto v = constantPort(d.bit.inst, port);
+                        const auto& reg = view_.bodyOf(d.bit.inst).registers.at(d.index);
+                        if (v && *v == 0) {
+                            if (auto clkBit = view_.bitOf(d.bit.inst, reg.clock.signal, 0)) {
+                                t = trace(*clkBit, depth + 1);
+                                break;
+                            }
+                        }
+                        if (!v) {
+                            sink_.report({"CLK-DIVIDE-UNKNOWN", Severity::Warning,
+                                          "clock divider '" + view_.name(d.bit) + "': port " + port +
+                                              " is not a constant; the divided clock has no period",
+                                          reg.origin, {}});
+                            t.sources.emplace_back(dividerClock(d, depth, 0.0), false);
+                        }
+                        else {
+                            t.sources.emplace_back(dividerClock(d, depth, static_cast<double>(*v + 1)), false);
+                        }
+                        t.status = ClockStatus::Resolved;
+                        break;
+                    }
                     t.sources.emplace_back(dividerClock(d, depth), false);
                     t.status = ClockStatus::Resolved;
                     break;
+                }
                 case DriverKind::Cell: t = traceCell(d, depth); break;
             }
         }

@@ -28,7 +28,8 @@ Sources:
 |---|---|---|
 | `FDRE`, `FDSE`, `FDCE`, `FDPE`, `FD`, `FDE`, `FDR`, `FDS`, `FDC`, `FDP`, `FDCPE` | Flip-flop with its clock enable, synchronous or asynchronous set/reset; `IS_*_INVERTED` honored | `CE`/`R`/`S` tied to their inactive level are no controls, so an `FDRE` chain is a flop chain |
 | `LDCE`, `LDPE` | Latch with clear / preset | |
-| `BUFG`, `BUFGCE`, `BUFGCE_1`, `BUFGMUX`, `BUFGMUX_CTRL`, `BUFGCTRL`, `BUFH`, `BUFHCE`, `BUFIO`, `BUFG_GT` | Clock buffers: wires, gates and clock multiplexers | A `BUFGMUX` output carries both input clocks |
+| `BUFG`, `BUFGCE`, `BUFGCE_1`, `BUFGMUX`, `BUFGMUX_CTRL`, `BUFGCTRL`, `BUFH`, `BUFHCE`, `BUFIO` | Clock buffers: wires, gates and clock multiplexers | A `BUFGMUX` output carries both input clocks |
+| `BUFG_GT` | Clock buffer that divides by `DIV` + 1: the clock analysis reads the constant on the `DIV` port of the instance; `DIV` = 0 is the input clock itself, otherwise a divided clock (period = input period × (`DIV` + 1)). The model has one divider register | A `DIV` that is not a constant gives a divided clock without a period (`CLK-DIVIDE-UNKNOWN`) |
 | `BUFR` | `BUFR_DIVIDE` `"BYPASS"`/`"1"`: wire; `"2"`–`"8"`: divided clock, period = input period × divide | |
 | `BUFGCE_DIV` | `BUFGCE_DIVIDE` 1: wire; 2–8: divided clock | |
 | `IBUF`, `IBUFG`, `IBUFDS`, `IBUFGDS`, `OBUF`, `OBUFT`, `OBUFDS`, `OBUFTDS`, `IOBUF`, `IOBUFDS` | I/O buffers: wires | |

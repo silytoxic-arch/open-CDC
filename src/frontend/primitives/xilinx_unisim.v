@@ -179,7 +179,12 @@ endmodule
 
 module BUFG_GT #(parameter SIM_DEVICE = "ULTRASCALE")
                 (output O, input CE, input CEMASK, input CLR, input CLRMASK, input [2:0] DIV, input I);
-    assign O = I;
+    // divides by DIV + 1 (the port, usually a constant at the instance): the clock
+    // analysis reads its value; DIV = 0 passes the input clock through
+    (* OPENCDC_CLOCK_PIN = "O", OPENCDC_CLOCK_DIVIDE_PORT = "DIV" *)
+    reg O_q = 1'b0;
+    always @(posedge I) O_q <= ~O_q;
+    assign O = O_q;
 endmodule
 
 module IBUF #(parameter IBUF_LOW_PWR = "TRUE", parameter IOSTANDARD = "DEFAULT") (output O, input I);

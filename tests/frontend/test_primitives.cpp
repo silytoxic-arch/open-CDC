@@ -628,6 +628,63 @@ TEST_CASE("Primitives: BUFR / BUFGCE_DIV dividers, SERDES and UltraRAM", "[primi
     CHECK_FALSE(crosses(*run, "top.ur.", "top.ur."));
 }
 
+TEST_CASE("Primitives: BUFG_GT divides by its DIV port + 1", "[primitives]") {
+    // SURF TenGigEthGthUltraScaleRst: CLK312_BUFG_GT (DIV "000") and CLK156_BUFG_GT (DIV "001") on TXOUTCLK
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input [2:0] sel, input d, output reg q0, output reg q1,\n"
+                       "           output reg q3, output reg qx);\n"
+                       "  wire c0, c1, c3, cx;\n"
+                       "  BUFG_GT b0 (.O(c0), .CE(1'b1), .CEMASK(1'b0), .CLR(1'b0), .CLRMASK(1'b0), .DIV(3'b000), .I(clk_a));\n"
+                       "  BUFG_GT b1 (.O(c1), .CE(1'b1), .CEMASK(1'b0), .CLR(1'b0), .CLRMASK(1'b0), .DIV(3'b001), .I(clk_a));\n"
+                       "  BUFG_GT b3 (.O(c3), .CE(1'b1), .CEMASK(1'b0), .CLR(1'b0), .CLRMASK(1'b0), .DIV(3'd3), .I(clk_a));\n"
+                       "  BUFG_GT bx (.O(cx), .CE(1'b1), .CEMASK(1'b0), .CLR(1'b0), .CLRMASK(1'b0), .DIV(sel), .I(clk_b));\n"
+                       "  always @(posedge c0) q0 <= d;\n"
+                       "  always @(posedge c1) q1 <= q0;\n"
+                       "  always @(posedge c3) q3 <= q1;\n"
+                       "  always @(posedge cx) qx <= d;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->clocks);
+    std::map<std::string, std::optional<double>> periods;
+    for (const auto& c : run->r->clocks->clocks)
+        periods[c.name] = c.periodNs;
+    for (const auto& [n, p] : periods)
+        UNSCOPED_INFO(n << " " << (p ? std::to_string(*p) : "-"));
+    // DIV 0: the input clock itself (no clock of its own); DIV 1: x2; DIV 3: x4
+    CHECK_FALSE(periods.contains("top.b0.O"));
+    CHECK(periods["top.b1.O"] == 20.0);
+    CHECK(periods["top.b3.O"] == 40.0);
+    // negative: a DIV that is not constant gives a divided clock without a period, reported
+    REQUIRE(periods.contains("top.bx.O"));
+    CHECK_FALSE(periods["top.bx.O"].has_value());
+    CHECK(run->count("CLK-DIVIDE-UNKNOWN") == 1);
+    // q0 (clk_a) -> q1 (clk_a / 2): synchronous, no crossing
+    REQUIRE(run->r->cdc);
+    CHECK(run->path("top.q0", "top.q1") == nullptr);
+}
+
+TEST_CASE("Primitives: BUFG_GT divider from VHDL through unisim", "[primitives][vhdl]") {
+    auto run = analyze("t.vhd",
+                       "library ieee;\nuse ieee.std_logic_1164.all;\nlibrary unisim;\nuse unisim.vcomponents.all;\n"
+                       "entity top is port (clk_a, d : in std_logic; q : out std_logic); end;\n"
+                       "architecture rtl of top is\n  signal c : std_logic;\nbegin\n"
+                       "  b : BUFG_GT port map (I => clk_a, CE => '1', CEMASK => '1', CLR => '0', CLRMASK => '1',\n"
+                       "                        DIV => \"001\", O => c);\n"
+                       "  process (c) begin if rising_edge(c) then q <= d; end if; end process;\n"
+                       "end;\n",
+                       "top");
+    REQUIRE(run->r->clocks);
+    bool found = false;
+    for (const auto& c : run->r->clocks->clocks)
+        if (c.name == "top.b.O") {
+            REQUIRE(c.periodNs);
+            CHECK(*c.periodNs == 20.0);
+            found = true;
+        }
+    CHECK(found);
+    CHECK(run->count("VHDL-COMPONENT") == 0);
+}
+
 TEST_CASE("Primitives: Intel altera_syncram is altsyncram", "[primitives]") {
     auto run = analyze("t.v",
                        "module top(input clk_a, input clk_b, input [7:0] d, input [3:0] a, output [7:0] q);\n"
