@@ -1527,3 +1527,153 @@ TEST_CASE("XCI: 7-series Transceivers Wizard in a VHDL design", "[frontend][xci]
     CHECK(other->cdc->stats.unknownRelation == 0);
     CHECK(count(*other, "CON-UNMATCHED") == 0);
 }
+
+namespace {
+
+std::string pkg(const std::string& components) {
+    return "library ieee;\nuse ieee.std_logic_1164.all;\npackage p is\n" + components + "end package;\n";
+}
+
+// SURF TenGigEthGtx7Core / TenGigEthGthUltraScale156p25MHzCore (ten_gig_eth_pcs_pma 6.0), the ports used
+std::string tenGigComponent(const std::string& inst, bool ultrascale) {
+    return "  component " + inst + "\n    port (\n"
+           "      rxrecclk_out : out std_logic; coreclk : in std_logic; dclk : in std_logic;\n"
+           "      txusrclk : in std_logic; txusrclk2 : in std_logic; txoutclk : out std_logic;\n"
+           "      areset : in std_logic; areset_coreclk : in std_logic; gttxreset : in std_logic;\n"
+           "      txp : out std_logic; txn : out std_logic; rxp : in std_logic; rxn : in std_logic;\n"
+           "      xgmii_txd : in std_logic_vector(63 downto 0); xgmii_txc : in std_logic_vector(7 downto 0);\n"
+           "      xgmii_rxd : out std_logic_vector(63 downto 0); xgmii_rxc : out std_logic_vector(7 downto 0);\n"
+           "      configuration_vector : in std_logic_vector(535 downto 0);\n"
+           "      core_status : out std_logic_vector(7 downto 0); signal_detect : in std_logic;\n"
+           "      drp_req : out std_logic; drp_gnt : in std_logic; drp_den_o : out std_logic;\n" +
+           std::string(ultrascale ? "      qpll0reset : out std_logic; gt_txbufstatus : out std_logic_vector(1 downto 0);\n"
+                                    "      gt_rxprbserr : out std_logic; gt_eyescandataerror : out std_logic;\n"
+                                    "      gt_txdiffctrl : in std_logic_vector(3 downto 0);\n"
+                                  : "      gt0_txbufstatus : out std_logic_vector(1 downto 0); gt0_rxprbserr : out std_logic;\n"
+                                    "      gt0_dmonitorout : out std_logic_vector(7 downto 0);\n") +
+           "      tx_disable : out std_logic);\n  end component;\n";
+}
+
+std::string tenGigXci(const std::string& inst, const std::string& family, const std::string& width,
+                      const std::string& noEbuff = "false") {
+    return spirit(inst, "ten_gig_eth_pcs_pma", "6.0",
+                  {{"c_family", family}, {"c_gtif_width", width}, {"c_speed10_25", "10"}, {"c_no_ebuff", noEbuff},
+                   {"c_is_kr", "false"}});
+}
+
+} // namespace
+
+TEST_CASE("XCI: 10G Ethernet PCS/PMA (ten_gig_eth_pcs_pma) clock domains", "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    // 7 series: XGMII, configuration and status in coreclk
+    frontend::XciContext c7;
+    c7.vhdlComponents = frontend::vhdlComponentPorts(pkg(tenGigComponent("tg7", false)), "p.vhd");
+    auto m7 = frontend::modelFromXci(dir.write("tg7.xci", tenGigXci("tg7", "kintex7", "32")), c7);
+    REQUIRE(m7);
+    const auto& v7 = m7.value().verilog;
+    INFO(v7);
+    for (const char* p : {"OPENCDC_CLOCK_PIN = \"txoutclk\", OPENCDC_CLOCK_PERIOD = 3.103030303",
+                          "OPENCDC_CLOCK_PIN = \"rxrecclk_out\", OPENCDC_CLOCK_PERIOD = 3.103030303",
+                          "always @(posedge coreclk[0]) oc_dom_coreclk <= ^{xgmii_txd, xgmii_txc, configuration_vector}",
+                          "always @(posedge coreclk[0]) oc_xgmii_rxd_q", "always @(posedge coreclk[0]) oc_core_status_q",
+                          "always @(posedge dclk[0]) oc_drp_req_q", "always @(posedge txusrclk2[0]) oc_gt0_txbufstatus_q",
+                          "always @(posedge oc_rxrecclk_out_c) oc_gt0_rxprbserr_q",
+                          "opencdc_async_source u_oc_gt0_dmonitorout"})
+        CHECK(v7.find(p) != std::string::npos);
+    // negative: resets and signal_detect are synchronized in the IP, read by no register
+    for (const char* p : {"areset", "signal_detect", "gttxreset"})
+        CHECK(v7.find(std::string("^{") + p) == std::string::npos);
+    CHECK(m7.value().summary.find("XGMII in coreclk") != std::string::npos);
+
+    // UltraScale 10GBASE-R: the TX clock source is txusrclk2; coreclk only runs the reset logic
+    frontend::XciContext cu;
+    cu.vhdlComponents = frontend::vhdlComponentPorts(pkg(tenGigComponent("tgu", true)), "p.vhd");
+    auto mu = frontend::modelFromXci(dir.write("tgu.xci", tenGigXci("tgu", "kintexu", "64")), cu);
+    REQUIRE(mu);
+    const auto& vu = mu.value().verilog;
+    INFO(vu);
+    CHECK(vu.find("always @(posedge txusrclk2[0]) oc_xgmii_rxd_q") != std::string::npos);
+    CHECK(vu.find("always @(posedge coreclk[0])") == std::string::npos); // negative
+    CHECK(vu.find("opencdc_async_source u_oc_qpll0reset") != std::string::npos);
+    CHECK(vu.find("OPENCDC_CLOCK_PIN = \"txoutclk\", OPENCDC_CLOCK_PERIOD = 3.103030303") != std::string::npos);
+
+    // without the elastic buffer: XGMII RX in the recovered clock
+    auto mn = frontend::modelFromXci(dir.write("tgn.xci", tenGigXci("tg7", "kintex7", "32", "true")), c7);
+    REQUIRE(mn);
+    CHECK(mn.value().verilog.find("always @(posedge oc_rxrecclk_out_c) oc_xgmii_rxd_q") != std::string::npos);
+
+    // negative: no ports, an unknown port
+    auto none = frontend::modelFromXci(dir.write("tgx.xci", tenGigXci("tgx", "kintex7", "32")), frontend::XciContext{});
+    REQUIRE_FALSE(none);
+    CHECK(none.error().message.find("VHDL component declaration") != std::string::npos);
+    frontend::XciContext odd;
+    odd.vhdlComponents = frontend::vhdlComponentPorts(
+        pkg("  component tg7 port (coreclk : in std_logic; mdc : in std_logic; mdio_in : in std_logic); end component;\n"),
+        "p.vhd");
+    auto u = frontend::modelFromXci(dir.write("tgo.xci", tenGigXci("tg7", "kintex7", "32")), odd);
+    REQUIRE_FALSE(u);
+    CHECK(u.error().message.find("mdc, mdio_in") != std::string::npos);
+}
+
+namespace {
+
+std::string xxvXci(const std::string& inst, const std::string& core = "Ethernet PCS/PMA 64-bit",
+                   const std::string& cores = "1") {
+    return spirit(inst, "xxv_ethernet", "2.5",
+                  {{"C_CORE", core}, {"C_DATA_PATH_INTERFACE", "MII"}, {"C_NUM_OF_CORES", cores}, {"C_LINE_RATE", "10"},
+                   {"C_CLOCKING", "Asynchronous"}});
+}
+
+// SURF TenGigEthGthUltraScale156p25MHzCore (xxv_ethernet 2.5), the ports used
+const char* kXxvComponent =
+    "  component xxv\n    port (\n"
+    "      gt_txp_out : out std_logic_vector(0 downto 0); gt_rxp_in : in std_logic_vector(0 downto 0);\n"
+    "      rx_core_clk_0 : in std_logic; rx_serdes_reset_0 : in std_logic; gt_rxpolarity_0 : in std_logic;\n"
+    "      gt_txbufstatus_0 : out std_logic_vector(1 downto 0); gt_dmonitorout_0 : out std_logic_vector(16 downto 0);\n"
+    "      rxrecclkout_0 : out std_logic; gt_drpclk_0 : in std_logic; gt_drpdo_0 : out std_logic_vector(15 downto 0);\n"
+    "      gt_drpen_0 : in std_logic; sys_reset : in std_logic; dclk : in std_logic;\n"
+    "      tx_mii_clk_0 : out std_logic; rx_clk_out_0 : out std_logic; gtpowergood_out_0 : out std_logic;\n"
+    "      gt_reset_tx_done_out_0 : out std_logic; rx_reset_0 : in std_logic;\n"
+    "      rx_mii_d_0 : out std_logic_vector(63 downto 0); rx_mii_c_0 : out std_logic_vector(7 downto 0);\n"
+    "      ctl_rx_test_pattern_0 : in std_logic; stat_rx_block_lock_0 : out std_logic;\n"
+    "      tx_reset_0 : in std_logic; tx_mii_d_0 : in std_logic_vector(63 downto 0);\n"
+    "      tx_mii_c_0 : in std_logic_vector(7 downto 0); stat_tx_local_fault_0 : out std_logic;\n"
+    "      ctl_tx_test_pattern_0 : in std_logic; gt_loopback_in_0 : in std_logic_vector(2 downto 0));\n"
+    "  end component;\n";
+
+} // namespace
+
+TEST_CASE("XCI: 10G/25G Ethernet subsystem (xxv_ethernet) PCS/PMA with MII", "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(pkg(kXxvComponent), "p.vhd");
+    auto m = frontend::modelFromXci(dir.write("xxv.xci", xxvXci("xxv")), ctx);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"OPENCDC_CLOCK_PIN = \"tx_mii_clk_0\", OPENCDC_CLOCK_PERIOD = 6.4",
+                          "OPENCDC_CLOCK_PIN = \"rx_clk_out_0\", OPENCDC_CLOCK_PERIOD = 6.4",
+                          "OPENCDC_CLOCK_PIN = \"rxrecclkout_0\" *)",
+                          "always @(posedge oc_tx_mii_clk_0_c) oc_dom_tx_mii_clk_0 <= ^{tx_mii_d_0, tx_mii_c_0, "
+                          "ctl_tx_test_pattern_0}",
+                          "always @(posedge oc_tx_mii_clk_0_c) oc_gt_txbufstatus_0_q",
+                          "always @(posedge rx_core_clk_0[0]) oc_rx_mii_d_0_q",
+                          "always @(posedge oc_rx_clk_out_0_c) oc_dom_rx_clk_out_0 <= ^{gt_rxpolarity_0, "
+                          "ctl_rx_test_pattern_0}",
+                          "always @(posedge oc_rx_clk_out_0_c) oc_stat_rx_block_lock_0_q",
+                          "always @(posedge dclk[0]) oc_gt_reset_tx_done_out_0_q",
+                          "always @(posedge gt_drpclk_0[0]) oc_gt_drpdo_0_q",
+                          "opencdc_async_source u_oc_gtpowergood_out_0"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: resets and the loopback control are read by no register
+    for (const char* p : {"rx_reset_0", "tx_reset_0", "sys_reset", "gt_loopback_in_0"})
+        CHECK(v.find(std::string("{") + p) == std::string::npos);
+    CHECK(m.value().summary.find("tx_mii_clk/rx_clk_out 156.25 MHz") != std::string::npos);
+    // negative: the MAC and several cores are not modelled
+    auto mac = frontend::modelFromXci(dir.write("xm.xci", xxvXci("xxv", "Ethernet MAC+PCS/PMA 64-bit")), ctx);
+    REQUIRE_FALSE(mac);
+    CHECK(mac.error().message.find("only the Ethernet PCS/PMA 64-bit core") != std::string::npos);
+    auto four = frontend::modelFromXci(dir.write("x4.xci", xxvXci("xxv", "Ethernet PCS/PMA 64-bit", "4")), ctx);
+    REQUIRE_FALSE(four);
+    CHECK(four.error().message.find("C_NUM_OF_CORES 4") != std::string::npos);
+}

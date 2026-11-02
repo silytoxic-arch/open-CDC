@@ -1440,6 +1440,35 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                         return true;
                     }
                 }
+                // variable bounds, value (others => x): every element of the array
+                // whose index lies between the bounds (SURF: tKeep(conv_integer(n) downto 0) := (others => '1'))
+                if (othersValue_ && re.kind == ExprKind::Range && T->indexRanges[0] && T->indexTypes.size() == 1 &&
+                    body && body->ed && !t.dynamic && !t.sub && ew > 0 &&
+                    (!constInt(*re.lhs, ctx) || !constInt(*re.rhs, ctx))) {
+                    const IntRange& ar = *T->indexRanges[0];
+                    if ((re.dir == RangeDir::To) != ar.ascending) {
+                        error("VHDL-SLICE", "slice direction differs from the direction of '" + T->name + "'", e.loc);
+                        return false;
+                    }
+                    const Type* it = T->indexTypes.front();
+                    auto bound = [&](const Expr& x) {
+                        const SVal v = convert(eval(x, ctx, it), it, ctx, e.loc);
+                        return bitsOf(v, e.loc).resized(32, isSignedInteger(*v.type));
+                    };
+                    const ir::SigSpec left = bound(*re.lhs);
+                    const ir::SigSpec right = bound(*re.rhs);
+                    t.masked = true;
+                    t.maskLow = ar.ascending ? left : right;
+                    t.maskHigh = ar.ascending ? right : left;
+                    t.elemWidth = ew;
+                    t.regionOffset = t.offset;
+                    t.regionWidth = t.width;
+                    t.range = ar;
+                    t.type = types.constrainedArray(T, {ar});
+                    out.push_back(t);
+                    setType(t.type);
+                    return true;
+                }
                 auto r = discreteRange(re, ctx);
                 if (!r || !T->indexRanges[0])
                     return false;

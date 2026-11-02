@@ -83,7 +83,7 @@ done
 
 # ---- 2. elaboration and CDC analysis ---------------------------------------
 python3 - "$WORK" <<'EOF'
-import glob, json, os, sys
+import glob, json, os, re, sys
 work = sys.argv[1]
 olo = os.path.join(work, "open-logic/src/base/vhdl")
 files = sorted(glob.glob(olo + "/olo_base_pkg_*.vhd")) + sorted(f for f in glob.glob(olo + "/*.vhd") if "pkg" not in f)
@@ -241,6 +241,70 @@ for typ, rates, gen in [("gtx7", ["3G", "6G", "10G"], {}),
     surf_project("surf_pgp3_%s_wrapper" % typ, T + "IpWrapper",
                  surf[:-1] + extra + [d + "rtl/%sIpWrapper.vhd" % T] + [d + "ip/%sIp%s.xci" % (T, r) for r in rates],
                  typ + ".sdc", gen)
+# SURF 10G Ethernet (MAC + PCS/PMA) on GTX/GTH 7 series (ten_gig_eth_pcs_pma), GTH UltraScale
+# (ten_gig_eth_pcs_pma) and GTH/GTY UltraScale+ (xxv_ethernet): the files of each top from a
+# small dependency resolver over surf (entity surf.X, component instances, use surf.pkg)
+def surf_deps(top, prefer):
+    ents, pkgs = {}, {}
+    for root, _, fs in os.walk(sw):
+        if "/tb" in root or "/sim" in root:
+            continue
+        for f in sorted(fs):
+            if f.endswith(".vhd"):
+                path = os.path.join(root, f)
+                t = open(path, errors="replace").read()
+                for m in re.finditer(r"^\s*entity\s+(\w+)\s+is", t, re.M | re.I):
+                    ents.setdefault(m.group(1).lower(), []).append(path)
+                for m in re.finditer(r"^\s*package\s+(\w+)\s+is", t, re.M | re.I):
+                    pkgs.setdefault(m.group(1).lower(), path)
+    def uses(path):
+        t = re.sub(r"--.*", "", open(path, errors="replace").read())
+        e = {x.lower() for x in re.findall(r"entity\s+surf\.(\w+)", t, re.I)}
+        e |= {x.lower() for x in re.findall(r"^\s*\w+\s*:\s*(?:component\s+)?(\w+)\s*$\s*(?:generic|port)\s+map", t, re.I | re.M)}
+        return e, {x.lower() for x in re.findall(r"use\s+surf\.(\w+)\.", t, re.I)}
+    files, seen = [], set()
+    def add_pkg(k):
+        if k in seen or k not in pkgs:
+            return
+        seen.add(k)
+        for kk in uses(pkgs[k])[1]:
+            add_pkg(kk)
+        if pkgs[k] not in files:
+            files.append(pkgs[k])
+    def add(e):
+        if e in seen or e not in ents:
+            return
+        seen.add(e)
+        cand = sorted(ents[e])
+        path = ([c for c in cand if prefer in c] or cand)[0]
+        es, ks = uses(path)
+        for k in sorted(ks):
+            add_pkg(k)
+        for x in sorted(es):
+            add(x)
+        if path not in files:
+            files.append(path)
+    add(top.lower())
+    return [os.path.relpath(f, sw) for f in files]
+tg = "ethernet/TenGigEthCore/"
+def tg_sdc(name, core_port, groups):
+    open(os.path.join(work, name + ".sdc"), "w").write(
+        "create_clock -name core -period 6.4 [get_ports %s]\n"
+        "create_clock -name axil -period 8 [get_ports axiLiteClk]\n"
+        "create_clock -name dma -period 5 [get_ports dmaClk]\n"
+        "set_clock_groups -asynchronous -group core -group axil -group dma %s\n" % (core_port, " ".join(
+            "-group [get_clocks -of_objects [get_pins -hier *Core/%s]]" % g for g in groups)))
+for name, top, d, xci, core_port, groups in [
+        ("surf_tengig_gtx7", "TenGigEthGtx7", "gtx7/", "gtx7/ip/TenGigEthGtx7Core.xci", "phyClk", ["txoutclk", "rxrecclk_out"]),
+        ("surf_tengig_gth7", "TenGigEthGth7", "gth7/", "gth7/ip/TenGigEthGth7Core.xci", "phyClk", ["txoutclk"]),
+        ("surf_tengig_gthus", "TenGigEthGthUltraScale", "gthUltraScale/",
+         "gthUltraScale/ip/TenGigEthGthUltraScale156p25MHzCore.xci", "coreClk", ["txoutclk", "rxrecclk_out"]),
+        ("surf_tengig_gthusp", "TenGigEthGthUltraScale", "gthUltraScale+/",
+         "gthUltraScale+/ip/TenGigEthGthUltraScale156p25MHzCore.xci", "coreClk", ["tx_mii_clk_0", "rx_clk_out_0"]),
+        ("surf_tengig_gtyusp", "TenGigEthGtyUltraScale", "gtyUltraScale+/",
+         "gtyUltraScale+/ip/TenGigEthGtyUltraScale156p25MHzCore.xci", "coreClk", ["tx_mii_clk_0", "rx_clk_out_0"])]:
+    tg_sdc(name, core_port, groups)
+    surf_project(name, top, surf_deps(top, "TenGigEthCore/" + d) + [tg + xci], name + ".sdc")
 # every Transceivers Wizard .xci of surf alone (the IP is the top)
 gtx = []
 for x in sorted(glob.glob(os.path.join(sw, "**", "*.xci"), recursive=True)):
@@ -447,6 +511,14 @@ check surf_pgp2fc_gty_wrapper.ocdc.json "Clocks  : 5 \\(458/458 registers resolv
 # ClockManager7's own DRP is left unconnected in SURF's wrapper (axilClk at its default '0'): CLK-CONSTANT
 check surf_pgp3_gtx7_wrapper.ocdc.json "Clocks  : 6 \\(200/216 registers resolved\\).*IP 'Pgp3Gtx7Ip10G' \\(xilinx.com:ip:gtwizard:3.6\\) modelled.*gt0_rxoutclk_out 322.265625 MHz.*VHDL component declaration.*CLK-CONSTANT.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 34 crossing path\\(s\\), 24 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation\\(s\\), 9 path\\(s\\) at potential risk, 1 path\\(s\\) need review"
 check surf_pgp3_gtp7_wrapper.ocdc.json "Clocks  : 6 \\(269/269 registers resolved\\).*IP 'Pgp3Gtp7Ip6G' \\(xilinx.com:ip:gtwizard:3.6\\) modelled.*7-series GTP.*gt0_rxoutclk_out 390.625 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 43 crossing path\\(s\\), 31 synchronized"
+# SURF 10G Ethernet: MAC + PCS/PMA IP. UltraScale: XGMII in txusrclk2 (PG068); the 3 CDC-002 are
+# SURF's own one-flop captures of quasi-static reset flags (statusReg); UltraScale+: the 2 CDC-004
+# are 'txRstdone and rxRstdone' combined before their synchronizer (TenGigEthGthUltraScaleRst)
+check surf_tengig_gtx7.ocdc.json  "Clocks  : 5 \\(738/738 registers resolved\\).*ten_gig_eth_pcs_pma:6.0.*XGMII in coreclk.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 51 crossing path\\(s\\), 37 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
+check surf_tengig_gth7.ocdc.json  "Clocks  : 4 \\(731/731 registers resolved\\).*Summary : 0 error\\(s\\), 0 warning.*CDC     : 51 crossing path\\(s\\), 37 synchronized"
+check surf_tengig_gthus.ocdc.json "Clocks  : 5 \\(765/765 registers resolved\\).*XGMII in txusrclk2.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 53 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 3 warning violation"
+check surf_tengig_gthusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*tx_mii_clk/rx_clk_out 156.25 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
+check surf_tengig_gtyusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
 n=$(cat gtx_count.txt)
 [ "$n" = 30 ] || { echo "::error::expected 30 Transceivers Wizard .xci files in surf, found $n"; fail=1; }
 for f in gtx_*.ocdc.json; do

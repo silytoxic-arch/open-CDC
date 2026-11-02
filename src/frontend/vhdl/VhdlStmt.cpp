@@ -11,6 +11,7 @@
 #include "frontend/vhdl/VhdlElab.h"
 
 #include <algorithm>
+#include <functional>
 
 namespace opencdc::vhdl {
 
@@ -150,7 +151,8 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
     const auto W = bitWidth(*o.type);
     // whole-object assignment of a known value: keep the value (also for
     // types without hardware representation, e.g. real variables)
-    if (!signal && v.known() && !t.dynamic && t.offset == 0 && (!W || t.width == *W) && isOne(st.alive)) {
+    if (!signal && v.known() && !t.dynamic && !t.masked && t.offset == 0 && (!W || t.width == *W) &&
+        isOne(st.alive)) {
         SVal nv = v;
         nv.type = o.type;
         // a part that covers every bit (the only field of a record, r.d := x):
@@ -175,7 +177,7 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
         else
             base = o.storage;
     }
-    else if (!t.dynamic && t.offset == 0 && t.width == *W && isOne(st.alive)) {
+    else if (!t.dynamic && !t.masked && t.offset == 0 && t.width == *W && isOne(st.alive)) {
         // the whole variable is overwritten: its previous value is not read
         base = SigSpec::allX(*W);
     }
@@ -186,7 +188,31 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
         base = base.resized(*W, false);
     SigSpec vb = bitsOf(v, l);
     SigSpec nb;
-    if (!t.dynamic) {
+    if (t.masked) {
+        // each element of the region: the value's element when its index is
+        // within [maskLow, maskHigh], otherwise unchanged
+        if (vb.width() != t.regionWidth) {
+            error("VHDL-LENGTH", "value has " + std::to_string(vb.width()) + " bit(s), target '" + o.name +
+                                     "' has " + std::to_string(t.regionWidth),
+                  l);
+            return;
+        }
+        SigSpec region = base.extract(t.regionOffset, t.regionWidth);
+        const auto n = t.range.length();
+        for (std::uint64_t p = 0; p < n; ++p) {
+            const std::int64_t index = t.range.ascending ? t.range.left + static_cast<std::int64_t>(p)
+                                                         : t.range.left - static_cast<std::int64_t>(p);
+            const SigSpec k = SigSpec::constant(static_cast<std::uint64_t>(index), 32);
+            const SigSpec in = cell(ir::CellKind::LogicAnd,
+                                    {cell(ir::CellKind::Le, {t.maskLow, k}, 1, l, true),
+                                     cell(ir::CellKind::Le, {k, t.maskHigh}, 1, l, true)},
+                                    1, l);
+            const auto off = static_cast<std::uint32_t>((n - 1 - p) * t.elemWidth);
+            region = region.replaced(off, mux(in, region.extract(off, t.elemWidth), vb.extract(off, t.elemWidth), l));
+        }
+        nb = base.replaced(t.regionOffset, region);
+    }
+    else if (!t.dynamic) {
         if (vb.width() != t.width) {
             error("VHDL-LENGTH", "value has " + std::to_string(vb.width()) + " bit(s), target '" + o.name + "' part has " +
                                      std::to_string(t.width),
@@ -244,10 +270,10 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
         st.nba[t.object] = nb;
     else
         st.cur[t.object] = makeBits(o.type, nb);
-    const std::uint32_t off = t.dynamic ? t.regionOffset : t.offset;
-    const std::uint32_t w = t.dynamic ? t.regionWidth : t.width;
+    const std::uint32_t off = t.dynamic || t.masked ? t.regionOffset : t.offset;
+    const std::uint32_t w = t.dynamic || t.masked ? t.regionWidth : t.width;
     markBits(st.any[t.object], *W, off, w);
-    if (!t.dynamic && isOne(st.alive))
+    if (!t.dynamic && !t.masked && isOne(st.alive))
         markBits(st.all[t.object], *W, off, w);
     else
         (void)st.all[t.object];
@@ -404,7 +430,17 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
             const bool signal = s.kind == StmtKind::SignalAssign;
             std::vector<Target> tg;
             const Type* tt = nullptr;
-            if (!targets(*s.target, ctx, tg, &tt))
+            // a slice target with variable bounds is understood for (others => x) values
+            auto othersOnly = [](const Expr* v) {
+                return v && v->kind == ExprKind::Aggregate && v->elements.size() == 1 &&
+                       v->elements[0].choices.size() == 1 && v->elements[0].choices[0] &&
+                       v->elements[0].choices[0]->kind == ExprKind::Others;
+            };
+            othersValue_ = s.form == Stmt::Form::Simple && s.alts.size() == 1 && !s.alts[0].wave.empty() &&
+                           othersOnly(s.alts[0].wave[0].value.get());
+            const bool okTargets = targets(*s.target, ctx, tg, &tt);
+            othersValue_ = false;
+            if (!okTargets)
                 return;
             if (!tt && tg.size() > 1) {
                 // aggregate target: the value's type comes from the right-hand side
@@ -940,6 +976,7 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
     std::vector<AsyncBranch> asyncs;
     const std::vector<StmtPtr>* clockedBody = nullptr;
     std::vector<const Stmt*> prefix; // statements before the clocked if (variables only)
+    std::vector<const Stmt*> tail; // signal assignments after the clocked if that read process variables
     const Expr* enableExpr = nullptr;
     std::optional<std::pair<SigSpec, ir::Edge>> clock;
     std::vector<StmtPtr> waitBody; // unused holder
@@ -992,38 +1029,33 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
                 }
                 if (s.kind == StmtKind::Null)
                     continue;
+                // sig <= var; after the clocked if (SURF: macMaster <= varMaster): the
+                // variable keeps the value of the last clock edge, so the signal is a
+                // function of the variable's register. Only process variables and
+                // constants may be read there: a signal read would be sampled on both edges.
+                if (s.kind == StmtKind::SignalAssign && s.form == Stmt::Form::Simple && s.alts.size() == 1 &&
+                    !s.alts[0].wave.empty() && s.alts[0].wave[0].value && tailReadsOnlyVariables(s, *ps, ctx)) {
+                    tail.push_back(&s);
+                    continue;
+                }
                 warn("VHDL-CLOCKED-TAIL",
                      "statement after the clocked if of process '" + label +
-                         "' is ignored (only 'if <reset> then ... end if' is understood there)",
+                         "' is ignored (only 'if <reset> then ... end if' and signal assignments of process variables are "
+                         "understood there)",
                      s.loc);
             }
         }
     }
 
-    if (!clock) {
-        // ---------------- combinational process ----------------
-        bool wait = std::ranges::any_of(stmts, [](const StmtPtr& s) { return s->kind == StmtKind::Wait; });
-        if (wait) {
-            // "wait on a, b;" as the last statement is a sensitivity list
-            const bool sensitivityWait = stmts.back()->kind == StmtKind::Wait && !stmts.back()->cond &&
-                                         !stmts.back()->value &&
-                                         std::count_if(stmts.begin(), stmts.end(), [](const StmtPtr& s) {
-                                             return s->kind == StmtKind::Wait;
-                                         }) == 1;
-            if (!sensitivityWait) {
-                warn("VHDL-TESTBENCH", "process '" + label + "' uses wait statements (simulation code); not analyzed", l,
-                     Severity::Info);
-                return;
-            }
-        }
-        execList(stmts, ctx);
-        for (const auto& [idx, anyMask] : st.any) {
+    // a combinational process: the objects written by it, from the final state
+    auto emitCombinational = [&](ProcState& ps0) {
+        for (const auto& [idx, anyMask] : ps0.any) {
             Object& o = object(idx);
             if (o.storage.empty())
                 continue;
             SigSpec value;
             if (o.isSignal) {
-                const SigSpec* v = st.nba.find(idx);
+                const SigSpec* v = ps0.nba.find(idx);
                 if (!v)
                     continue;
                 value = *v;
@@ -1031,12 +1063,12 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
             else {
                 if (!o.readInitial)
                     continue; // variable written before every read: no storage
-                const SVal* v = st.cur.find(idx);
+                const SVal* v = ps0.cur.find(idx);
                 if (!v)
                     continue;
                 value = bitsOf(*v, l);
             }
-            const BitMask* allMask = st.all.find(idx);
+            const BitMask* allMask = ps0.all.find(idx);
             const auto W = o.storage.width();
             BitMask comb(W, false);
             BitMask latch(W, false);
@@ -1062,6 +1094,26 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
                     body->ed->addLatch({o.storage.extract(off, w), value.extract(off, w), origin}, true);
                 });
         }
+    };
+
+    if (!clock) {
+        // ---------------- combinational process ----------------
+        bool wait = std::ranges::any_of(stmts, [](const StmtPtr& s) { return s->kind == StmtKind::Wait; });
+        if (wait) {
+            // "wait on a, b;" as the last statement is a sensitivity list
+            const bool sensitivityWait = stmts.back()->kind == StmtKind::Wait && !stmts.back()->cond &&
+                                         !stmts.back()->value &&
+                                         std::count_if(stmts.begin(), stmts.end(), [](const StmtPtr& s) {
+                                             return s->kind == StmtKind::Wait;
+                                         }) == 1;
+            if (!sensitivityWait) {
+                warn("VHDL-TESTBENCH", "process '" + label + "' uses wait statements (simulation code); not analyzed", l,
+                     Severity::Info);
+                return;
+            }
+        }
+        execList(stmts, ctx);
+        emitCombinational(st);
         return;
     }
 
@@ -1103,6 +1155,22 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
         const SVal c = eval(*a.cond, c0, std_.boolean);
         return c.known() && c.value->kind == Value::Kind::Int && c.value->i == 0;
     });
+    // "if FIXED_G then q <= comb; elsif rising_edge(clk) then ..." with a true
+    // generic: the first branch is always taken, the process is combinational
+    if (!asyncs.empty()) {
+        Ctx c0 = ctx;
+        ProcState scratch = pre;
+        c0.st = &scratch;
+        const SVal c = eval(*asyncs.front().cond, c0, std_.boolean);
+        if (c.known() && c.value->kind == Value::Kind::Int && c.value->i != 0) {
+            ProcState comb = pre;
+            Ctx cc = ctx;
+            cc.st = &comb;
+            execList(*asyncs.front().body, cc);
+            emitCombinational(comb);
+            return;
+        }
+    }
     std::vector<ProcState> asyncStates(asyncs.size(), pre);
     struct Ctrl {
         SigSpec signal;
@@ -1132,6 +1200,17 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
     if (enableExpr) {
         SVal ev = eval(*enableExpr, ctx, std_.boolean);
         enable = toBool(bitsOf(ev, l), l);
+    }
+
+    // signal assignments after the clocked if: executed on the variables' registers
+    ProcState tailSt;
+    tailSt.alive = one();
+    tailSt.returned = zero();
+    if (!tail.empty()) {
+        Ctx tc = ctx;
+        tc.st = &tailSt;
+        for (const Stmt* t : tail)
+            exec(*t, tc);
     }
 
     // objects written in any part
@@ -1207,6 +1286,59 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
             }
         }
     }
+    for (const auto& [idx, anyMask] : tailSt.any) {
+        Object& o = object(idx);
+        const SigSpec* v = tailSt.nba.find(idx);
+        if (!o.isSignal || o.storage.empty() || !v)
+            continue;
+        if (std::ranges::find(objs, idx) != objs.end()) {
+            error("VHDL-MULTI-ASSIGN", "'" + o.name + "' is assigned inside and after the clocked if of process '" +
+                                           label + "'",
+                  l);
+            continue;
+        }
+        const BitMask* allMask = tailSt.all.find(idx);
+        BitMask full(o.storage.width(), false);
+        for (std::uint32_t i = 0; i < full.size() && i < anyMask.size(); ++i)
+            full[i] = anyMask[i] && allMask && i < allMask->size() && (*allMask)[i];
+        for (const auto& [ro, rw] : runs(full))
+            forEachNetPiece(o.storage, ro, rw, [&](std::uint32_t off, std::uint32_t w) {
+                body->body.connections.push_back(
+                    {o.storage.extract(off, w), v->extract(off, w), ir::ConnKind::Process, origin});
+            });
+    }
+}
+
+bool Elaborator::tailReadsOnlyVariables(const Stmt& s, Scope& scope, Ctx& /*ctx*/) {
+    // every name read by the value: a process variable, a constant, a function,
+    // a type or an enumeration literal (no signal)
+    bool ok = true;
+    std::function<void(const Expr*)> walk = [&](const Expr* e) {
+        if (!e || !ok)
+            return;
+        if (e->kind == ExprKind::Simple) {
+            for (Symbol* sym : lookup(scope, e->ident.key))
+                if (sym->kind == SymKind::Signal)
+                    ok = false;
+            return;
+        }
+        walk(e->prefix.get());
+        walk(e->lhs.get());
+        walk(e->rhs.get());
+        for (const auto& a : e->args)
+            walk(a.actual.get());
+        for (const auto& el : e->elements) {
+            walk(el.value.get());
+            for (const auto& ch : el.choices)
+                walk(ch.get());
+        }
+    };
+    walk(s.alts[0].wave[0].value.get());
+    // the target itself is a signal; its index expressions must not read signals either
+    if (s.target && s.target->kind == ExprKind::Call)
+        for (const auto& a : s.target->args)
+            walk(a.actual.get());
+    return ok;
 }
 
 void Elaborator::lowerConcurrentAssign(const Stmt& s, Scope& scope) {

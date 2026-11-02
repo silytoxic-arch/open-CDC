@@ -976,3 +976,104 @@ TEST_CASE("VHDL: 'x <= v when rising_edge(clk);' is a register", "[vhdl][elab]")
     CHECK(r.has("reg s2 <= d @(posedge clk) en("));
     CHECK(r.count("IR-LATCH-INFERRED") == 1); // only 'l'
 }
+
+// ===========================================================================
+// Constructs found in SURF's Ethernet MAC (stage 44)
+// ===========================================================================
+
+TEST_CASE("VHDL: a slice with variable bounds assigned (others => x)", "[vhdl][elab]") {
+    // SURF EthMacRxImportXgmii: varMaster.tKeep(conv_integer(macSize) downto 0) := (others => '1')
+    auto r = elaborate(lib("entity t is port (clk : in std_logic; n : in unsigned(2 downto 0);\n"
+                           "  q : out std_logic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk) variable v : std_logic_vector(7 downto 0); begin\n"
+                           "    if rising_edge(clk) then\n"
+                           "      v := (others => '0');\n"
+                           "      v(to_integer(n) downto 0) := (others => '1');\n"
+                           "      q <= v;\n"
+                           "    end if;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    // every bit compares its index with the bound: bit 7 is set for n >= 7, bit 0 always
+    CHECK(r.has("le.s(A=32'b00000000000000000000000000000111, B={29'b00000000000000000000000000000, n})"));
+    CHECK(r.has("reg q <= {$mux$"));
+    const auto& b = r.design->body(r.design->instance(r.design->tops.front()).body);
+    REQUIRE(b.registers.size() == 1);
+    CHECK(b.registers.front().q.width() == 8);
+
+    // negative: a value that is not (others => x) still needs static bounds
+    auto n = elaborate(lib("entity t is port (clk : in std_logic; n : in unsigned(2 downto 0);\n"
+                           "  d : in std_logic_vector(7 downto 0); q : out std_logic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk) variable v : std_logic_vector(7 downto 0); begin\n"
+                           "    if rising_edge(clk) then\n"
+                           "      v := (others => '0');\n"
+                           "      v(to_integer(n) downto 0) := d(to_integer(n) downto 0);\n"
+                           "      q <= v;\n"
+                           "    end if;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    CHECK(n.count("VHDL-NOT-STATIC") >= 1);
+}
+
+TEST_CASE("VHDL: a signal assigned from a process variable after the clocked if", "[vhdl][elab]") {
+    // SURF EthMacRxImportXgmii: the variable is computed on the clock edge and copied
+    // to the signal after the clocked if: the signal is the variable's register
+    auto r = elaborate(lib("entity t is port (clk : in std_logic; d : in std_logic_vector(3 downto 0);\n"
+                           "  q : out std_logic_vector(3 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk) variable v : std_logic_vector(3 downto 0); begin\n"
+                           "    if rising_edge(clk) then\n"
+                           "      v := (others => '0');\n"
+                           "      v := d;\n"
+                           "    end if;\n"
+                           "    q <= v;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-CLOCKED-TAIL") == 0);
+    const auto& b = r.design->body(r.design->instance(r.design->tops.front()).body);
+    REQUIRE(b.registers.size() == 1); // the variable
+    CHECK(r.has("reg proc0.v <= d @(posedge clk)"));
+    CHECK(r.has("comb  q = proc0.v"));
+
+    // negative: a signal read after the clocked if is sampled on both edges: still ignored
+    auto n = elaborate(lib("entity t is port (clk : in std_logic; d : in std_logic_vector(3 downto 0);\n"
+                           "  q : out std_logic_vector(3 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk) variable v : std_logic_vector(3 downto 0); begin\n"
+                           "    if rising_edge(clk) then v := d; end if;\n"
+                           "    q <= d;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    CHECK(n.count("VHDL-CLOCKED-TAIL") == 1);
+}
+
+TEST_CASE("VHDL: 'if TRUE_GENERIC then comb elsif rising_edge' is combinational", "[vhdl][elab]") {
+    // SURF AxiStreamFifoV2: if FIFO_FIXED_THRESH_G then pause <= ...; elsif rising_edge(clk) ...
+    const std::string text = lib("entity t is generic (FIXED_G : boolean := true);\n"
+                                 "  port (clk, a, b : in std_logic; q : out std_logic); end;\n"
+                                 "architecture rtl of t is begin\n"
+                                 "  process (clk, a, b) begin\n"
+                                 "    if FIXED_G then q <= a or b;\n"
+                                 "    elsif rising_edge(clk) then q <= a; end if;\n"
+                                 "  end process;\n"
+                                 "end;\n");
+    auto r = elaborate(text, "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-ASYNC-LOAD") == 0);
+    CHECK(r.design->body(r.design->instance(r.design->tops.front()).body).registers.empty());
+    // negative: with the generic false, the clocked branch: a register, no asynchronous branch
+    auto f = elaborate(text, "t", {{"FIXED_G", "false"}});
+    REQUIRE(f.design);
+    REQUIRE(f.design->body(f.design->instance(f.design->tops.front()).body).registers.size() == 1);
+    CHECK(f.has("reg q <= a @(posedge clk)"));
+}

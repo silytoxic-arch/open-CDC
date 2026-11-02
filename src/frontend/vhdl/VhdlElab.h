@@ -289,6 +289,11 @@ struct Target {
     IntRange range;                ///< dynamic: index range of the region
     bool sub = false;              ///< dynamic: only part of the element ([subOffset, +width))
     std::uint32_t subOffset = 0;
+    /// A slice with variable bounds (v(n downto 0) := (others => '1')): the
+    /// elements of the region whose index is in [maskLow, maskHigh] (32-bit
+    /// signed) take the value's element; the value covers the whole region.
+    bool masked = false;
+    ir::SigSpec maskLow, maskHigh;
 };
 
 // ---------------------------------------------------------------------------
@@ -475,6 +480,8 @@ public:
     /// (`d(FIELD_C)` with `subtype FIELD_C is natural range 7 downto 4`).
     bool isSliceRange(const Expr& e, Ctx& ctx);
     bool targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, const Type** type = nullptr);
+    /// The value of a signal assignment after the clocked if reads no signal.
+    bool tailReadsOnlyVariables(const Stmt& s, Scope& scope, Ctx& ctx);
     SVal convert(const SVal& v, const Type* to, Ctx& ctx, Loc l, bool implicit = true);
     ir::SigSpec bitsOf(const SVal& v, Loc l);
     SVal makeConst(const Type* t, Value v);
@@ -590,6 +597,9 @@ public:
     int errors_ = 0;
     int depth_ = 0;
     std::unordered_set<std::string> reported_;
+    /// The assignment being executed assigns an (others => x) aggregate: a
+    /// slice target may then have variable bounds (Target::masked).
+    bool othersValue_ = false;
     /// textio reads executed so far: a function that reads a file has a
     /// result that is not known at elaboration time
     std::uint64_t fileReads_ = 0;
