@@ -33,7 +33,7 @@ fetch() { # name url commit
     git -C "$1" config filter.lfs.smudge cat
     git -C "$1" config filter.lfs.clean cat
     git -C "$1" fetch -q --depth 1 origin "$3"
-    git -C "$1" checkout -q FETCH_HEAD
+    git -C "$1" checkout -q -f FETCH_HEAD # -f: files of an interrupted earlier checkout
 }
 fetch axi          https://github.com/pulp-platform/axi          39f5f2d51c5e524f6fc5cf8b6e901f7dcc5622d7
 fetch common_cells https://github.com/pulp-platform/common_cells c27bce39ebb2e6bae52f60960814a2afca7bd4cb

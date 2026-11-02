@@ -101,6 +101,14 @@ export COPYFILE_DISABLE=1 # no ._ AppleDouble files in the archives
 rm -rf "$BUILD/_CPack_Packages"
 (cd "$BUILD" && cpack -C Release) 2>&1 | tee build-logs/macos-cpack-$STAMP.log
 [ "${PIPESTATUS[0]}" = 0 ] || fail "打包"
+# CMake's archiver stores the macOS extended attributes as ._ files: pack the
+# .tar.gz again with the system tar, without them
+for f in "$BUILD"/OpenCDC-*-macos-*.tar.gz; do
+    [ -f "$f" ] || continue
+    T=$(mktemp -d)
+    tar -xzf "$f" -C "$T" && COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$f" -C "$T" . || fail "重新打包 $f"
+    rm -rf "$T"
+done
 mkdir -p dist
 for f in "$BUILD"/OpenCDC-*-macos-*.dmg "$BUILD"/OpenCDC-*-macos-*.tar.gz; do
     [ -f "$f" ] && cp "$f" dist/ && note "安装包: dist/$(basename "$f") ($(du -h "$f" | awk '{print $1}'))"

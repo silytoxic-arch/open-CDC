@@ -147,9 +147,9 @@ void writeIfChanged(const std::filesystem::path& path, const std::string& text) 
                 return;
         }
     }
-    static std::atomic<unsigned> n{0};
+    // unique across processes: parallel analyses write the same models
     auto tmp = path;
-    tmp += ".tmp" + std::to_string(n++);
+    tmp += ".tmp" + uniqueToken();
     {
         std::ofstream out(tmp, std::ios::binary);
         out << text;
@@ -334,12 +334,14 @@ public:
         }
 
         // wrapper file (rewritten every round)
-        static std::atomic<unsigned> counter{0};
-        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        tmpDir_ = std::filesystem::temp_directory_path() /
-                  ("opencdc_mixed_" + std::to_string(stamp) + "_" + std::to_string(counter++));
+        // a directory of its own: parallel analyses must not share it
+        tmpDir_ = createUniqueTempDir("opencdc_mixed_");
         std::error_code ec;
-        std::filesystem::create_directories(tmpDir_, ec);
+        if (tmpDir_.empty()) {
+            cleanup();
+            return Diagnostic{"FE-MIXED-TEMP", Severity::Error,
+                              "cannot create a temporary directory for the mixed-language wrapper", {}, {}};
+        }
         const auto wrapperPath = tmpDir_ / "opencdc_mixed_wrapper.v";
         const auto userVerilog = vin.sourceFiles;
         const std::string wrapperUtf8 = toUtf8(std::filesystem::weakly_canonical(wrapperPath, ec));

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/PathUtil.h"
+
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -14,11 +16,11 @@ namespace opencdc::test {
 class TempDir {
 public:
     TempDir() {
-        static std::atomic<unsigned> counter{0};
-        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        path_ = std::filesystem::temp_directory_path() /
-                ("opencdc_test_" + std::to_string(stamp) + "_" + std::to_string(counter++));
-        std::filesystem::create_directories(path_);
+        // unique across the test processes CTest runs in parallel (a time stamp
+        // alone collided on macOS)
+        path_ = createUniqueTempDir("opencdc_test_");
+        if (path_.empty())
+            throw std::runtime_error("cannot create a temporary directory");
     }
     TempDir(const TempDir&) = delete;
     TempDir& operator=(const TempDir&) = delete;

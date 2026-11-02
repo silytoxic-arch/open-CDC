@@ -40,7 +40,7 @@ fetch() { # name url commit
     git -C "$1" config filter.lfs.smudge cat
     git -C "$1" config filter.lfs.clean cat
     git -C "$1" fetch -q --depth 1 origin "$3"
-    git -C "$1" checkout -q FETCH_HEAD
+    git -C "$1" checkout -q -f FETCH_HEAD # -f: files of an interrupted earlier checkout
 }
 fetch open-logic https://github.com/open-logic/open-logic d9f123aae1c6022288782668067311f9794da0a2
 fetch neorv32    https://github.com/stnolting/neorv32    6536b6f43b8372654fff56bc448852bb8f128094
