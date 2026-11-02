@@ -2059,3 +2059,56 @@ TEST_CASE("XCI: 100G Ethernet (cmac_usplus) CAUI-4 with AXI4-Stream", "[frontend
     REQUIRE_FALSE(ma);
     CHECK(ma.error().message.find("an_clk, ctl_autoneg_enable") != std::string::npos);
 }
+
+namespace {
+
+// SURF Pgp4GtyUsIpFec (ieee802d3_clause74_fec 1.0): a JSON .xci, the ports in its boundary
+std::string jsonFec(const std::vector<std::string>& extra = {}) {
+    std::string ports;
+    auto add = [&](const std::string& p) { ports += (ports.empty() ? "" : ",\n        ") + p; };
+    for (const char* n : {"tx_clk", "tx_reset", "rx_clk", "rx_reset", "tx_din_start", "ctrl_rx_indication_en"})
+        add(port(n, "in"));
+    add(port("tx_din", "in", 65));
+    add(port("rx_din", "in", 65));
+    add(port("ctrl_rx_header_mark", "in", 31));
+    add(port("tx_dout", "out", 65));
+    add(port("rx_dout", "out", 65));
+    for (const char* n : {"tx_dout_start", "rx_din_slip", "rx_dout_start", "stat_rx_aligned", "stat_rx_cw_corrected",
+                          "stat_rx_cw_uncorrected", "stat_rx_cw_inc"})
+        add(port(n, "out"));
+    for (const auto& e : extra)
+        add(port(e, "in"));
+    return "{\n  \"schema\": \"xilinx.com:schema:json_instance:1.0\",\n  \"ip_inst\": {\n"
+           "    \"xci_name\": \"fec\",\n"
+           "    \"component_reference\": \"xilinx.com:ip:ieee802d3_clause74_fec:1.0\",\n"
+           "    \"ip_revision\": \"20\",\n"
+           "    \"parameters\": {\n      \"component_parameters\": {\n        " + param("Component_Name", "fec") +
+           "\n      }\n    },\n"
+           "    \"boundary\": {\n      \"ports\": {\n        " + ports + "\n      }\n    }\n  }\n}\n";
+}
+
+} // namespace
+
+TEST_CASE("XCI: IEEE 802.3 Clause 74 FEC (ieee802d3_clause74_fec), encoder and decoder clocks",
+          "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    auto m = frontend::modelFromXci(dir.write("fec.xci", jsonFec()), frontend::XciContext{});
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"always @(posedge tx_clk[0]) oc_dom_tx_clk <= ^{tx_din, tx_din_start, tx_reset}",
+                          "always @(posedge tx_clk[0]) oc_tx_dout_q", "always @(posedge tx_clk[0]) oc_tx_dout_start_q",
+                          "always @(posedge rx_clk[0]) oc_dom_rx_clk <= ^{ctrl_rx_header_mark, ctrl_rx_indication_en, "
+                          "rx_din, rx_reset}",
+                          "always @(posedge rx_clk[0]) oc_rx_dout_q", "always @(posedge rx_clk[0]) oc_rx_din_slip_q",
+                          "always @(posedge rx_clk[0]) oc_stat_rx_aligned_q"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: nothing crosses inside the IP, no transmit port in the receive clock or the other way round
+    CHECK(v.find("posedge rx_clk[0]) oc_tx_") == std::string::npos);
+    CHECK(v.find("posedge tx_clk[0]) oc_rx_") == std::string::npos);
+    CHECK(v.find("opencdc_async_source") == std::string::npos);
+    // negative: an unknown port is reported
+    auto odd = frontend::modelFromXci(dir.write("fo.xci", jsonFec({"core_clk"})), frontend::XciContext{});
+    REQUIRE_FALSE(odd);
+    CHECK(odd.error().message.find("core_clk") != std::string::npos);
+}

@@ -3713,6 +3713,33 @@ Result<XciModel> cmacUsplus(const XciInfo& info) {
     return r;
 }
 
+/// IEEE 802.3 Clause 74 FEC (ieee802d3_clause74_fec, PG303): the encoder in
+/// tx_clk (tx_reset, tx_din, tx_dout and their start flags), the decoder in
+/// rx_clk (rx_reset, rx_din, rx_din_slip, rx_dout, ctrl_rx_*, stat_rx_*); the
+/// two paths are independent, nothing crosses inside the IP.
+Result<XciModel> clause74Fec(const XciInfo& info) {
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "tx_clk" || n == "rx_clk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        // PG303: tx_reset is in tx_clk, rx_reset in rx_clk
+        if (n.starts_with("tx_"))
+            return PortClass{K::Sync, "tx_clk", 0, {}, 0};
+        if (n.starts_with("rx_") || n.starts_with("ctrl_rx_") || n.starts_with("stat_rx_") || n.starts_with("stat_cw_"))
+            return PortClass{K::Sync, "rx_clk", 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    r.value().summary = "Clause 74 FEC, encoder in tx_clk, decoder in rx_clk";
+    r.value().notes.push_back("the encoder (tx_reset, tx_din, tx_dout) is in tx_clk, the decoder (rx_reset, rx_din, "
+                              "rx_din_slip, rx_dout, ctrl_rx_*, stat_rx_*) in rx_clk (PG303); the resets are "
+                              "synchronous to their clock");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -3769,6 +3796,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return xaui(info);
     if (info.name == "cmac_usplus")
         return cmacUsplus(info);
+    if (info.name == "ieee802d3_clause74_fec")
+        return clause74Fec(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +

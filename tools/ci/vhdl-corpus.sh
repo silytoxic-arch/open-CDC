@@ -359,6 +359,18 @@ for name, period, gen in [("surf_caui4_161", "6.206", None), ("surf_caui4_156", 
         "-group [get_clocks -of_objects [get_pins -hier *U_CAUI4/gt_rxusrclk2]]\n" % period)
     surf_project(name, "Caui4GtyIpWrapper", surf_deps("Caui4GtyIpWrapper", "Caui4Core/") +
                  [ca + "Caui4GtyIpCore161MHz.xci", ca + "Caui4GtyIpCore156MHz.xci"], name + ".sdc", gen)
+# PGPv3/PGPv4 GTY wrapper at 25 Gb/s with the Clause 74 FEC (ieee802d3_clause74_fec, a JSON .xci) between
+# the gearbox and the transceiver
+open(os.path.join(work, "surf_pgp_gty_fec.sdc"), "w").write(
+    "create_clock -name stable -period 6.4 [get_ports stableClk]\n"
+    "create_clock -name axil -period 8 [get_ports axilClk]\n"
+    "set_clock_groups -asynchronous -group stable -group axil "
+    "-group [get_clocks -include_generated_clocks -of_objects [get_pins -hier *U_Pgp3GtyUsIp/gtwiz_userclk_tx_srcclk_out]] "
+    "-group [get_clocks -include_generated_clocks -of_objects [get_pins -hier *U_Pgp3GtyUsIp/gtwiz_userclk_rx_srcclk_out]]\n")
+surf_project("surf_pgp_gty_fec25", "Pgp3GtyUsIpWrapper", surf_deps("Pgp3GtyUsIpWrapper", "gtyUs+/") +
+             sorted(os.path.relpath(x, sw) for x in glob.glob(os.path.join(sw, "protocols/pgp/pgp3/gtyUs+/ip/*/*.xci"))) +
+             ["protocols/pgp/pgp4/gtyUs+/ip/Pgp4GtyUsIpFec/Pgp4GtyUsIpFec.xci"], "surf_pgp_gty_fec.sdc",
+             {"EN_FEC_G": "true", "RATE_G": '"25.0Gbps"'})
 # every Transceivers Wizard .xci of surf alone (the IP is the top)
 gtx = []
 for x in sorted(glob.glob(os.path.join(sw, "**", "*.xci"), recursive=True)):
@@ -591,6 +603,8 @@ check surf_xaui_gtyusp.ocdc.json "Clocks  : 5 \\(485/485 registers resolved\\).*
 # 16 constant registers are ClockManagerUltraScale's AxiLiteToDrp, whose axilClk SURF leaves unconnected
 check surf_caui4_161.ocdc.json "Clocks  : 5 \\(389/405 registers resolved\\).*USE_REFCLK161MHz.U_CAUI4.gt_txusrclk2 .*period=3.10303ns.*U_Pll.CLKOUT0 .*master=Caui4GtyIpWrapper.USE_REFCLK161MHz.U_CAUI4.gt_txusrclk2.*cmac_usplus:3.1.*gt_ref_clk_out 161.1328125 MHz.*CLK-CONSTANT.: 16 register.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 2 crossing path\\(s\\), 2 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 check surf_caui4_156.ocdc.json "Clocks  : 5 \\(389/405 registers resolved\\).*USE_REFCLK156MHz.U_CAUI4.gt_txusrclk2 .*Summary : 0 error\\(s\\), 1 warning.*CDC     : 2 crossing path\\(s\\), 2 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
+# the FEC's encoder in the TX user clock and its decoder in the RX user clock, as the gearbox around it: no new crossing
+check surf_pgp_gty_fec25.ocdc.json "Clocks  : 6 \\(216/216 registers resolved\\).*GTYE4, line rate 25.0 Gb/s.*ieee802d3_clause74_fec:1.0.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 32 crossing path\\(s\\), 22 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 n=$(cat gtx_count.txt)
 [ "$n" = 30 ] || { echo "::error::expected 30 Transceivers Wizard .xci files in surf, found $n"; fail=1; }
 for f in gtx_*.ocdc.json; do
