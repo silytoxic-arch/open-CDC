@@ -57,7 +57,20 @@ set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
 set(CPACK_NSIS_COMPONENT_INSTALL OFF)
 set(CPACK_DEB_COMPONENT_INSTALL ON)
 
-if(WIN32)
+if(APPLE)
+    # A disk image with OpenCDC.app, bin/opencdc and share/opencdc (docs,
+    # examples); Qt is deployed into the app bundle by macdeployqt.
+    if(CMAKE_OSX_ARCHITECTURES)
+        string(REPLACE ";" "-" _opencdc_arch "${CMAKE_OSX_ARCHITECTURES}")
+    else()
+        set(_opencdc_arch "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+    endif()
+    set(CPACK_SYSTEM_NAME "macos-${_opencdc_arch}")
+    set(CPACK_GENERATOR "DragNDrop;TGZ")
+    set(CPACK_DMG_VOLUME_NAME "OpenCDC ${PROJECT_VERSION}")
+    set(CPACK_DMG_FORMAT "UDZO")
+    set(CPACK_STRIP_FILES OFF) # stripping after macdeployqt would break the ad-hoc code signatures
+elseif(WIN32)
     set(CPACK_SYSTEM_NAME "windows-x64")
     set(CPACK_GENERATOR "ZIP")
     find_program(OPENCDC_MAKENSIS makensis)

@@ -55,7 +55,9 @@ REJECT=(
 )
 fail=0
 for repo in open-logic neorv32 PoC osvvm surf microwatt vivado-library cmod-a7-gpio nexys-a7-oob; do
-    mapfile -d '' files < <(find "$repo" \( -name '*.vhd' -o -name '*.vhdl' \) -print0 | sort -z)
+    # (no mapfile: macOS ships bash 3.2)
+    files=()
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$repo" \( -name '*.vhd' -o -name '*.vhdl' \) -print0 | LC_ALL=C sort -z)
     ok=()
     for f in "${files[@]}"; do
         skip=0

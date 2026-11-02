@@ -30,6 +30,17 @@ opencdc_set_warnings(opencdc-gui)
 set_target_properties(opencdc-gui PROPERTIES
     WIN32_EXECUTABLE ON
     MACOSX_BUNDLE ON)
+if(APPLE)
+    # OpenCDC.app (Contents/MacOS/OpenCDC); the CLI stays bin/opencdc
+    set_target_properties(opencdc-gui PROPERTIES
+        OUTPUT_NAME "OpenCDC"
+        MACOSX_BUNDLE_BUNDLE_NAME "OpenCDC Analyzer"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "org.opencdc.analyzer"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_INFO_STRING "OpenCDC Analyzer ${PROJECT_VERSION}"
+        MACOSX_BUNDLE_COPYRIGHT "OpenCDC maintainers")
+endif()
 
 install(TARGETS opencdc-gui
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ${OPENCDC_COMPONENT}

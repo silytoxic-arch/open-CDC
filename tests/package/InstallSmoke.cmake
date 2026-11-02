@@ -39,7 +39,25 @@ endif()
 
 if(GUI)
     set(gui "${PREFIX}/bin/opencdc-gui${exe}")
-    if(WIN32)
+    if(APPLE)
+        # the app bundle with Qt deployed into it by macdeployqt: no reference to
+        # the Qt installation it was built with may remain
+        set(gui "${PREFIX}/OpenCDC.app/Contents/MacOS/OpenCDC")
+        file(GLOB qtcore "${PREFIX}/OpenCDC.app/Contents/Frameworks/QtCore.framework")
+        file(GLOB qpa "${PREFIX}/OpenCDC.app/Contents/PlugIns/platforms/libqcocoa.dylib")
+        if(NOT EXISTS "${gui}" OR NOT qtcore OR NOT qpa)
+            message(FATAL_ERROR "app bundle incomplete: gui='${gui}' QtCore='${qtcore}' qcocoa='${qpa}'")
+        endif()
+        execute_process(COMMAND otool -L "${gui}" OUTPUT_VARIABLE libs RESULT_VARIABLE rc)
+        if(NOT rc EQUAL 0 OR libs MATCHES "/opt/homebrew|/usr/local/(opt|Cellar)|/Qt/6")
+            message(FATAL_ERROR "the app still refers to the build machine's Qt:\n${libs}")
+        endif()
+        unset(ENV{DYLD_LIBRARY_PATH})
+        unset(ENV{DYLD_FRAMEWORK_PATH})
+        unset(ENV{QT_PLUGIN_PATH})
+        unset(ENV{QT_QPA_PLATFORM_PLUGIN_PATH})
+        unset(ENV{QT_QPA_PLATFORM}) # macdeployqt ships the cocoa platform plugin
+    elseif(WIN32)
         # windeployqt must have put the Qt runtime next to the executable
         # (Qt6Core.dll, or Qt6Cored.dll in Debug) and the platform plugin under
         # plugins/ (located through bin/qt.conf) or bin/.

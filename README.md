@@ -74,6 +74,16 @@ When CDC analysis can't run (HDL errors, no clocks), the engine, the CLI, the JS
 * Qt ≥ 6.5 with the Widgets and Concurrent modules. Only the GUI needs Qt; configure with `-DOPENCDC_BUILD_GUI=OFF` to build without it.
 * Internet access on first configure. Dependencies come from GitHub via FetchContent; see [third_party/README.md](third_party/README.md) for offline builds.
 
+### macOS (Apple Silicon or Intel)
+
+With the Xcode command line tools (`xcode-select --install`) and [Homebrew](https://brew.sh), one script installs the missing tools (CMake, Ninja, Qt, a current bash), builds Release, runs all tests, packages, and runs the real-project corpora:
+
+```sh
+bash tools/macos/build-macos.sh            # add --quick to skip the corpora
+```
+
+The logs go to `build-logs/` (`macos-summary.txt` is the short version), the packages to `dist/`: `OpenCDC-<version>-macos-<arch>.dmg` with `OpenCDC.app` (Qt deployed into the bundle by macdeployqt), the CLI `bin/opencdc` and `share/opencdc/` (docs, examples), and the same as a `.tar.gz`. By hand: `cmake --preset macos -DCMAKE_PREFIX_PATH=$(brew --prefix qt)`, then `cmake --build build/macos --config Release` and `ctest --test-dir build/macos -C Release`.
+
 ### Windows x64 / Visual Studio 2022
 
 From a "x64 Native Tools Command Prompt for VS 2022" (or PowerShell):
@@ -106,7 +116,7 @@ cpack --config build/<preset>/CPackConfig.cmake -C Release -B dist    # packages
 
 On Windows this produces `OpenCDC-<version>-windows-x64.zip`, and an NSIS installer when `makensis` is on `PATH`. The installer adds a Start-menu entry and can optionally add the CLI to `PATH`. The Qt runtime (deployed by windeployqt) and the Visual C++ runtime are next to the executables, so neither package needs a Qt installation or the VC++ Redistributable. Every CI run uploads these packages as build artifacts (Actions → the run → Artifacts). Programs are in `bin/`; `docs/`, `examples/` and `tools/` are next to it. On Linux, CPack produces a TGZ and a DEB that use the system Qt; data files go to `share/opencdc/`. The CTest test `package.install_smoke` installs the tree and runs the installed CLI and GUI.
 
-### Linux / macOS (development)
+### Linux (development)
 
 ```sh
 cmake --preset linux-gcc            # or linux-clang

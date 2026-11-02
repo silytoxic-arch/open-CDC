@@ -92,6 +92,28 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS (Apple Silicon or Intel) / AppleClang / Ninja Multi-Config",
+      "inherits": "base",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "macos-ci",
+      "displayName": "macOS (warnings as errors)",
+      "inherits": "macos",
+      "cacheVariables": {
+        "OPENCDC_WARNINGS_AS_ERRORS": "ON"
+      }
     }
   ],
   "buildPresets": [
