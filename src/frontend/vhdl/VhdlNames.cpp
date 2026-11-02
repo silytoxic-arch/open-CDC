@@ -1420,6 +1420,7 @@ bool Elaborator::targets(const Expr& e, Ctx& ctx, std::vector<Target>& out, cons
                                                                     : static_cast<std::int64_t>(n - 1 - m);
                             Target d = t;
                             d.dynamic = true;
+                            d.sliceElement = true;
                             d.index = delta == 0 ? rightBits
                                                  : cell(ir::CellKind::Add,
                                                         {rightBits, ir::SigSpec::constant(static_cast<std::uint64_t>(delta), 32)},

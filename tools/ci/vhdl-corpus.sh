@@ -305,6 +305,30 @@ for name, top, d, xci, core_port, groups in [
          "gtyUltraScale+/ip/TenGigEthGtyUltraScale156p25MHzCore.xci", "coreClk", ["tx_mii_clk_0", "rx_clk_out_0"])]:
     tg_sdc(name, core_port, groups)
     surf_project(name, top, surf_deps(top, "TenGigEthCore/" + d) + [tg + xci], name + ".sdc")
+# 1G Ethernet MAC + PCS/PMA (gig_ethernet_pcs_pma): GTP7 core, its wrapper with the MMCM and the quad PLL,
+# SGMII over UltraScale LVDS
+ge = "ethernet/GigEthCore/"
+open(os.path.join(work, "surf_gigeth_gtp7w.sdc"), "w").write(
+    "create_clock -name gtclk -period 8 [get_ports gtClkP]\n"
+    "create_clock -name axil -period 8 [get_ports axiLiteClk]\n"
+    "create_clock -name dma -period 5 [get_ports dmaClk]\n"
+    "set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks gtclk] -group axil -group dma\n")
+open(os.path.join(work, "surf_gigeth_gtp7.sdc"), "w").write(
+    "create_clock -name sys125 -period 8 [get_ports sysClk125]\n"
+    "create_generated_clock -name sys62 -source [get_ports sysClk125] -divide_by 2 [get_ports sysClk62]\n"
+    "create_clock -name axil -period 8 [get_ports axiLiteClk]\n"
+    "create_clock -name dma -period 5 [get_ports dmaClk]\n"
+    "set_clock_groups -asynchronous -group {sys125 sys62} -group axil -group dma\n")
+open(os.path.join(work, "surf_gigeth_lvds.sdc"), "w").write(
+    "create_clock -name sgmii -period 1.6 [get_ports sgmiiClkP]\n"
+    "create_clock -name axil -period 8 [get_ports axilClk]\n"
+    "create_clock -name dma -period 5 [get_ports dmaClk]\n"
+    "set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks sgmii] -group axil -group dma\n")
+for name, top, d, xci in [("surf_gigeth_gtp7w", "GigEthGtp7Wrapper", "gtp7/", "gtp7/ip/GigEthGtp7Core.xci"),
+                          ("surf_gigeth_gtp7", "GigEthGtp7", "gtp7/", "gtp7/ip/GigEthGtp7Core.xci"),
+                          ("surf_gigeth_lvds", "GigEthLvdsUltraScale", "lvdsUltraScale/",
+                           "lvdsUltraScale/ip/GigEthLvdsUltraScaleCore.xci")]:
+    surf_project(name, top, surf_deps(top, "GigEthCore/" + d) + [ge + xci], name + ".sdc")
 # every Transceivers Wizard .xci of surf alone (the IP is the top)
 gtx = []
 for x in sorted(glob.glob(os.path.join(sw, "**", "*.xci"), recursive=True)):
@@ -520,6 +544,12 @@ check surf_tengig_gth7.ocdc.json  "Clocks  : 4 \\(731/731 registers resolved\\).
 check surf_tengig_gthus.ocdc.json "Clocks  : 6 \\(767/767 registers resolved\\).*CLK156_BUFG_GT.O  \\[divider\\] alias=txClockGt.*period=6.20606.*XGMII in txusrclk2.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 53 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 3 warning violation"
 check surf_tengig_gthusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*tx_mii_clk/rx_clk_out 156.25 MHz.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
 check surf_tengig_gtyusp.ocdc.json "Clocks  : 5 \\(580/580 registers resolved\\).*xxv_ethernet:2.5.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 35 crossing path\\(s\\), 23 synchronized.*Rules   : 2 error violation"
+# 1G Ethernet: GMII in userclk2 (GTP7) or clk125_out derived from refclk625 by the IP's MMCM (LVDS); the 14
+# unsynchronized paths are the Gray pointers of the AXI-Lite and MAC asynchronous FIFOs; the wrapper's 34
+# constant registers are ClockManager7's AxiLiteToDrp, whose axilClk SURF leaves unconnected (default '0')
+check surf_gigeth_gtp7w.ocdc.json "Clocks  : 5 \\(690/724 registers resolved\\).*CLKOUT1 .*period=16ns.*gig_ethernet_pcs_pma:16.0.*GMII in userclk2.*CLK-CONSTANT.: 34 register.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 50 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
+check surf_gigeth_gtp7.ocdc.json  "Clocks  : 4 \\(668/668 registers resolved\\).*Summary : 0 error\\(s\\), 0 warning.*CDC     : 50 crossing path\\(s\\), 36 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
+check surf_gigeth_lvds.ocdc.json  "Clocks  : 4 \\(653/653 registers resolved\\).*U_GigEthLvdsUltraScaleCore.clk125_out  \\[divider\\] alias=sysClk125.*period=8ns.*SGMII over UltraScale LVDS.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 47 crossing path\\(s\\), 33 synchronized.*Rules   : 0 error violation\\(s\\), 0 warning violation"
 n=$(cat gtx_count.txt)
 [ "$n" = 30 ] || { echo "::error::expected 30 Transceivers Wizard .xci files in surf, found $n"; fail=1; }
 for f in gtx_*.ocdc.json; do

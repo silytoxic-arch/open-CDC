@@ -1677,3 +1677,218 @@ TEST_CASE("XCI: 10G/25G Ethernet subsystem (xxv_ethernet) PCS/PMA with MII", "[f
     REQUIRE_FALSE(four);
     CHECK(four.error().message.find("C_NUM_OF_CORES 4") != std::string::npos);
 }
+
+namespace {
+
+std::string gigXci(const std::string& inst, std::map<std::string, std::string> over = {}) {
+    std::map<std::string, std::string> p = {{"c_family", "artix7"},        {"c_use_transceiver", "true"},
+                                            {"c_use_lvds", "false"},       {"c_use_tbi", "false"},
+                                            {"c_support_level", "false"},  {"c_is_sgmii", "false"},
+                                            {"c_is_2_5g", "false"},        {"c_rx_gmii_clk_src", "TXOUTCLK"},
+                                            {"c_transceiver_type", "GTPE2"}, {"c_num_of_lanes", "1"}};
+    for (auto& [k, v] : over)
+        p[k] = v;
+    return spirit(inst, "gig_ethernet_pcs_pma", "16.0", {p.begin(), p.end()});
+}
+
+// SURF GigEthGtp7Core (gig_ethernet_pcs_pma 16.0, 1000BASE-X over a GTP, no shared logic), a part of the ports
+const char* kGigGtpComponent =
+    "  component gig\n    port (\n"
+    "      gtrefclk : in std_logic; gtrefclk_bufg : in std_logic; txp : out std_logic; rxp : in std_logic;\n"
+    "      resetdone : out std_logic; cplllock : out std_logic; mmcm_reset : out std_logic;\n"
+    "      txoutclk : out std_logic; rxoutclk : out std_logic; userclk : in std_logic; userclk2 : in std_logic;\n"
+    "      rxuserclk : in std_logic; rxuserclk2 : in std_logic; pma_reset : in std_logic; mmcm_locked : in std_logic;\n"
+    "      independent_clock_bufg : in std_logic; gmii_txd : in std_logic_vector(7 downto 0);\n"
+    "      gmii_tx_en : in std_logic; gmii_rxd : out std_logic_vector(7 downto 0); gmii_rx_dv : out std_logic;\n"
+    "      configuration_vector : in std_logic_vector(4 downto 0); an_interrupt : out std_logic;\n"
+    "      an_restart_config : in std_logic; status_vector : out std_logic_vector(15 downto 0); reset : in std_logic;\n"
+    "      gt0_rxbufstatus_out : out std_logic_vector(2 downto 0); gt0_dmonitorout_out : out std_logic_vector(14 downto 0);\n"
+    "      gt0_drpclk_in : in std_logic; gt0_drpdo_out : out std_logic_vector(15 downto 0); gt0_drpen_in : in std_logic;\n"
+    "      gt0_rxcharisk_out : out std_logic_vector(1 downto 0); gt0_txpolarity_in : in std_logic;\n"
+    "      gt0_txdiffctrl_in : in std_logic_vector(3 downto 0); gt0_rxpolarity_in : in std_logic;\n"
+    "      gt0_txresetdone_out : out std_logic; gt0_loopback_in : in std_logic_vector(2 downto 0);\n"
+    "      signal_detect : in std_logic; gt0_pll0outclk_in : in std_logic; gt0_pll0lock_in : in std_logic;\n"
+    "      gt0_pll0reset_out : out std_logic);\n  end component;\n";
+
+// SURF GigEthLvdsUltraScaleCore (gig_ethernet_pcs_pma 16.2, SGMII over UltraScale LVDS, shared logic)
+const char* kGigLvdsComponent =
+    "  component gl\n    port (\n"
+    "      txn : out std_logic; txp : out std_logic; rxn : in std_logic; rxp : in std_logic;\n"
+    "      mmcm_locked_out : out std_logic; sgmii_clk_r : out std_logic; sgmii_clk_f : out std_logic;\n"
+    "      sgmii_clk_en : out std_logic; clk125_out : out std_logic; clk625_out : out std_logic;\n"
+    "      clk312_out : out std_logic; rst_125_out : out std_logic; refclk625_n : in std_logic;\n"
+    "      refclk625_p : in std_logic; gmii_txd : in std_logic_vector(7 downto 0); gmii_tx_en : in std_logic;\n"
+    "      gmii_tx_er : in std_logic; gmii_rxd : out std_logic_vector(7 downto 0); gmii_rx_dv : out std_logic;\n"
+    "      gmii_rx_er : out std_logic; gmii_isolate : out std_logic;\n"
+    "      configuration_vector : in std_logic_vector(4 downto 0); speed_is_10_100 : in std_logic;\n"
+    "      speed_is_100 : in std_logic; status_vector : out std_logic_vector(15 downto 0); reset : in std_logic;\n"
+    "      signal_detect : in std_logic; idelay_rdy_out : out std_logic);\n  end component;\n";
+
+std::map<std::string, std::string> lvdsParams() {
+    return {{"c_family", "kintexu"}, {"c_use_transceiver", "false"}, {"c_use_lvds", "true"},
+            {"c_support_level", "true"}, {"c_is_sgmii", "true"}};
+}
+
+} // namespace
+
+TEST_CASE("XCI: 1G Ethernet PCS/PMA (gig_ethernet_pcs_pma) over a transceiver", "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(pkg(kGigGtpComponent), "p.vhd");
+    auto m = frontend::modelFromXci(dir.write("gig.xci", gigXci("gig")), ctx);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"OPENCDC_CLOCK_PIN = \"txoutclk\", OPENCDC_CLOCK_PERIOD = 16",
+                          "OPENCDC_CLOCK_PIN = \"rxoutclk\", OPENCDC_CLOCK_PERIOD = 16",
+                          "always @(posedge userclk2[0]) oc_dom_userclk2 <= ^{gmii_txd, gmii_tx_en, "
+                          "configuration_vector, an_restart_config}",
+                          "always @(posedge userclk2[0]) oc_gmii_rxd_q", "always @(posedge userclk2[0]) oc_status_vector_q",
+                          "always @(posedge userclk2[0]) oc_an_interrupt_q",
+                          "always @(posedge userclk[0]) oc_dom_userclk <= ^{gt0_txpolarity_in}",
+                          "always @(posedge userclk[0]) oc_gt0_txresetdone_out_q",
+                          "always @(posedge rxuserclk2[0]) oc_dom_rxuserclk2 <= ^{gt0_rxpolarity_in}",
+                          "always @(posedge rxuserclk2[0]) oc_gt0_rxcharisk_out_q",
+                          "always @(posedge gt0_drpclk_in[0]) oc_gt0_drpdo_out_q",
+                          "opencdc_async_source u_oc_resetdone", "opencdc_async_source u_oc_gt0_dmonitorout_out",
+                          "opencdc_async_source u_oc_gt0_pll0reset_out", "assign txp = 1'b0;"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: resets, signal_detect, the static transceiver controls are read by no register
+    for (const char* p : {"reset", "pma_reset", "signal_detect", "gt0_txdiffctrl_in", "gt0_loopback_in", "mmcm_locked"})
+        CHECK(v.find(std::string(", ") + p + "}") == std::string::npos);
+    CHECK(v.find("{reset") == std::string::npos);
+    CHECK(m.value().summary.find("1000BASE-X, GTPE2, line rate 1.25 Gb/s, TXOUTCLK/RXOUTCLK 62.5 MHz, GMII in userclk2") !=
+          std::string::npos);
+
+    // GMII RX from RXOUTCLK: in rxuserclk2; 2.5G: 156.25 MHz transceiver clocks
+    auto rx = frontend::modelFromXci(
+        dir.write("gr.xci", gigXci("gig", {{"c_rx_gmii_clk_src", "RXOUTCLK"}, {"c_is_2_5g", "true"}})), ctx);
+    REQUIRE(rx);
+    CHECK(rx.value().verilog.find("always @(posedge rxuserclk2[0]) oc_gmii_rxd_q") != std::string::npos);
+    CHECK(rx.value().verilog.find("always @(posedge userclk2[0]) oc_gmii_rxd_q") == std::string::npos);
+    CHECK(rx.value().verilog.find("OPENCDC_CLOCK_PIN = \"txoutclk\", OPENCDC_CLOCK_PERIOD = 6.4") != std::string::npos);
+    CHECK(rx.value().summary.find("2500BASE-X") != std::string::npos);
+}
+
+TEST_CASE("XCI: 1G Ethernet PCS/PMA (gig_ethernet_pcs_pma) SGMII over UltraScale LVDS", "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(pkg(kGigLvdsComponent), "p.vhd");
+    auto m = frontend::modelFromXci(dir.write("gl.xci", gigXci("gl", lvdsParams())), ctx);
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    // the MMCM's outputs are dividers of refclk625: related to it, periods from the reference
+    for (const char* p : {"OPENCDC_CLOCK_PIN = \"clk125_out\", OPENCDC_CLOCK_RATIO = 5.0, OPENCDC_CLOCK_INPUT_PERIOD = 1.6 *)",
+                          "OPENCDC_CLOCK_PIN = \"clk312_out\", OPENCDC_CLOCK_RATIO = 2.0, OPENCDC_CLOCK_INPUT_PERIOD = 1.6 *)",
+                          "OPENCDC_CLOCK_PIN = \"clk625_out\", OPENCDC_CLOCK_RATIO = 1.0, OPENCDC_CLOCK_INPUT_PERIOD = 1.6 *)",
+                          "always @(posedge refclk625_p[0]) oc_clk125_out_d <= ~oc_clk125_out_d;",
+                          "always @(posedge oc_clk125_out_d) oc_dom_clk125_out <= ^{gmii_txd, gmii_tx_en, gmii_tx_er, "
+                          "configuration_vector, speed_is_10_100, speed_is_100}",
+                          "always @(posedge oc_clk125_out_d) oc_gmii_rxd_q", "always @(posedge oc_clk125_out_d) oc_sgmii_clk_en_q",
+                          "always @(posedge oc_clk125_out_d) oc_rst_125_out_q",
+                          "opencdc_async_source u_oc_mmcm_locked_out", "opencdc_async_source u_oc_idelay_rdy_out"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: refclk625_n, reset and signal_detect are read by no register; no independent clock source
+    for (const char* p : {"refclk625_n", "reset}", "signal_detect"})
+        CHECK(v.find(std::string("^{") + p) == std::string::npos);
+    CHECK(v.find("OPENCDC_CLOCK_PIN = \"clk125_out\", OPENCDC_CLOCK_PERIOD") == std::string::npos);
+    CHECK(m.value().summary.find("SGMII over UltraScale LVDS") != std::string::npos);
+}
+
+TEST_CASE("XCI negative: gig_ethernet_pcs_pma configurations that are not modelled", "[frontend][xci][ethernet]") {
+    test::TempDir dir;
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(pkg(kGigGtpComponent), "p.vhd");
+    auto expect = [&](std::map<std::string, std::string> over, const std::string& what) {
+        auto r = frontend::modelFromXci(dir.write("gig.xci", gigXci("gig", std::move(over))), ctx);
+        REQUIRE_FALSE(r);
+        INFO(r.error().message);
+        CHECK(r.error().message.find(what) != std::string::npos);
+    };
+    expect({{"c_use_tbi", "true"}, {"c_use_transceiver", "false"}}, "ten-bit interface (TBI)");
+    expect({{"c_support_level", "true"}}, "shared logic in the core (c_support_level true)");
+    expect({{"c_enable_async_sgmii", "true"}}, "asynchronous SGMII over LVDS");
+    expect({{"c_num_of_lanes", "2"}}, "c_num_of_lanes 2");
+    auto l7 = lvdsParams();
+    l7["c_family"] = "kintex7";
+    expect(l7, "UltraScale with the shared logic in the core only");
+    // MDIO ports, and an LVDS derived clock without its reference port
+    frontend::XciContext odd;
+    odd.vhdlComponents = frontend::vhdlComponentPorts(
+        pkg("  component gig port (userclk2 : in std_logic; mdc : in std_logic; mdio_i : in std_logic); end component;\n"),
+        "p.vhd");
+    auto md = frontend::modelFromXci(dir.write("gm.xci", gigXci("gig")), odd);
+    REQUIRE_FALSE(md);
+    CHECK(md.error().message.find("mdc, mdio_i") != std::string::npos);
+    frontend::XciContext noRef;
+    noRef.vhdlComponents = frontend::vhdlComponentPorts(
+        pkg("  component gl port (clk125_out : out std_logic; gmii_txd : in std_logic_vector(7 downto 0)); end component;\n"),
+        "p.vhd");
+    auto nr = frontend::modelFromXci(dir.write("gn.xci", gigXci("gl", lvdsParams())), noRef);
+    REQUIRE_FALSE(nr);
+    CHECK(nr.error().message.find("clk125_out (from refclk625_p)") != std::string::npos);
+}
+
+namespace {
+
+std::string gigLvdsTop(const std::string& readClk) {
+    return std::string("library ieee;\nuse ieee.std_logic_1164.all;\n"
+                       "entity top is\n  port (refp, refn, clk_a, rxp, rxn : in std_logic; q : out std_logic_vector(7 downto 0));\n"
+                       "end;\narchitecture rtl of top is\n") +
+           kGigLvdsComponent +
+           "  signal c125, c312 : std_logic;\n  signal rxd, r : std_logic_vector(7 downto 0);\nbegin\n"
+           "  u : gl port map (txn => open, txp => open, rxn => rxn, rxp => rxp, mmcm_locked_out => open,\n"
+           "    sgmii_clk_r => open, sgmii_clk_f => open, sgmii_clk_en => open, clk125_out => c125,\n"
+           "    clk625_out => open, clk312_out => c312, rst_125_out => open, refclk625_n => refn, refclk625_p => refp,\n"
+           "    gmii_txd => (others => '0'), gmii_tx_en => '0', gmii_tx_er => '0', gmii_rxd => rxd, gmii_rx_dv => open,\n"
+           "    gmii_rx_er => open, gmii_isolate => open, configuration_vector => (others => '0'),\n"
+           "    speed_is_10_100 => '0', speed_is_100 => '0', status_vector => open, reset => '0',\n"
+           "    signal_detect => '1', idelay_rdy_out => open);\n"
+           "  process (c125) begin if rising_edge(c125) then r <= rxd; end if; end process;\n"
+           "  process (" + readClk + ") begin if rising_edge(" + readClk + ") then q <= r; end if; end process;\n"
+           "end;\n";
+}
+
+} // namespace
+
+TEST_CASE("XCI: gig_ethernet_pcs_pma LVDS clocks derived from the reference in a VHDL design",
+          "[frontend][xci][ethernet]") {
+    auto e2e = [](const std::string& readClk, const std::string& sdc) {
+        test::TempDir dir;
+        engine::ProjectConfig cfg;
+        cfg.name = "gl";
+        cfg.top = "top";
+        cfg.sources = {dir.write("top.vhd", gigLvdsTop(readClk)), dir.write("gl.xci", gigXci("gl", lvdsParams()))};
+        cfg.sourceLibraries = {"", ""};
+        cfg.constraints = {dir.write("c.sdc", sdc)};
+        return run(cfg);
+    };
+    const std::string base = "create_clock -name ref -period 1.6 [get_ports refp]\n"
+                             "create_clock -name a -period 10 [get_ports clk_a]\n"
+                             "set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks ref] -group a\n";
+    // 125 MHz to 312.5 MHz: both from the IP's MMCM, related, no unsynchronized crossing
+    auto rel = e2e("c312", base);
+    REQUIRE(rel->cdc);
+    CHECK(count(*rel, "FE-XCI-MODEL") == 1);
+    CHECK(rel->cdc->stats.unsynchronized == 0);
+    CHECK(rel->cdc->stats.unknownRelation == 0);
+    REQUIRE(rel->clocks);
+    int found = 0;
+    for (const auto& c : rel->clocks->clocks) {
+        if (c.name.ends_with("u.clk125_out") && c.periodNs) {
+            CHECK((*c.periodNs > 7.99 && *c.periodNs < 8.01));
+            ++found;
+        }
+        if (c.name.ends_with("u.clk312_out") && c.periodNs) {
+            CHECK((*c.periodNs > 3.19 && *c.periodNs < 3.21));
+            ++found;
+        }
+    }
+    CHECK(found == 2);
+    // negative: into a clock asynchronous to the reference, the crossing is reported
+    auto other = e2e("clk_a", base);
+    REQUIRE(other->cdc);
+    CHECK(other->cdc->stats.unsynchronized == 1);
+    CHECK(other->cdc->stats.unknownRelation == 0);
+}

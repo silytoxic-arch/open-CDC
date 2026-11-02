@@ -293,6 +293,7 @@ struct Target {
     /// elements of the region whose index is in [maskLow, maskHigh] (32-bit
     /// signed) take the value's element; the value covers the whole region.
     bool masked = false;
+    bool sliceElement = false; ///< one element of a variable-offset slice: takes its part of the value bitwise
     ir::SigSpec maskLow, maskHigh;
 };
 

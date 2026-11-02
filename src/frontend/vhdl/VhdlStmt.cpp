@@ -111,8 +111,9 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
     ProcState& st = *ctx.st;
     if (isZero(st.alive))
         return;
-    if (targets.size() > 1) {
-        // aggregate target: split the value, left target = most significant bits
+    if (targets.size() > 1 || (targets.size() == 1 && targets.front().sliceElement)) {
+        // aggregate target (or the elements of a variable-offset slice, also a
+        // slice of one element): split the value, left target = most significant bits
         SigSpec bits = bitsOf(value, l);
         std::uint32_t total = 0;
         for (const auto& t : targets)
@@ -126,7 +127,9 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
         // least significant part first (same register order as a Verilog concatenation target)
         std::uint32_t lo = 0;
         for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
-            assign({*it}, makeBits(it->type, bits.extract(lo, it->width)), signal, ctx, l);
+            Target one = *it;
+            one.sliceElement = false;
+            assign({one}, makeBits(it->type, bits.extract(lo, it->width)), signal, ctx, l);
             lo += it->width;
         }
         return;

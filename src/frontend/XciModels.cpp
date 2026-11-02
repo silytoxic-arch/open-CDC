@@ -3074,6 +3074,8 @@ struct PortClass {
     Kind kind = Kind::Ignored;
     std::string clock; ///< Sync: the clock (an input or output clock port, or an internal clock's name)
     double mhz = 0;    ///< ClockOut: the frequency, 0 when not configured
+    std::string source; ///< ClockOut: derived from this clock (an input or output clock port, or an internal clock)
+    double ratio = 0;   ///< ClockOut with a source: output period / source period
 };
 
 /// A clock inside the IP that is not a port (a transceiver's recovered clock).
@@ -3135,7 +3137,7 @@ Result<XciModel> portDomainModel(const XciInfo& info, const std::string& vlnv, c
     // output clocks and the internal clocks in use
     std::map<std::string, std::string> clockNet; // lower-case clock name -> net
     for (const auto& p : ports)
-        if (p.out && p.c.kind == PortClass::Kind::ClockOut) {
+        if (p.out && p.c.kind == PortClass::Kind::ClockOut && p.c.source.empty()) {
             clockSource(p.name, p.c.mhz, "oc_" + p.name + "_c");
             v << "  assign " << p.name << " = {" << p.width << "{oc_" << p.name << "_c}};\n";
             clockNet[lower(p.name)] = "oc_" + p.name + "_c";
@@ -3147,11 +3149,37 @@ Result<XciModel> portDomainModel(const XciInfo& info, const std::string& vlnv, c
     for (const auto& p : ports)
         if (p.c.kind == PortClass::Kind::Sync)
             domains.insert(lower(p.c.clock));
+    std::set<std::string> sources; // the clocks derived clocks come from
+    for (const auto& p : ports)
+        if (p.out && p.c.kind == PortClass::Kind::ClockOut && !p.c.source.empty())
+            sources.insert(lower(p.c.source));
     for (const auto& ic : internals)
-        if (domains.contains(lower(ic.name)) && !clockNet.contains(lower(ic.name))) {
+        if ((domains.contains(lower(ic.name)) || sources.contains(lower(ic.name))) &&
+            !clockNet.contains(lower(ic.name))) {
             clockSource(ic.name, ic.mhz, "oc_" + ic.name + "_ic");
             clockNet[lower(ic.name)] = "oc_" + ic.name + "_ic";
         }
+    // derived output clocks: a divider register on the source clock (an MMCM's
+    // outputs, related to its input), whose period the clock analysis computes
+    std::string noSource;
+    for (const auto& p : ports) {
+        if (!p.out || p.c.kind != PortClass::Kind::ClockOut || p.c.source.empty())
+            continue;
+        const auto it = clockNet.find(lower(p.c.source));
+        if (it == clockNet.end()) {
+            noSource += (noSource.empty() ? "" : ", ") + p.name + " (from " + p.c.source + ")";
+            continue;
+        }
+        const std::string w = "oc_" + p.name + "_d";
+        v << "  (* OPENCDC_CLOCK_PIN = \"" << p.name << "\", OPENCDC_CLOCK_RATIO = " << fmtReal(p.c.ratio);
+        if (p.c.mhz > 0)
+            v << ", OPENCDC_CLOCK_INPUT_PERIOD = " << fmtReal(1000.0 / (p.c.mhz * p.c.ratio));
+        v << " *) reg " << w << " = 1'b0;\n  always @(posedge " << it->second << ") " << w << " <= ~" << w
+          << ";\n  assign " << p.name << " = {" << p.width << "{" << w << "}};\n";
+        clockNet[lower(p.name)] = w;
+    }
+    if (!noSource.empty())
+        return unsupportedIp("derived clocks without their source clock port: " + noSource);
     std::string missing;
     for (const auto& d : domains) {
         const auto it = clockNet.find(d);
@@ -3232,19 +3260,19 @@ Result<XciModel> tenGigEthPcsPma(const XciInfo& info) {
     using K = PortClass::Kind;
     PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
         if (n == "coreclk" || n == "dclk" || n == "txusrclk" || n == "txusrclk2")
-            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0});
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
         if (n == "txoutclk" || n == "rxrecclk_out")
-            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, gtMhz}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, gtMhz, {}, 0}) : std::nullopt;
         if (n == "xgmii_rxd" || n == "xgmii_rxc")
-            return PortClass{K::Sync, rxSource, 0};
+            return PortClass{K::Sync, rxSource, 0, {}, 0};
         if (core.contains(n))
-            return PortClass{K::Sync, txSource, 0};
+            return PortClass{K::Sync, txSource, 0, {}, 0};
         if (n.starts_with("drp_") || n.starts_with("core_to_gt_drp") || n.starts_with("gt_drp"))
-            return PortClass{K::Sync, "dclk", 0};
+            return PortClass{K::Sync, "dclk", 0, {}, 0};
         if (n == "qpll0reset" || n == "reset_tx_bufg_gt")
-            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
         if (ignored.contains(n))
-            return PortClass{K::Ignored, {}, 0};
+            return PortClass{K::Ignored, {}, 0, {}, 0};
         std::string g;
         if (n.starts_with("gt0_"))
             g = n.substr(4);
@@ -3253,13 +3281,13 @@ Result<XciModel> tenGigEthPcsPma(const XciInfo& info) {
         if (g.empty())
             return std::nullopt;
         if (txGt.contains(g))
-            return PortClass{K::Sync, "txusrclk2", 0};
+            return PortClass{K::Sync, "txusrclk2", 0, {}, 0};
         if (rxGt.contains(g))
-            return PortClass{K::Sync, "rxrecclk_out", 0};
+            return PortClass{K::Sync, "rxrecclk_out", 0, {}, 0};
         if (asyncGt.contains(g))
-            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
         if (ignoredGt.contains(g))
-            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0});
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
         return std::nullopt;
     };
     auto r = portDomainModel(info, vlnv, classify, {{"rxrecclk_out", gtMhz}});
@@ -3324,40 +3352,40 @@ Result<XciModel> xxvEthernet(const XciInfo& info) {
         // per-core ports end with _0
         const std::string n = full.ends_with("_0") ? full.substr(0, full.size() - 2) : full;
         if (n == "rx_core_clk" || n == "dclk" || n == "gt_drpclk")
-            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0});
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
         if (n == "tx_mii_clk" || n == "rx_clk_out")
-            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, miiMhz}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, miiMhz, {}, 0}) : std::nullopt;
         if (n == "rxrecclkout")
-            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, 0}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, 0, {}, 0}) : std::nullopt;
         const std::string tx = full.ends_with("_0") ? "tx_mii_clk_0" : "tx_mii_clk";
         const std::string rxs = full.ends_with("_0") ? "rx_clk_out_0" : "rx_clk_out";
         const std::string rxc = full.ends_with("_0") ? "rx_core_clk_0" : "rx_core_clk";
         if (n == "tx_mii_d" || n == "tx_mii_c" || n.starts_with("ctl_tx_") || n.starts_with("stat_tx_"))
-            return PortClass{K::Sync, tx, 0};
+            return PortClass{K::Sync, tx, 0, {}, 0};
         if (n == "rx_mii_d" || n == "rx_mii_c")
-            return PortClass{K::Sync, rxc, 0};
+            return PortClass{K::Sync, rxc, 0, {}, 0};
         if (n.starts_with("ctl_rx_") || n.starts_with("stat_rx_"))
-            return PortClass{K::Sync, rxs, 0};
+            return PortClass{K::Sync, rxs, 0, {}, 0};
         if (n == "gt_reset_tx_done_out" || n == "gt_reset_rx_done_out" || n == "gtwiz_reset_qpll0reset_out" ||
             n == "gtwiz_reset_qpll1reset_out")
-            return out ? std::optional<PortClass>(PortClass{K::Sync, "dclk", 0}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::Sync, "dclk", 0, {}, 0}) : std::nullopt;
         if (n == "gtpowergood_out")
-            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
         if (n.starts_with("gt_drp"))
-            return PortClass{K::Sync, full.ends_with("_0") ? "gt_drpclk_0" : "gt_drpclk", 0};
+            return PortClass{K::Sync, full.ends_with("_0") ? "gt_drpclk_0" : "gt_drpclk", 0, {}, 0};
         if (ignored.contains(n))
-            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0});
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
         if (!n.starts_with("gt_"))
             return std::nullopt;
         const std::string g = n.substr(3);
         if (txGt.contains(g))
-            return PortClass{K::Sync, tx, 0};
+            return PortClass{K::Sync, tx, 0, {}, 0};
         if (rxGt.contains(g))
-            return PortClass{K::Sync, rxs, 0};
+            return PortClass{K::Sync, rxs, 0, {}, 0};
         if (asyncGt.contains(g))
-            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0}) : std::nullopt;
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
         if (ignoredGt.contains(g))
-            return PortClass{K::Ignored, {}, 0};
+            return PortClass{K::Ignored, {}, 0, {}, 0};
         return std::nullopt;
     };
     auto r = portDomainModel(info, vlnv, classify, {});
@@ -3369,6 +3397,148 @@ Result<XciModel> xxvEthernet(const XciInfo& info) {
     r.value().notes.push_back("TX MII and TX control/status are in tx_mii_clk, RX MII in rx_core_clk, RX control/status "
                               "in rx_clk_out (PG210); tx_mii_clk and rx_clk_out are clocks of their own; the "
                               "transceiver reset helper's outputs are in dclk");
+    return r;
+}
+
+/// 1G/2.5G Ethernet PCS/PMA or SGMII (gig_ethernet_pcs_pma, PG047) with a
+/// device transceiver and without shared logic, or as synchronous SGMII over
+/// UltraScale LVDS with shared logic: GMII, configuration and status in the
+/// GMII clock (userclk2 or clk125_out); transceiver debug ports in the
+/// transceiver's user clocks; the DRP in gt0_drpclk_in; TXOUTCLK/RXOUTCLK as
+/// clocks of their own; the LVDS clocks derived from refclk625 by the IP's MMCM.
+Result<XciModel> gigEthernetPcsPma(const XciInfo& info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const auto flag = [&](const std::string& k) { return lower(text(m, k, "false")) == "true"; };
+    const auto unsupportedIp = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): " + why,
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    };
+    const bool lvds = flag("c_use_lvds");
+    const bool gt = flag("c_use_transceiver");
+    const bool shared = flag("c_support_level");
+    const bool g25 = flag("c_is_2_5g");
+    const std::string family = lower(text(m, "c_family", ""));
+    const bool series7 = family.find('7') != std::string::npos || family == "zynq";
+    if (flag("c_use_tbi") || (!lvds && !gt))
+        return unsupportedIp("only the device transceiver and the UltraScale LVDS variants are modelled, not the "
+                             "ten-bit interface (TBI) to an external SerDes");
+    if (flag("c_enable_async_sgmii") || flag("c_enable_async_lvds") || flag("c_enable_async_lvds_rx_only"))
+        return unsupportedIp("asynchronous SGMII over LVDS is not modelled");
+    if (gt && shared)
+        return unsupportedIp("the transceiver variant with the shared logic in the core (c_support_level true) is not "
+                             "modelled: its user clocks come from an MMCM inside the IP; generate the core without "
+                             "the shared logic");
+    if (lvds && (series7 || !shared))
+        return unsupportedIp("SGMII over LVDS is modelled for UltraScale with the shared logic in the core only "
+                             "(c_family '" + family + "', c_support_level " + text(m, "c_support_level", "?") + ")");
+    if (num(m, "c_num_of_lanes", 1) != 1)
+        return unsupportedIp("only one lane is modelled (c_num_of_lanes " + text(m, "c_num_of_lanes", "?") + ")");
+    // the transceiver runs a 16-bit (2-byte) internal data path, 8b/10b on the line:
+    // TXOUTCLK = line rate / 20 = 62.5 MHz at 1.25 Gb/s, 156.25 MHz at 3.125 Gb/s
+    const double lineGbps = g25 ? 3.125 : 1.25;
+    const double gtMhz = lineGbps * 1000.0 / 20.0;
+    const bool rxRecovered = lower(text(m, "c_rx_gmii_clk_src", "TXOUTCLK")) == "rxoutclk";
+    const std::string gmii = lvds ? "clk125_out" : "userclk2";
+    const std::string gmiiRx = lvds || !rxRecovered ? gmii : "rxuserclk2";
+    std::set<std::string> have;
+    for (const auto& b : info.ports)
+        have.insert(lower(b.name));
+    // the transceiver's TXUSRCLK2: userclk (2-byte interface)
+    const std::string txUser = have.contains("userclk") ? "userclk" : gmii;
+    const std::string rxUser = have.contains("rxuserclk2") ? "rxuserclk2" : txUser;
+    static const std::set<std::string> gmiiPorts = {
+        "gmii_txd",     "gmii_tx_en",           "gmii_tx_er",   "gmii_isolate",        "configuration_vector",
+        "configuration_valid", "status_vector", "an_interrupt", "an_adv_config_vector", "an_adv_config_val",
+        "an_restart_config",   "speed_is_10_100", "speed_is_100", "basex_or_sgmii",    "link_timer_value",
+        "link_timer_basex",    "link_timer_sgmii", "sgmii_clk_r", "sgmii_clk_f",       "sgmii_clk_en",
+        "rst_125_out"};
+    static const std::set<std::string> txGt = {"txpolarity", "txprbssel", "txprbsforceerr", "txbufstatus",
+                                               "txresetdone"};
+    static const std::set<std::string> rxGt = {
+        "rxpolarity",      "rxprbssel",      "rxprbscntreset", "rxprbserr",  "rxbufstatus", "rxchariscomma",
+        "rxcharisk",       "rxbyteisaligned", "rxbyterealign", "rxcommadet", "rxdisperr",   "rxnotintable",
+        "rxresetdone"};
+    static const std::set<std::string> asyncGt = {"dmonitorout",   "eyescandataerror", "rxpmaresetdone",
+                                                  "txpmaresetdone", "rxmonitorout",     "cplllock",
+                                                  "pll0reset",     "pll1reset",        "qpll0reset"};
+    static const std::set<std::string> ignoredGt = {
+        "txdiffctrl",   "txinhibit",      "txpostcursor", "txprecursor",  "txpmareset",    "txpcsreset",
+        "rxpmareset",   "rxpcsreset",     "rxbufreset",   "rxcdrhold",    "rxlpmhfhold",   "rxlpmlfhold",
+        "rxlpmreset",   "rxlpmhfoverden", "rxdfelpmreset", "rxlpmen",     "rxmonitorsel",  "eyescanreset",
+        "eyescantrigger", "loopback",     "pll0outclk",   "pll0outrefclk", "pll1outclk",   "pll1outrefclk",
+        "pll0refclklost", "pll0lock",     "pll1lock",     "qplloutclk",   "qplloutrefclk", "qplllock",
+        "qpll0outclk",  "qpll0outrefclk", "qpll0lock"};
+    static const std::set<std::string> ignored = {"reset", "pma_reset", "mmcm_locked", "signal_detect",
+                                                  "txp",   "txn",       "rxp",         "rxn",
+                                                  "refclk625_n", "gtrefclk_n"};
+    static const std::set<std::string> asyncOut = {"resetdone", "cplllock", "mmcm_reset", "mmcm_locked_out",
+                                                   "idelay_rdy_out", "gtpowergood"};
+    using K = PortClass::Kind;
+    const auto inClock = [](bool out) {
+        return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+    };
+    const auto sync = [](const std::string& c) { return std::optional<PortClass>(PortClass{K::Sync, c, 0, {}, 0}); };
+    const auto async = [](bool out) {
+        return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
+    };
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (!lvds && (n == "gtrefclk" || n == "gtrefclk_bufg" || n == "independent_clock_bufg" || n == "userclk" ||
+                      n == "userclk2" || n == "rxuserclk" || n == "rxuserclk2" || n == "gt0_drpclk_in"))
+            return inClock(out);
+        if (!lvds && (n == "txoutclk" || n == "rxoutclk"))
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, gtMhz, {}, 0}) : std::nullopt;
+        if (lvds && n == "refclk625_p")
+            return inClock(out);
+        // UltraScale LVDS: the MMCM makes 625, 312.5 and 125 MHz from the 625 MHz reference
+        if (lvds && (n == "clk625_out" || n == "clk312_out" || n == "clk125_out")) {
+            const double mhz = n == "clk625_out" ? 625.0 : n == "clk312_out" ? 312.5 : 125.0;
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, mhz, "refclk625_p", 625.0 / mhz})
+                       : std::nullopt;
+        }
+        if (n == "gmii_rxd" || n == "gmii_rx_dv" || n == "gmii_rx_er")
+            return sync(gmiiRx);
+        if (gmiiPorts.contains(n))
+            return sync(gmii);
+        if (asyncOut.contains(n))
+            return async(out);
+        if (ignored.contains(n))
+            return out && n != "txp" && n != "txn" ? std::nullopt
+                                                  : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
+        if (lvds || !n.starts_with("gt0_"))
+            return std::nullopt;
+        std::string g = n.substr(4);
+        if (g.ends_with("_in") || g.ends_with("_out"))
+            g = g.substr(0, g.rfind('_'));
+        if (g.starts_with("drp"))
+            return sync("gt0_drpclk_in");
+        if (txGt.contains(g))
+            return sync(txUser);
+        if (rxGt.contains(g))
+            return sync(rxUser);
+        if (asyncGt.contains(g))
+            return async(out);
+        if (ignoredGt.contains(g))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    r.value().summary =
+        std::string(flag("c_is_sgmii") ? "SGMII" : g25 ? "2500BASE-X" : "1000BASE-X") +
+        (lvds ? " over UltraScale LVDS, clk125_out/clk312_out/clk625_out from refclk625"
+              : ", " + text(m, "c_transceiver_type", "transceiver") + ", line rate " + fmtReal(lineGbps) +
+                    " Gb/s, TXOUTCLK/RXOUTCLK " + fmtReal(gtMhz) + " MHz") +
+        ", GMII in " + gmii + (gmiiRx != gmii ? " (RX in " + gmiiRx + ")" : "");
+    r.value().notes.push_back(
+        lvds ? "GMII, configuration and status are in clk125_out (PG047); clk125_out, clk312_out and clk625_out are "
+               "derived from refclk625 by the IP's MMCM; reset and signal_detect are synchronized in the IP"
+             : "GMII, configuration and status are in userclk2 (PG047), GMII RX in rxuserclk2 when RXOUTCLK is its "
+               "clock source; transceiver TX/RX debug ports in userclk / rxuserclk2, the DRP in gt0_drpclk_in; "
+               "TXOUTCLK and RXOUTCLK are clocks of their own; reset, pma_reset and signal_detect are synchronized "
+               "in the IP");
     return r;
 }
 
@@ -3422,6 +3592,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return tenGigEthPcsPma(info);
     if (info.name == "xxv_ethernet")
         return xxvEthernet(info);
+    if (info.name == "gig_ethernet_pcs_pma")
+        return gigEthernetPcsPma(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +

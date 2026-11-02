@@ -938,6 +938,40 @@ TEST_CASE("VHDL: slice target with a variable offset and a fixed width", "[vhdl]
     CHECK(bad.count("VHDL-NOT-STATIC") == 1);
 }
 
+TEST_CASE("VHDL: slice target with a variable offset and a width of one element", "[vhdl][elab]") {
+    // SURF AxiStreamResize with one-byte slave lanes:
+    // v.obMaster.tKeep((SLV_BYTES_C*idx)+(SLV_BYTES_C-1) downto (SLV_BYTES_C*idx)) := ibM.tKeep(SLV_BYTES_C-1 downto 0)
+    auto one = [](const std::string& value) {
+        return elaborate(lib("entity t is port (clk : in std_logic; n : in natural range 0 to 7;\n"
+                             "  d : in std_logic_vector(1 downto 0); q : out std_logic_vector(7 downto 0)); end;\n"
+                             "architecture rtl of t is\n"
+                             "  constant W : natural := 1;\n"
+                             "  signal r : std_logic_vector(7 downto 0) := (others => '0');\n"
+                             "begin\n"
+                             "  process (clk)\n"
+                             "    variable v : std_logic_vector(7 downto 0);\n"
+                             "  begin\n"
+                             "    if rising_edge(clk) then\n"
+                             "      v := r;\n"
+                             "      v((W*n)+(W-1) downto (W*n)) := " + value + ";\n"
+                             "      r <= v;\n"
+                             "    end if;\n"
+                             "  end process;\n"
+                             "  q <= r;\n"
+                             "end;\n"),
+                         "t");
+    };
+    auto r = one("d(W-1 downto 0)");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-TYPE") == 0);
+    CHECK(r.has("dyn_insert"));
+    // negative: a value of two elements does not fit the one-element slice
+    auto bad = one("d");
+    CHECK(bad.errors() == 1);
+    CHECK(bad.count("VHDL-LENGTH") == 1);
+}
+
 TEST_CASE("VHDL: 'use lib.pkg;' makes the package name visible for expanded names", "[vhdl][elab]") {
     const std::string pkg = lib("package dbg is\n"
                                 "  type dbg_t is record a : std_logic; b : std_logic_vector(1 downto 0); end record;\n"
