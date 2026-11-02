@@ -69,7 +69,7 @@ note "cmake $(cmake --version | head -1 | awk '{print $3}'), ninja $(ninja --ver
 
 BUILD="$SRC/build/macos"
 # 编译器或最低系统版本变了时，旧的配置缓存不能再用
-if [ -f "$BUILD/CMakeCache.txt" ] && ! grep -q "CMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.3" "$BUILD/CMakeCache.txt"; then
+if [ -f "$BUILD/CMakeCache.txt" ] && ! grep -q "CMAKE_OSX_DEPLOYMENT_TARGET:STRING=14.0" "$BUILD/CMakeCache.txt"; then
     rm -rf "$BUILD"
 fi
 COMPILER_ID="$(clang++ --version | head -1)"
@@ -97,6 +97,7 @@ step "命令行冒烟测试"
 "$BUILD/bin/Release/opencdc" analyze examples/smoke/smoke.ocdc.json -q | grep -E "^(Clocks|CDC|Rules)" | tee -a "$SUMMARY"
 
 step "打包（cpack）"
+export COPYFILE_DISABLE=1 # no ._ AppleDouble files in the archives
 rm -rf "$BUILD/_CPack_Packages"
 (cd "$BUILD" && cpack -C Release) 2>&1 | tee build-logs/macos-cpack-$STAMP.log
 [ "${PIPESTATUS[0]}" = 0 ] || fail "打包"

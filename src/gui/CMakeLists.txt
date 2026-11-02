@@ -54,4 +54,7 @@ if(WIN32 OR APPLE)
         NO_TRANSLATIONS
         NO_UNSUPPORTED_PLATFORM_ERROR)
     install(SCRIPT ${_opencdc_deploy_script} COMPONENT ${OPENCDC_COMPONENT})
+    if(APPLE)
+        install(SCRIPT "${PROJECT_SOURCE_DIR}/cmake/MacDeployPrune.cmake" COMPONENT ${OPENCDC_COMPONENT})
+    endif()
 endif()

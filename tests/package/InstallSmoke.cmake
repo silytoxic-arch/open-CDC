@@ -52,6 +52,18 @@ if(GUI)
         if(NOT rc EQUAL 0 OR libs MATCHES "/opt/homebrew|/usr/local/(opt|Cellar)|/Qt/6")
             message(FATAL_ERROR "the app still refers to the build machine's Qt:\n${libs}")
         endif()
+        # only the plugins OpenCDC needs, without the frameworks of the others
+        foreach(unwanted "PlugIns/platforminputcontexts" "Frameworks/QtQuick.framework" "Frameworks/QtQml.framework"
+                         "PlugIns/imageformats/libqpdf.dylib")
+            if(EXISTS "${PREFIX}/OpenCDC.app/Contents/${unwanted}")
+                message(FATAL_ERROR "deployed although not needed: ${unwanted}")
+            endif()
+        endforeach()
+        execute_process(COMMAND codesign --verify --deep --strict "${PREFIX}/OpenCDC.app"
+            RESULT_VARIABLE rc ERROR_VARIABLE err)
+        if(NOT rc EQUAL 0)
+            message(FATAL_ERROR "the app bundle's signature does not verify: ${err}")
+        endif()
         unset(ENV{DYLD_LIBRARY_PATH})
         unset(ENV{DYLD_FRAMEWORK_PATH})
         unset(ENV{QT_PLUGIN_PATH})

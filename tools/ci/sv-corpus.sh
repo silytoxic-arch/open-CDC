@@ -26,6 +26,12 @@ fetch() { # name url commit
         git init -q "$1"
         git -C "$1" remote add origin "$2"
     fi
+    # a global Git LFS filter (git lfs install) without git-lfs on PATH must not
+    # break the checkout: the analyzed sources are no LFS objects
+    git -C "$1" config filter.lfs.required false
+    git -C "$1" config filter.lfs.process ""
+    git -C "$1" config filter.lfs.smudge cat
+    git -C "$1" config filter.lfs.clean cat
     git -C "$1" fetch -q --depth 1 origin "$3"
     git -C "$1" checkout -q FETCH_HEAD
 }

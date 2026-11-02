@@ -43,6 +43,16 @@ else()
     set(OPENCDC_DATA_DIR "${CMAKE_INSTALL_DATADIR}/opencdc")
 endif()
 
+if(APPLE)
+    # Apple's linker warns about static libraries that CMake repeats on the link
+    # line for their mutual dependencies; the repetition is intended.
+    include(CheckLinkerFlag)
+    check_linker_flag(CXX "LINKER:-no_warn_duplicate_libraries" OPENCDC_LD_NO_DUP_WARN)
+    if(OPENCDC_LD_NO_DUP_WARN)
+        add_link_options("LINKER:-no_warn_duplicate_libraries")
+    endif()
+endif()
+
 include(CompilerWarnings)
 include(Dependencies)
 include(NoQtInCore)
