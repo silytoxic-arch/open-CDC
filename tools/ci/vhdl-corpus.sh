@@ -39,7 +39,19 @@ fetch() { # name url commit
     git -C "$1" config filter.lfs.process ""
     git -C "$1" config filter.lfs.smudge cat
     git -C "$1" config filter.lfs.clean cat
-    git -C "$1" fetch -q --depth 1 origin "$3"
+    # already at the pinned commit with a clean tree: no network needed
+    if [ "$(git -C "$1" rev-parse -q --verify HEAD 2>/dev/null)" = "$3" ] &&
+       [ -z "$(git -C "$1" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        return 0
+    fi
+    # a network hiccup (TLS or connection timeout) must not fail the run: retry
+    local n
+    for n in 1 2 3 4; do
+        git -C "$1" fetch -q --depth 1 origin "$3" && break
+        [ "$n" = 4 ] && { echo "::error::cannot fetch $2 ($3)"; return 1; }
+        echo "fetch $1 failed (attempt $n), retrying in $((n * 10)) s"
+        sleep $((n * 10))
+    done
     git -C "$1" checkout -q -f FETCH_HEAD # -f: files of an interrupted earlier checkout
 }
 fetch open-logic https://github.com/open-logic/open-logic d9f123aae1c6022288782668067311f9794da0a2
