@@ -9,7 +9,9 @@ add_library(opencdc_core STATIC
     Result.h
     SourceLocation.h
     TextEncoding.cpp
-    TextEncoding.h)
+    TextEncoding.h
+    Zip.cpp
+    Zip.h)
 
 target_include_directories(opencdc_core PUBLIC
     "${PROJECT_SOURCE_DIR}/src"

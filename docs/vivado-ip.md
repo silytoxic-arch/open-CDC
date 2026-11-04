@@ -21,6 +21,11 @@ Both formats of the file are read:
 - XML (IP-XACT), written by Vivado up to 2020.1;
 - JSON, written by Vivado 2020.2 and later.
 
+A core container (`.xcix`, a ZIP archive of the IP directory: the `.xci`, its
+component file and output products) is read as well: it is unpacked into a
+temporary directory and its `.xci` modelled as above (the model's note names
+the container).
+
 The models use the `C_*` model parameters of the configuration. In the JSON
 format, the port list (`boundary`) is taken as it is. Next to an XML `.xci`,
 Vivado also writes the IP's component file `<instance>.xml` (IP-XACT): when it
@@ -61,6 +66,7 @@ same name are not used. The model's note names the declaration it used.
 | AXI DMA (`xilinx.com:ip:axi_dma`) in direct register mode | Ports from the instance. PG021: the AXI4-Lite registers, `axi_resetn` and the interrupts (`mm2s_introut`, `s2mm_introut`) in `s_axi_lite_aclk`; with asynchronous clocks (`C_PRMRY_IS_ACLK_ASYNC` 1) the MM2S channel (`m_axi_mm2s_*`, `m_axis_mm2s_*`, `mm2s_prmry_reset_out_n`) in `m_axi_mm2s_aclk` and the S2MM channel in `m_axi_s2mm_aclk`, the IP crossing between them; with synchronous clocks PG021 requires one clock on all clock ports, so every port is in `s_axi_lite_aclk` and another clock on `m_axi_*_aclk` shows as crossings into the IP; `axi_dma_tstvec` is asynchronous. Not modelled: scatter gather, the multichannel DMA. Verified with Digilent's usb2device. |
 | AXI Clock Converter (`xilinx.com:ip:axi_clock_converter`) | PG164: the slave interface and `s_axi_aresetn` in `s_axi_aclk`, the master interface and `m_axi_aresetn` in `m_axi_aclk`; the IP crosses between them (asynchronous FIFOs, or a synchronous integer ratio). Ports from the instance or, for an XML `.xci` instantiated from Verilog, from the configuration: AXI4 (8-bit lengths, region, QoS), AXI3 (4-bit lengths, 2-bit lock, QoS, WID) or AXI4-Lite, `C_AXI_ID_WIDTH`/`ADDR`/`DATA` widths, user signals when enabled. Verified with the Loongson NSCSCC SoC (NonTrivialMIPS). |
 | AXI Crossbar (`xilinx.com:ip:axi_crossbar`) | PG059: one clock, `aclk`, for every interface and `aresetn`. Ports from the instance or from the configuration (as the clock converter, `C_NUM_SLAVE_SLOTS`/`C_NUM_MASTER_SLOTS` interfaces concatenated in each port). Verified with the Loongson NSCSCC SoC (NonTrivialMIPS). |
+| AXI Interconnect (`xilinx.com:ip:axi_interconnect` 1.x) | PG059: each slave port `Sxx_AXI_*` and the master port `M00_AXI_*` in their own clock (`Sxx_AXI_ACLK`, `M00_AXI_ACLK`), with the reset outputs `Sxx_AXI_ARESET_OUT_N`; `INTERCONNECT_ARESETN` in `INTERCONNECT_ACLK`; the IP crosses between the clocks (the summary lists the ports configured asynchronous, `C_Sxx_AXI_IS_ACLK_ASYNC`). The ports come from the instance (JSON `.xci`, component file or VHDL component declaration). Verified with the Loongson chiplab SoC. |
 | ILA (`xilinx.com:ip:ila`) | Inputs only (`clk`, `probe<i>`); `trig_out` and `trig_in_ack` are in the `clk` domain. Constraints that refer to the inside of debug cores (`*ila_core_inst/*`, `dbg_hub`) are noted (`CON-UNMATCHED` info), not warned. |
 | VIO (`xilinx.com:ip:vio`) | `probe_out<i>` are registers in the `clk` domain with their initial value: VIO synchronizes the values set over JTAG to `clk`. `probe_in<i>` are inputs only. |
 

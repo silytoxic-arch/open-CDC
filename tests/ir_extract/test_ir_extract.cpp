@@ -898,3 +898,34 @@ TEST_CASE("Asynchronous reset in a named block with a local declaration", "[extr
                         "endmodule\n");
     CHECK(init.countCode("IR-AMBIGUOUS-CLOCK") == 1);
 }
+
+TEST_CASE("Multi-dimensional unpacked arrays are flattened", "[extract][array]") {
+    // open-la500 icache: wire [7:0] way_bank_addra [1:0][3:0], assigned per [i][j] in nested generate loops
+    auto e = extract("module t(input clk, input [7:0] a, input s, output [7:0] y, output reg [7:0] q);\n"
+                     "  wire [7:0] b [1:0][3:0];\n"
+                     "  reg  [7:0] m [1:0][3:0];\n"
+                     "  genvar i, j;\n"
+                     "  for (i = 0; i < 2; i = i + 1) begin: gi\n"
+                     "    for (j = 0; j < 4; j = j + 1) begin: gj\n"
+                     "      assign b[i][j] = a + i * 4 + j;\n"
+                     "    end\n"
+                     "  end\n"
+                     "  always @(posedge clk) begin\n"
+                     "    m[s][2] <= b[1][3];\n"
+                     "    q <= m[1][2];\n"
+                     "  end\n"
+                     "  assign y = b[s][1];\n"
+                     "endmodule\n");
+    REQUIRE(e.design);
+    CHECK(e.countCode("IR-UNSUPPORTED-TYPE") == 0);
+    CHECK(e.countCode("IR-UNSUPPORTED-LVALUE") == 0);
+    // b[1][3]: outer element 1 (32 bits up), inner element 3 (24 bits up)
+    CHECK(e.has("wire [32 x 2] b"));
+    CHECK(e.contains("b{56+:8} = $add$9[7:0]"));
+    CHECK(e.has("reg q <= m{48+:8} @(posedge clk)"));
+    CHECK(e.contains("dyn_select<32@1:0>(A=b, S=s)"));
+    // negative: an array of a non-integral element type is still reported
+    auto r = extract("module t2(input clk, input real d, output o);\n  real r [1:0];\n  assign o = 1'b0;\nendmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(r.countCode("IR-UNSUPPORTED-TYPE") >= 1);
+}

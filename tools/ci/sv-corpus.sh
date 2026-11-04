@@ -84,6 +84,11 @@ fetch_sparse() { # name url commit dir...
 fetch_sparse nontrivial-mips https://github.com/trivialmips/nontrivial-mips 8e83643c22a3ba7612a9bb9cec93292dad618ab5 \
     loongson/soc_axi_func/rtl src
 fetch nontrivial-mips/src/asic/aes https://github.com/secworks/aes a2502af731600cb20ddf6d8ed11a95804f011536
+# Loongson chiplab (Mulan PSL v2): the SoC of the loongson board with open-la500 (Mulan PSL v2, the GitHub mirror of
+# the gitee submodule at the recorded commit)
+fetch_sparse chiplab https://github.com/loongson-community/chiplab 810be643c83a47c26c7f06de2c3be652c9f44f73 \
+    IP/AMBA IP/APB_DEV IP/CONFREG IP/DEBUG IP/DMA IP/MAC IP/SPI IP/xilinx_ip/2023.2 chip/soc_demo/loongson fpga/loongson
+fetch chiplab/IP/myCPU https://github.com/loongson-community/open-la500 9f42fa69b7210693ba3aa663fce33a78de3824b8
 
 cat > axi_cdc_top.sv <<'SV'
 module top (input logic src_clk, input logic src_rst_n, input logic dst_clk, input logic dst_rst_n);
@@ -292,6 +297,20 @@ json.dump({"format": "opencdc-project", "version": 1, "name": "soc_axi_func", "t
            "includeDirs": [nt + "/src", nt + "/src/cpu", nt + "/src/utils"], "constraints": ["soc_axi_func.sdc"]},
           open("soc_axi_func.ocdc.json", "w"), indent=1)
 PY
+# chiplab soc_top (loongson board): the source list of the Vivado project (system_run.xpr), the CPU sources and its
+# block RAM .xcix, the project's own constraints (soc_up.xdc, with Vivado's clock names clk_pll_i and clk_out2_clk_pll_33)
+python3 - chiplab <<'PY'
+import glob, json, re, sys
+c = sys.argv[1]
+x = open(c + "/fpga/loongson/2023.2/system_run.xpr").read()
+paths = sorted(set(p.replace("$PPRDIR/../../../", c + "/") for p in re.findall(r'Path="([^"]*)"', x)))
+src = [p for p in paths if p.endswith((".v", ".xci", ".xcix")) and
+       not p.endswith("axi_clock_converter_0/axi_clock_converter_0/axi_clock_converter_0.xci")]
+src += sorted(glob.glob(c + "/IP/myCPU/*.v")) + sorted(glob.glob(c + "/IP/myCPU/IP/*.xcix"))
+json.dump({"format": "opencdc-project", "version": 1, "name": "chiplab_soc", "top": "soc_top", "sources": src,
+           "includeDirs": [c + "/chip/soc_demo/loongson", c + "/IP/myCPU", c + "/IP/APB_DEV/URT"],
+           "constraints": [c + "/fpga/loongson/soc_up.xdc"]}, open("chiplab_soc.ocdc.json", "w"), indent=1)
+PY
 check() { # project expected-regex
     local out
     out=$("$BIN/opencdc" analyze "$1" -q 2>&1 || true)
@@ -321,6 +340,10 @@ json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": top,
 PY
 done
 check soc_axi_func.ocdc.json "Clocks  : 3 \(991/991 registers resolved\).*CLKOUT0  \[divider\] alias=cpu_clk_clk_pll .*period=20ns.*axi_clock_converter:2.1.*AXI3, s_axi_aclk to m_axi_aclk, asynchronous clocks.*IP 'axi_crossbar_1x2' .*AXI3, 1 x 2, one clock.*blk_mem_gen:8.4.*AXI4 slave, 262144 x 32.*floating_point:7.1.*Summary : 0 error\(s\), 6 warning\(s\).*CDC     : 0 crossing path"
+# chiplab: the CPU (50 MHz) and the uncore (33 MHz) only through the AXI clock converter (.xcix), the DDR3 behind the
+# AXI interconnect in the MIG's ui_clk; the 60 unsynchronized paths are the Ethernet MAC's one-flop handshakes between
+# the uncore clock and the MII clocks (stop_r <= stopi, focl_r <= focl, ...)
+check chiplab_soc.ocdc.json "0 unsupported construct.*Clocks  : 6 \(1293/1293 registers resolved\).*CLKOUT1  \[divider\] alias=clk_out2_clk_pll_33 .*period=30.303ns.*ui_clk  \[divider\] alias=c1_clk0 alias=clk_pll_i.*axi_clock_converter:2.1.*axi_interconnect:1.7.*mig_7series:4.2.*AXI4 interface.*data_bank_sram.xcix.*FE-OUTPUT-PORT-CONSTANT.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 132 crossing path\(s\), 72 synchronized.*Rules   : 36 error violation\(s\), 24 warning violation"
 check arty_xadc.ocdc.json "Clocks  : 1 \(14/14 registers resolved\).*IP 'xadc_wiz_0' \(xilinx.com:ip:xadc_wiz:3.3\) modelled.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check basys3_xadc.ocdc.json "Clocks  : 2 \(24/24 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 0 crossing path"

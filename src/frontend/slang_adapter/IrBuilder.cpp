@@ -388,14 +388,20 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
     }
     else if (t.isUnpackedArray() && t.isFixedSize()) {
         const auto* elem = t.getArrayElementType();
-        if (!elem || !elem->isIntegral()) {
+        // a multi-dimensional unpacked array (wire [7:0] a [1:0][3:0]): an array of
+        // the inner arrays, each element as wide as the whole inner array; a
+        // select of the outer dimension gives the inner array, selected again
+        const auto* inner = elem;
+        while (inner && inner->getCanonicalType().isUnpackedArray() && inner->getCanonicalType().isFixedSize())
+            inner = inner->getCanonicalType().getArrayElementType();
+        if (!elem || !inner || !inner->isIntegral()) {
             unsupported("IR-UNSUPPORTED-TYPE",
                         "array '" + std::string(s.name) + "' with non-integral or multi-dimensional elements",
                         s.location);
             return std::nullopt;
         }
         auto r = t.getFixedRange();
-        n.elemWidth = elem->getBitWidth();
+        n.elemWidth = typeWidth(*elem);
         n.arrayDepth = r.width();
         n.width = n.elemWidth * n.arrayDepth;
         n.msb = r.left;
@@ -758,6 +764,10 @@ void BodyBuilder::lowerInstance(const sast::InstanceSymbol& inst) {
             }
         }
         const auto* expr = pc->getExpression();
+        // an output connected to a constant: reported by the frontend (FE-OUTPUT-PORT-CONSTANT),
+        // the connection is left open as in Vivado
+        if (expr && pb.dir != PortDir::In && expr->bad())
+            expr = nullptr;
         if (expr && expr->kind != sast::ExpressionKind::EmptyArgument) {
             if (pb.dir == PortDir::In) {
                 pb.actual = lower(*expr);

@@ -2,13 +2,16 @@
 
 #include "core/PathUtil.h"
 #include "core/TextEncoding.h"
+#include "core/Zip.h"
 #include "frontend/vhdl/VhdlParser.h"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <map>
@@ -2427,7 +2430,8 @@ Result<XciModel> userIp(const XciInfo& info, const ComponentEntry& comp) {
 } // namespace
 
 bool isXciFile(const std::filesystem::path& file) {
-    return lower(file.extension().string()) == ".xci";
+    const std::string ext = lower(file.extension().string());
+    return ext == ".xci" || ext == ".xcix";
 }
 
 namespace {
@@ -4105,6 +4109,54 @@ Result<XciModel> blockMemoryAxi(XciInfo info) {
     return r;
 }
 
+/// AXI Interconnect (axi_interconnect 1.x, PG059): each slave port Sxx_AXI
+/// and the master port M00_AXI in their own clock (Sxx_AXI_ACLK, M00_AXI_ACLK)
+/// with the reset outputs Sxx_AXI_ARESET_OUT_N; INTERCONNECT_ARESETN in
+/// INTERCONNECT_ACLK; the IP crosses between them (clock converters per port,
+/// C_Sxx_AXI_IS_ACLK_ASYNC). The ports come from the instance.
+Result<XciModel> axiInterconnect(const XciInfo& info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    using K = PortClass::Kind;
+    // "s00_axi_awaddr" -> "s00_axi"
+    const auto iface = [](const std::string& n) -> std::string {
+        if (n.size() > 8 && (n[0] == 's' || n[0] == 'm') && std::isdigit(static_cast<unsigned char>(n[1])) &&
+            std::isdigit(static_cast<unsigned char>(n[2])) && n.substr(3, 5) == "_axi_")
+            return n.substr(0, 7);
+        return {};
+    };
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "interconnect_aclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n == "interconnect_aresetn")
+            return PortClass{K::Sync, "interconnect_aclk", 0, {}, 0};
+        const std::string i = iface(n);
+        if (i.empty())
+            return std::nullopt;
+        if (n == i + "_aclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        return PortClass{K::Sync, i + "_aclk", 0, {}, 0};
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    const long long slaves = num(m, "C_NUM_SLAVE_PORTS", 1);
+    std::string async;
+    for (long long k = 0; k < slaves; ++k) {
+        const std::string sk = (k < 10 ? "S0" : "S") + std::to_string(k);
+        if (num(m, "C_" + sk + "_AXI_IS_ACLK_ASYNC", 0) != 0)
+            async += (async.empty() ? "" : ", ") + sk;
+    }
+    if (num(m, "C_M00_AXI_IS_ACLK_ASYNC", 0) != 0)
+        async += (async.empty() ? "" : ", ") + std::string("M00");
+    r.value().summary = text(m, "C_NUM_SLAVE_PORTS", "?") + " slave port(s) to M00, each port in its own clock" +
+                        (async.empty() ? std::string() : ", asynchronous to the interconnect clock: " + async);
+    r.value().notes.push_back("each AXI port of the interconnect is in its own clock (Sxx_AXI_ACLK, M00_AXI_ACLK), "
+                              "with its reset output; INTERCONNECT_ARESETN in INTERCONNECT_ACLK (PG059); the IP "
+                              "crosses between the clocks");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -4169,6 +4221,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return axiClockConverter(info);
     if (info.name == "axi_crossbar")
         return axiCrossbar(info);
+    if (info.name == "axi_interconnect")
+        return axiInterconnect(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +
@@ -4192,7 +4246,73 @@ Result<XciModel> modelFromXciText(std::string_view text, const std::filesystem::
     return dispatch(parsed.value(), &dir);
 }
 
-Result<XciModel> modelFromXci(const std::filesystem::path& file, const XciContext& context) {
+namespace {
+
+/// A Vivado .xcix (core container: a ZIP archive of the IP directory with the
+/// .xci and its output products) unpacked into a directory of its own; the
+/// path of the .xci in it, or an error.
+Result<std::filesystem::path> unpackXcix(const std::filesystem::path& file) {
+    const auto fail = [&](const std::string& why) {
+        return Diagnostic{"FE-XCI-PARSE", Severity::Warning, "cannot read the IP container (.xcix): " + why,
+                          SourceLocation{toUtf8(file), 0, 0}, {}};
+    };
+    auto zip = readZipFile(file);
+    if (!zip)
+        return fail("not a readable ZIP archive (stored or deflated entries)");
+    const std::string stem = file.stem().string();
+    std::string xci;
+    for (const auto& [name, data] : *zip) {
+        const std::filesystem::path p(name);
+        if (lower(p.extension().string()) != ".xci")
+            continue;
+        // the IP's own .xci (<ip>/<ip>.xci), not one of a sub-core
+        if (xci.empty() || lower(p.stem().string()) == lower(stem))
+            xci = name;
+    }
+    if (xci.empty())
+        return fail("no .xci in the archive");
+    std::error_code ec;
+    const auto canonical = std::filesystem::weakly_canonical(file, ec);
+    const auto dir = std::filesystem::temp_directory_path(ec) / "opencdc-xcix" /
+                     (stem + "_" + std::to_string(std::hash<std::string>{}(toUtf8(ec ? file : canonical)) % 100000000));
+    for (const auto& [name, data] : *zip) {
+        const std::filesystem::path rel = std::filesystem::path(name).lexically_normal();
+        // no absolute paths or ".." out of the directory (zip slip)
+        if (rel.is_absolute() || rel.has_root_name() || rel.empty() || *rel.begin() == "..")
+            continue;
+        const auto out = dir / rel;
+        std::filesystem::create_directories(out.parent_path(), ec);
+        std::ifstream old(out, std::ios::binary);
+        const std::string current((std::istreambuf_iterator<char>(old)), std::istreambuf_iterator<char>());
+        old.close();
+        if (current != data) {
+            std::ofstream o(out, std::ios::binary | std::ios::trunc);
+            o.write(data.data(), static_cast<std::streamsize>(data.size()));
+            if (!o)
+                return fail("cannot write " + toUtf8(out));
+        }
+    }
+    return dir / std::filesystem::path(xci).lexically_normal();
+}
+
+} // namespace
+
+Result<XciModel> modelFromXci(const std::filesystem::path& original, const XciContext& context) {
+    std::filesystem::path file = original;
+    if (lower(original.extension().string()) == ".xcix") {
+        auto unpacked = unpackXcix(original);
+        if (!unpacked)
+            return std::move(unpacked).error();
+        file = unpacked.value();
+        auto r = modelFromXci(file, context);
+        if (!r) {
+            Diagnostic d = std::move(r).error();
+            d.location.file = toUtf8(original);
+            return d;
+        }
+        r.value().notes.push_back("from the IP container " + toUtf8(original.filename()));
+        return r;
+    }
     auto text = readSourceText(file);
     if (!text)
         return Diagnostic{"FE-XCI-PARSE", Severity::Warning, "cannot read IP configuration file",
@@ -4209,6 +4329,8 @@ Result<XciModel> modelFromXci(const std::filesystem::path& file, const XciContex
 }
 
 Result<XciModel> modelFromXci(const std::filesystem::path& file) {
+    if (lower(file.extension().string()) == ".xcix")
+        return modelFromXci(file, XciContext{});
     auto text = readSourceText(file);
     if (!text)
         return Diagnostic{"FE-XCI-PARSE", Severity::Warning, "cannot read IP configuration file",

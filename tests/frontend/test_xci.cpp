@@ -2327,3 +2327,130 @@ TEST_CASE("XCI: Clocking Wizard with stale PLL values uses the MMCM values for t
     CHECK(good.value().verilog.find(".CLKFBOUT_MULT(8)") != std::string::npos);
     CHECK(good.value().notes.empty());
 }
+
+namespace {
+
+/// A ZIP archive of stored entries (no compression, CRC not checked by the reader).
+std::string storedZip(const std::vector<std::pair<std::string, std::string>>& files) {
+    std::string out, central;
+    auto u16 = [](std::string& s, unsigned v) {
+        s += static_cast<char>(v & 0xFF);
+        s += static_cast<char>((v >> 8) & 0xFF);
+    };
+    auto u32 = [&](std::string& s, std::uint32_t v) {
+        u16(s, v & 0xFFFF);
+        u16(s, v >> 16);
+    };
+    for (const auto& [name, data] : files) {
+        const auto offset = static_cast<std::uint32_t>(out.size());
+        u32(out, 0x04034b50);
+        u16(out, 20); u16(out, 0); u16(out, 0); u16(out, 0); u16(out, 0);
+        u32(out, 0); u32(out, static_cast<std::uint32_t>(data.size())); u32(out, static_cast<std::uint32_t>(data.size()));
+        u16(out, static_cast<unsigned>(name.size())); u16(out, 0);
+        out += name;
+        out += data;
+        u32(central, 0x02014b50);
+        u16(central, 20); u16(central, 20); u16(central, 0); u16(central, 0); u16(central, 0); u16(central, 0);
+        u32(central, 0); u32(central, static_cast<std::uint32_t>(data.size()));
+        u32(central, static_cast<std::uint32_t>(data.size()));
+        u16(central, static_cast<unsigned>(name.size())); u16(central, 0); u16(central, 0); u16(central, 0);
+        u16(central, 0); u32(central, 0); u32(central, offset);
+        central += name;
+    }
+    const auto cdOffset = static_cast<std::uint32_t>(out.size());
+    out += central;
+    u32(out, 0x06054b50);
+    u16(out, 0); u16(out, 0);
+    u16(out, static_cast<unsigned>(files.size())); u16(out, static_cast<unsigned>(files.size()));
+    u32(out, static_cast<std::uint32_t>(central.size())); u32(out, cdOffset);
+    u16(out, 0);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("XCI: an IP container (.xcix) is unpacked and modelled", "[frontend][xci][xcix]") {
+    // chiplab axi_clock_converter_0.xcix: cc.xml and <ip>/<ip>.xci (+ output products)
+    test::TempDir dir;
+    const auto xcix = dir.write(
+        "fifo_8X4K.xcix", storedZip({{"cc.xml", "<CoreContainer/>\n"},
+                                     {"fifo_8X4K/fifo_8X4K.xci", jsonFifo("fifo_8X4K")},
+                                     {"fifo_8X4K/fifo_8X4K.veo", "// instantiation template\n"}}));
+    CHECK(frontend::isXciFile(xcix));
+    auto m = frontend::modelFromXci(xcix);
+    REQUIRE(m);
+    CHECK(m.value().module == "fifo_8X4K");
+    CHECK(std::ranges::any_of(m.value().notes, [](const std::string& n) { return n.find("fifo_8X4K.xcix") != std::string::npos; }));
+    // in a design: the same crossings as with the .xci
+    auto r = run(project(dir, fifoTop("fifo_8X4K"), {xcix}));
+    REQUIRE(r->cdc);
+    CHECK(count(*r, "FE-XCI-MODEL") == 1);
+    CHECK(r->cdc->stats.unsynchronized == 0);
+    // negative: not an archive, an archive without a .xci, an entry escaping the directory is not written
+    auto bad = frontend::modelFromXci(dir.write("bad.xcix", "not a zip archive"));
+    REQUIRE_FALSE(bad);
+    CHECK(bad.error().message.find("not a readable ZIP archive") != std::string::npos);
+    auto none = frontend::modelFromXci(dir.write("none.xcix", storedZip({{"cc.xml", "<CoreContainer/>\n"}})));
+    REQUIRE_FALSE(none);
+    CHECK(none.error().message.find("no .xci in the archive") != std::string::npos);
+    auto slip = frontend::modelFromXci(dir.write(
+        "fifo_cc.xcix", storedZip({{"../../escaped.txt", "x"}, {"fifo_cc/fifo_cc.xci", jsonFifo("fifo_cc", true)}})));
+    REQUIRE(slip);
+    CHECK_FALSE(std::filesystem::exists(std::filesystem::temp_directory_path() / "escaped.txt"));
+}
+
+namespace {
+
+// chiplab axi_2x1_mux (axi_interconnect 1.7, JSON): two slave ports, M00; a part of the ports
+std::string jsonInterconnect() {
+    std::string ports;
+    auto add = [&](const std::string& p) { ports += (ports.empty() ? "" : ",\n        ") + p; };
+    for (const char* n : {"INTERCONNECT_ACLK", "INTERCONNECT_ARESETN", "S00_AXI_ACLK", "S00_AXI_AWVALID", "S00_AXI_RREADY",
+                          "S01_AXI_ACLK", "S01_AXI_ARVALID", "M00_AXI_ACLK", "M00_AXI_ARESET_IN_N", "M00_AXI_RVALID"})
+        add(port(n, "in"));
+    add(port("S00_AXI_AWADDR", "in", 31));
+    add(port("S01_AXI_RDATA", "out", 31));
+    add(port("M00_AXI_RDATA", "in", 31));
+    add(port("M00_AXI_ARADDR", "out", 31));
+    for (const char* n : {"S00_AXI_ARESET_OUT_N", "S00_AXI_AWREADY", "S01_AXI_ARESET_OUT_N", "M00_AXI_ARVALID",
+                          "M00_AXI_ARESET_OUT_N"})
+        add(port(n, "out"));
+    return "{\n  \"schema\": \"xilinx.com:schema:json_instance:1.0\",\n  \"ip_inst\": {\n"
+           "    \"xci_name\": \"xc\",\n"
+           "    \"component_reference\": \"xilinx.com:ip:axi_interconnect:1.7\",\n"
+           "    \"ip_revision\": \"30\",\n"
+           "    \"parameters\": {\n      \"component_parameters\": {\n        " + param("Component_Name", "xc") +
+           "\n      },\n      \"model_parameters\": {\n        " + param("C_NUM_SLAVE_PORTS", "2") + ",\n        " +
+           param("C_S01_AXI_IS_ACLK_ASYNC", "1") + "\n      }\n    },\n"
+           "    \"boundary\": {\n      \"ports\": {\n        " + ports + "\n      }\n    }\n  }\n}\n";
+}
+
+} // namespace
+
+TEST_CASE("XCI: AXI Interconnect (axi_interconnect), each port in its own clock", "[frontend][xci][axi]") {
+    test::TempDir dir;
+    auto m = frontend::modelFromXci(dir.write("xc.xci", jsonInterconnect()), frontend::XciContext{});
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"always @(posedge INTERCONNECT_ACLK[0]) oc_dom_interconnect_aclk <= ^{INTERCONNECT_ARESETN}",
+                          "always @(posedge S00_AXI_ACLK[0]) oc_dom_s00_axi_aclk <= ^{S00_AXI_AWADDR, S00_AXI_AWVALID, "
+                          "S00_AXI_RREADY}",
+                          "always @(posedge S00_AXI_ACLK[0]) oc_S00_AXI_ARESET_OUT_N_q",
+                          "always @(posedge S00_AXI_ACLK[0]) oc_S00_AXI_AWREADY_q",
+                          "always @(posedge S01_AXI_ACLK[0]) oc_S01_AXI_RDATA_q",
+                          "always @(posedge M00_AXI_ACLK[0]) oc_M00_AXI_ARADDR_q",
+                          "always @(posedge M00_AXI_ACLK[0]) oc_dom_m00_axi_aclk <= ^{M00_AXI_ARESET_IN_N, M00_AXI_RDATA, "
+                          "M00_AXI_RVALID}"})
+        CHECK(v.find(p) != std::string::npos);
+    CHECK(m.value().summary.find("2 slave port(s) to M00, each port in its own clock, asynchronous to the interconnect "
+                                 "clock: S01") != std::string::npos);
+    // negative: no port of one interface in another interface's clock
+    CHECK(v.find("posedge S00_AXI_ACLK[0]) oc_S01") == std::string::npos);
+    CHECK(v.find("posedge M00_AXI_ACLK[0]) oc_S0") == std::string::npos);
+    // negative: without ports (an XML .xci without a component file) the IP is not modelled
+    auto none = frontend::modelFromXci(dir.write("xn.xci", spirit("xn", "axi_interconnect", "1.7", {{"C_NUM_SLAVE_PORTS", "2"}})),
+                                       frontend::XciContext{});
+    REQUIRE_FALSE(none);
+    CHECK(none.error().message.find("needs the ports of the instance") != std::string::npos);
+}

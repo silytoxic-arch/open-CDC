@@ -952,6 +952,8 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 | `numeric_std` 缺少 `std_match(std_ulogic)`、`std_match(std_ulogic_vector)`、`is_x(unsigned/signed)` | 补齐重载 |
 | `(39 downto 0 => vec, others => '0')`：VHDL-2008 中范围选择可对应一个数组值 | 按范围逐元素展开，长度不符报 `VHDL-LENGTH` |
 | `case a is when b"011100" =>`，选择项长度与选择表达式不同（IEEE 1076 中是错误；Digilent usb2device 中出现） | 报警告 `VHDL-LENGTH`，该选择项永不匹配 |
+| `wire [7:0] a [1:0][3:0]`：多维 unpacked 数组（open-la500 cache） | 展平为外层数组，元素宽度为整个内层数组；`a[i][j]` 先选外层再选内层，常量与动态下标都支持 |
+| 输出端口连接常量 `.M00_AXI_ARQOS(4'b0)`（SystemVerilog 中是错误，Vivado 忽略该连接；Loongson chiplab） | 警告 `FE-OUTPUT-PORT-CONSTANT`，该输出不连接 |
 | `tab(i)(j) <= …`：两个变量索引 | 合并为扁平行的一个索引：offset(i) × 行长 + offset(j) |
 | 覆盖枚举全部字面量的 `case`（三个字面量用两位编码）被判为锁存器 | VHDL 规定 case 必须覆盖子类型的全部值，前面的分支都不匹配时最后一个分支必然匹配 |
 | textio 例程带参数调用（`endfile(f)`、`readline(f, l)`）报无匹配重载 | 无参数声明的忽略型例程接受任意参数 |

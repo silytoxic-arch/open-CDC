@@ -278,6 +278,31 @@ TEST_CASE("Semantic errors in modules the design does not instantiate are warnin
     CHECK(syntax.hasErrors());
 }
 
+TEST_CASE("An output port connected to a constant is a warning, as in Vivado", "[frontend][diag]") {
+    // Loongson chiplab soc_top: .M00_AXI_ARQOS (4'b0) on an output of the AXI interconnect
+    test::TempDir dir;
+    auto run = [&](const std::string& actual) {
+        FrontendInput in;
+        in.sourceFiles = {dir.write("t.v", "module sub(input [3:0] i, output [3:0] o); assign o = i; endmodule\n"
+                                            "module t(input [3:0] a, output [3:0] y);\n  wire [3:0] w;\n"
+                                            "  sub u (.i(a), .o(" + actual + "));\n  assign y = w;\nendmodule\n")};
+        in.top = "t";
+        return elaborate(in);
+    };
+    auto c = run("4'b0");
+    REQUIRE(c.summary.ok());
+    CHECK_FALSE(c.hasErrors());
+    const auto* w = c.findCode("FE-OUTPUT-PORT-CONSTANT");
+    REQUIRE(w);
+    CHECK(w->severity == Severity::Warning);
+    CHECK(c.summary.value().design);
+    // negative: a net is assignable, no warning
+    auto n = run("w");
+    REQUIRE(n.summary.ok());
+    CHECK(n.findCode("FE-OUTPUT-PORT-CONSTANT") == nullptr);
+    CHECK_FALSE(n.hasErrors());
+}
+
 TEST_CASE("Explicit top selection and invalid top", "[frontend][top]") {
     test::TempDir dir;
     auto file = dir.write("two.v",

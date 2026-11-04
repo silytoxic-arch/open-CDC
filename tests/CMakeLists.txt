@@ -5,6 +5,7 @@ add_executable(opencdc_tests
     core/test_diagnostic.cpp
     core/test_id_result.cpp
     core/test_text_encoding.cpp
+    core/test_zip.cpp
     ir/test_ir.cpp
     ir_extract/test_ir_extract.cpp
     graph/test_design_view.cpp

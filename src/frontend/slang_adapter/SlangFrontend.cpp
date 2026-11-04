@@ -15,6 +15,7 @@
 #include <slang/diagnostics/DiagnosticEngine.h>
 #include <slang/diagnostics/DeclarationsDiags.h>
 #include <slang/diagnostics/Diagnostics.h>
+#include <slang/diagnostics/ExpressionsDiags.h>
 #include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Preprocessor.h>
 #include <slang/syntax/SyntaxTree.h>
@@ -26,6 +27,7 @@
 #include <slang/util/LanguageVersion.h>
 
 #include <algorithm>
+#include <cctype>
 #include <exception>
 #include <set>
 #include <system_error>
@@ -117,6 +119,38 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
         }
         if (diag.code == slang::diag::UnknownModule)
             out.notes.emplace_back(detail::kUnknownModuleHint);
+        // an output port connected to a constant (.M00_AXI_ARQOS(4'b0), Loongson chiplab):
+        // an error in SystemVerilog, Vivado ignores the connection
+        if (diag.code == slang::diag::ExpressionNotAssignable && out.isError() && diag.location.valid()) {
+            const auto loc = sm.getFullyOriginalLoc(diag.location);
+            const std::string_view text = sm.getSourceText(loc.buffer());
+            if (loc.offset() <= text.size()) {
+                std::size_t i = loc.offset();
+                auto skipSpace = [&] {
+                    while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1])))
+                        --i;
+                };
+                skipSpace();
+                bool port = i > 0 && text[i - 1] == '(';
+                if (port) {
+                    --i;
+                    skipSpace();
+                    const std::size_t end = i;
+                    while (i > 0 && (std::isalnum(static_cast<unsigned char>(text[i - 1])) || text[i - 1] == '_' ||
+                                     text[i - 1] == '$'))
+                        --i;
+                    port = i < end;
+                    skipSpace();
+                    port = port && i > 0 && text[i - 1] == '.';
+                }
+                if (port) {
+                    out.code = "FE-OUTPUT-PORT-CONSTANT";
+                    out.severity = Severity::Warning;
+                    out.message = "output port connected to an expression that cannot be assigned (a constant); the "
+                                  "connection is ignored, as Vivado does";
+                }
+            }
+        }
         // a semantic error inside a module the design never instantiates: Vivado and
         // Quartus elaborate from the top and do not look at it; syntax errors stay errors
         if (unused && out.isError() && diag.location.valid()) {
