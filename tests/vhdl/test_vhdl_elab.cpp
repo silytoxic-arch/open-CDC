@@ -972,6 +972,37 @@ TEST_CASE("VHDL: slice target with a variable offset and a width of one element"
     CHECK(bad.count("VHDL-LENGTH") == 1);
 }
 
+TEST_CASE("VHDL: a case choice of another length than the selector never matches", "[vhdl][elab]") {
+    // Digilent usb2device Control_Registers: 6-bit choices among 7-bit ones (loc_addr is 7 bits)
+    auto run = [](const std::string& choice) {
+        return elaborate(lib("entity t is port (clk : in std_logic; a : in std_logic_vector(6 downto 0);\n"
+                             "  d : in std_logic; q1, q2 : out std_logic); end;\n"
+                             "architecture rtl of t is begin\n"
+                             "  process (clk) begin\n"
+                             "    if rising_edge(clk) then\n"
+                             "      case a is\n"
+                             "        when b\"0000001\" => q1 <= d;\n"
+                             "        when b\"" + choice + "\" => q2 <= d;\n"
+                             "        when others => null;\n"
+                             "      end case;\n"
+                             "    end if;\n"
+                             "  end process;\n"
+                             "end;\n"),
+                         "t");
+    };
+    auto shortChoice = run("011100");
+    REQUIRE(shortChoice.design);
+    CHECK(shortChoice.errors() == 0);
+    CHECK(shortChoice.count("VHDL-LENGTH") == 1);
+    // q2 is never written: only q1 is a register
+    CHECK(shortChoice.design->stats().registers == 1);
+    // negative: a choice of the selector's length matches, no warning
+    auto same = run("0011100");
+    REQUIRE(same.design);
+    CHECK(same.count("VHDL-LENGTH") == 0);
+    CHECK(same.design->stats().registers == 2);
+}
+
 TEST_CASE("VHDL: 'use lib.pkg;' makes the package name visible for expanded names", "[vhdl][elab]") {
     const std::string pkg = lib("package dbg is\n"
                                 "  type dbg_t is record a : std_logic; b : std_logic_vector(1 downto 0); end record;\n"

@@ -485,6 +485,17 @@ json.dump({"format": "opencdc-project", "version": 1, "name": "mipi_csi2_rx", "t
                                                      "ila_vidclk/ila_vidclk.xci", "ila_rxclk_lane/ila_rxclk_lane.xci"]],
            "constraints": [os.path.join(mp, "mipi_csi2_rx_ooc.xdc"), os.path.join(mp, "mipi_csi2_rx.xdc")]},
           open(os.path.join(work, "mipi_csi2_rx.ocdc.json"), "w"), indent=1)
+# usb2device: USB 2.0 device with the AXI DMA (axi_dma, direct register mode, synchronous clocks: the three AXI clock
+# ports are one clock, as PG021 requires) and FIFO/block RAM IP; the ULPI clock through an MMCM
+ub = os.path.join(dl, "usb2device_v1_0/src")
+open(os.path.join(work, "usb2device.sdc"), "w").write(
+    "create_clock -name aclk -period 10 [get_ports {S_AXI_ACLK m_axi_mm2s_aclk m_axi_s2mm_aclk}]\n"
+    "create_clock -name ulpi -period 16.667 [get_ports ulpi_clk]\n"
+    "set_clock_groups -asynchronous -group aclk -group [get_clocks -include_generated_clocks ulpi]\n")
+json.dump({"format": "opencdc-project", "version": 1, "name": "usb2device", "top": "top",
+           "sources": sorted(glob.glob(os.path.join(ub, "*.vhd"))) + sorted(glob.glob(os.path.join(ub, "*", "*.xci"))),
+           "constraints": ["usb2device.sdc", os.path.join(ub, "constrs_1.xdc")]},
+          open(os.path.join(work, "usb2device.ocdc.json"), "w"), indent=1)
 # every FIFO .xci of the library as its own top
 fifos = []
 for root, _, names in os.walk(dl):
@@ -574,6 +585,10 @@ check cmod_a7_gpio.ocdc.json "Clocks  : 2 \\(37/37 registers resolved\\).*alias=
 check nexys_a7_oob.ocdc.json "Clocks  : 4 \\(383/383 registers resolved\\).*Inst_DDR.ui_clk  \\[divider\\] alias=mem_ui_clk alias=clk_pll_i.*\\(75.01 MHz\\).*IP 'ClkGen'.*IP 'BRAM_1'.*single-port ROM.*IP 'Square_Root'.*cordic.*IP 'ddr' \\(xilinx.com:ip:mig_7series:4.1\\) modelled.*DDR2 x16, native interface.*BUFG, MMCME2_ADV, XADC.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 4 crossing path\\(s\\), 2 synchronized, 2 unsynchronized"
 check pmodgpio.ocdc.json "Clocks  : 1 \\(10/10 registers resolved\\).*IP 'PmodGPIO_axi_gpio_0_0' \\(xilinx.com:ip:axi_gpio:2.0\\) modelled.*IP 'PmodGPIO_pmod_bridge_0_0' \\(digilentinc.com:ip:pmod_bridge:1.0\\) modelled.*from the IP repository.*top module 'pmod_concat'.*IP 'PmodGPIO_xlconcat_0_0'.*IP 'PmodGPIO_xlslice_0_0'.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 0 crossing path"
 check pmodsf3.ocdc.json  "Clocks  : 2 \\(51/51 registers resolved\\).*async-fifo x2, reset-sync x4.*IP 'PmodSF3_axi_quad_spi_0_0'.*asynchronous FIFOs.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 10 crossing path\\(s\\), 10 synchronized, 0 unsynchronized"
+# usb2device: the DMA in aclk with its registers; 4 case choices of 6 bits for a 7-bit selector (never match, a VHDL
+# error that is reported as a warning); the 6 CDC-006 errors are HandshakeData's aReset, driven from one clock and
+# used as the asynchronous reset in the other clock without a reset synchronizer
+check usb2device.ocdc.json "Clocks  : 3 \\(750/750 registers resolved\\).*axi_dma:7.1.*synchronous clocks .C_PRMRY_IS_ACLK_ASYNC 0.*Control_Registers.vhd:404:17: warning.VHDL-LENGTH.: case choice has 6 element.s., the selector 7.*Summary : 0 error\\(s\\), 5 warning.*CDC     : 135 crossing path\\(s\\), 127 synchronized.*Rules   : 6 error violation"
 check pmodcolor.ocdc.json "Clocks  : 1 \\(25/25 registers resolved\\).*IP 'PmodCOLOR_axi_iic_0_0' \\(xilinx.com:ip:axi_iic:2.0\\) modelled.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 0 crossing path"
 check pmodbt2.ocdc.json  "Clocks  : 1 \\(28/28 registers resolved\\).*IP 'PmodBT2_axi_uart16550_0_0' \\(xilinx.com:ip:axi_uart16550:2.0\\) modelled.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 0 crossing path"
 check pmodamp2.ocdc.json "Clocks  : 1 \\(39/39 registers resolved\\).*IP 'PmodAMP2_PWM_0_0' \\(digilentinc.com:IP:PWM:2.0\\) modelled.*top module 'PWM_v2_0'.*IR-MIXED-ASSIGN.*reg_data_out.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 0 crossing path"

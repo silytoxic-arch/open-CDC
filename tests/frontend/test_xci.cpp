@@ -2112,3 +2112,67 @@ TEST_CASE("XCI: IEEE 802.3 Clause 74 FEC (ieee802d3_clause74_fec), encoder and d
     REQUIRE_FALSE(odd);
     CHECK(odd.error().message.find("core_clk") != std::string::npos);
 }
+
+namespace {
+
+std::string dmaXci(const std::string& inst, const std::string& async, const std::string& sg = "0") {
+    return spirit(inst, "axi_dma", "7.1",
+                  {{"C_PRMRY_IS_ACLK_ASYNC", async}, {"C_INCLUDE_SG", sg}, {"C_ENABLE_MULTI_CHANNEL", "0"},
+                   {"C_INCLUDE_MM2S", "1"}, {"C_INCLUDE_S2MM", "1"}});
+}
+
+// Digilent usb2device's axi_dma_0 (axi_dma 7.1, direct register mode), a part of the ports
+const char* kDmaComponent =
+    "  component dma\n    port (\n"
+    "      s_axi_lite_aclk : in std_logic; m_axi_mm2s_aclk : in std_logic; m_axi_s2mm_aclk : in std_logic;\n"
+    "      axi_resetn : in std_logic; s_axi_lite_awvalid : in std_logic; s_axi_lite_awready : out std_logic;\n"
+    "      s_axi_lite_rdata : out std_logic_vector(31 downto 0); m_axi_mm2s_araddr : out std_logic_vector(31 downto 0);\n"
+    "      m_axi_mm2s_rdata : in std_logic_vector(31 downto 0); mm2s_prmry_reset_out_n : out std_logic;\n"
+    "      m_axis_mm2s_tdata : out std_logic_vector(31 downto 0); m_axis_mm2s_tready : in std_logic;\n"
+    "      m_axi_s2mm_awaddr : out std_logic_vector(31 downto 0); m_axi_s2mm_bvalid : in std_logic;\n"
+    "      s2mm_prmry_reset_out_n : out std_logic; s_axis_s2mm_tdata : in std_logic_vector(31 downto 0);\n"
+    "      s_axis_s2mm_tready : out std_logic; mm2s_introut : out std_logic; s2mm_introut : out std_logic;\n"
+    "      axi_dma_tstvec : out std_logic_vector(31 downto 0));\n  end component;\n";
+
+} // namespace
+
+TEST_CASE("XCI: AXI DMA (axi_dma) in direct register mode, synchronous and asynchronous clocks",
+          "[frontend][xci][dma]") {
+    test::TempDir dir;
+    frontend::XciContext ctx;
+    ctx.vhdlComponents = frontend::vhdlComponentPorts(pkg(kDmaComponent), "p.vhd");
+    // asynchronous clocks: a domain per channel
+    auto a = frontend::modelFromXci(dir.write("da.xci", dmaXci("dma", "1")), ctx);
+    REQUIRE(a);
+    const auto& va = a.value().verilog;
+    INFO(va);
+    for (const char* p : {"always @(posedge s_axi_lite_aclk[0]) oc_dom_s_axi_lite_aclk <= ^{axi_resetn, s_axi_lite_awvalid}",
+                          "always @(posedge s_axi_lite_aclk[0]) oc_s_axi_lite_rdata_q",
+                          "always @(posedge s_axi_lite_aclk[0]) oc_mm2s_introut_q",
+                          "always @(posedge s_axi_lite_aclk[0]) oc_s2mm_introut_q",
+                          "always @(posedge m_axi_mm2s_aclk[0]) oc_dom_m_axi_mm2s_aclk <= ^{m_axi_mm2s_rdata, "
+                          "m_axis_mm2s_tready}",
+                          "always @(posedge m_axi_mm2s_aclk[0]) oc_m_axis_mm2s_tdata_q",
+                          "always @(posedge m_axi_mm2s_aclk[0]) oc_mm2s_prmry_reset_out_n_q",
+                          "always @(posedge m_axi_s2mm_aclk[0]) oc_dom_m_axi_s2mm_aclk <= ^{m_axi_s2mm_bvalid, "
+                          "s_axis_s2mm_tdata}",
+                          "always @(posedge m_axi_s2mm_aclk[0]) oc_s_axis_s2mm_tready_q",
+                          "always @(posedge m_axi_s2mm_aclk[0]) oc_s2mm_prmry_reset_out_n_q",
+                          "opencdc_async_source u_oc_axi_dma_tstvec"})
+        CHECK(va.find(p) != std::string::npos);
+    CHECK(a.value().summary.find("asynchronous clocks") != std::string::npos);
+    // synchronous clocks: PG021 requires one clock, every port in s_axi_lite_aclk
+    auto s = frontend::modelFromXci(dir.write("ds.xci", dmaXci("dma", "0")), ctx);
+    REQUIRE(s);
+    const auto& vs = s.value().verilog;
+    INFO(vs);
+    CHECK(vs.find("always @(posedge s_axi_lite_aclk[0]) oc_m_axis_mm2s_tdata_q") != std::string::npos);
+    CHECK(vs.find("always @(posedge s_axi_lite_aclk[0]) oc_s_axis_s2mm_tready_q") != std::string::npos);
+    // negative: no register in the MM2S or S2MM clock in synchronous mode
+    CHECK(vs.find("posedge m_axi_mm2s_aclk[0]") == std::string::npos);
+    CHECK(vs.find("posedge m_axi_s2mm_aclk[0]") == std::string::npos);
+    // negative: scatter gather is not modelled
+    auto sg = frontend::modelFromXci(dir.write("dg.xci", dmaXci("dma", "1", "1")), ctx);
+    REQUIRE_FALSE(sg);
+    CHECK(sg.error().message.find("scatter gather") != std::string::npos);
+}

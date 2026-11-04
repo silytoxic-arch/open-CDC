@@ -620,6 +620,19 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
                                      bitsOf(applyPredefined(Op::Le, a2, std_.boolean, ctx, ch->loc), ch->loc));
                     }
                     else {
+                        // a string choice whose length differs from the selector's: an error in IEEE 1076,
+                        // a warning that the choice never matches in other tools (Quartus "choice is
+                        // outside the range of the select"); Digilent usb2device mixes 6- and 7-bit choices
+                        if ((ch->kind == ExprKind::String || ch->kind == ExprKind::BitString) && sel.type &&
+                            sel.type->isArray() && sel.type->indexRanges.size() == 1 && sel.type->indexRanges[0] &&
+                            sel.type->indexRanges[0]->length() != ch->text.size()) {
+                            warn("VHDL-LENGTH",
+                                    "case choice has " + std::to_string(ch->text.size()) + " element(s), the selector " +
+                                        std::to_string(sel.type->indexRanges[0]->length()) +
+                                        ": the choice never matches (an error in IEEE 1076)",
+                                    ch->loc);
+                            continue;
+                        }
                         SVal cv = convert(eval(*ch, ctx, sel.type), sel.type, ctx, ch->loc);
                         if (!cv.valid())
                             continue;

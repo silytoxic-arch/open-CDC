@@ -3740,6 +3740,60 @@ Result<XciModel> clause74Fec(const XciInfo& info) {
     return r;
 }
 
+/// AXI DMA (axi_dma, PG021) in direct register mode: the AXI4-Lite register
+/// interface, axi_resetn and the interrupts in s_axi_lite_aclk; the MM2S
+/// channel (AXI4 read master, AXI4-Stream master, its reset output) in
+/// m_axi_mm2s_aclk, the S2MM channel in m_axi_s2mm_aclk, when the clocks are
+/// asynchronous (C_PRMRY_IS_ACLK_ASYNC 1). In synchronous mode PG021 requires
+/// one clock for all clock ports: every port is then in s_axi_lite_aclk, and a
+/// different clock on m_axi_*_aclk shows as crossings into the IP.
+Result<XciModel> axiDma(const XciInfo& info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const auto unsupportedIp = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): " + why,
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    };
+    if (num(m, "C_INCLUDE_SG", 0) != 0)
+        return unsupportedIp("the scatter gather engine (C_INCLUDE_SG 1) is not modelled, only direct register mode");
+    if (num(m, "C_ENABLE_MULTI_CHANNEL", 0) != 0)
+        return unsupportedIp("the multichannel DMA (C_ENABLE_MULTI_CHANNEL 1) is not modelled");
+    const bool async = num(m, "C_PRMRY_IS_ACLK_ASYNC", 0) != 0;
+    const std::string lite = "s_axi_lite_aclk";
+    const std::string mm2s = async ? "m_axi_mm2s_aclk" : lite;
+    const std::string s2mm = async ? "m_axi_s2mm_aclk" : lite;
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "s_axi_lite_aclk" || n == "m_axi_mm2s_aclk" || n == "m_axi_s2mm_aclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n.starts_with("s_axi_lite_") || n == "axi_resetn" || n == "mm2s_introut" || n == "s2mm_introut")
+            return PortClass{K::Sync, lite, 0, {}, 0};
+        if (n.starts_with("m_axi_mm2s_") || n.starts_with("m_axis_mm2s_") || n == "mm2s_prmry_reset_out_n")
+            return PortClass{K::Sync, mm2s, 0, {}, 0};
+        if (n.starts_with("m_axi_s2mm_") || n.starts_with("s_axis_s2mm_") || n == "s2mm_prmry_reset_out_n")
+            return PortClass{K::Sync, s2mm, 0, {}, 0};
+        // the debug test vector: no documented clock
+        if (n == "axi_dma_tstvec")
+            return out ? std::optional<PortClass>(PortClass{K::Async, {}, 0, {}, 0}) : std::nullopt;
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    r.value().summary = std::string("direct register mode, ") +
+                        (async ? "asynchronous clocks: MM2S in m_axi_mm2s_aclk, S2MM in m_axi_s2mm_aclk, registers in "
+                                 "s_axi_lite_aclk"
+                               : "synchronous clocks (C_PRMRY_IS_ACLK_ASYNC 0): every port in s_axi_lite_aclk");
+    r.value().notes.push_back(async ? "the AXI4-Lite registers, axi_resetn and the interrupts are in s_axi_lite_aclk, "
+                                      "the MM2S channel in m_axi_mm2s_aclk, the S2MM channel in m_axi_s2mm_aclk (PG021); "
+                                      "the IP crosses between them"
+                                    : "PG021: in synchronous mode all clock ports must be connected to one clock; every "
+                                      "port is modelled in s_axi_lite_aclk, so another clock on m_axi_mm2s_aclk or "
+                                      "m_axi_s2mm_aclk shows as crossings into the IP");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -3798,6 +3852,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return cmacUsplus(info);
     if (info.name == "ieee802d3_clause74_fec")
         return clause74Fec(info);
+    if (info.name == "axi_dma")
+        return axiDma(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +
