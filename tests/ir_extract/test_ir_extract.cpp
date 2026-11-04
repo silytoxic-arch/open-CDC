@@ -844,3 +844,57 @@ TEST_CASE("Static part of a dynamically indexed memory element as target", "[ext
     CHECK(e.contains("dyn_insert"));
     CHECK(e.contains("dyn_select"));
 }
+
+TEST_CASE("Compound assignments read the target's current value", "[extract][sv]") {
+    // nontrivial-mips icache: rddata_n |= {W{hit[i]}} & data[i] in a for loop
+    auto e = extract("module t(input logic [3:0] hit, input logic [7:0] d0, d1, d2, d3, input logic [3:0] q,\n"
+                     "         output logic [7:0] y, output logic [2:0] cnt);\n"
+                     "  logic [7:0] d [4];\n"
+                     "  assign d[0] = d0; assign d[1] = d1; assign d[2] = d2; assign d[3] = d3;\n"
+                     "  always_comb begin\n"
+                     "    y = '0;\n"
+                     "    cnt = '0;\n"
+                     "    for (int i = 0; i < 4; ++i) begin\n"
+                     "      y |= {8{hit[i]}} & d[i];\n"
+                     "      cnt += q[i];\n"
+                     "    end\n"
+                     "  end\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    REQUIRE(e.design);
+    CHECK_FALSE(e.hasErrors());
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 0);
+    // y depends on every d and hit, cnt on every q: no opaque value
+    CHECK_FALSE(e.contains("opaque"));
+    CHECK(e.has("comb  y = $or$9"));
+    CHECK(e.has("comb  cnt = $add$10"));
+    for (const char* n : {"d0", "d1", "d2", "d3", "hit"})
+        CHECK(e.contains(n));
+}
+
+TEST_CASE("Asynchronous reset in a named block with a local declaration", "[extract][reset]") {
+    // secworks aes: always @(posedge clk or negedge reset_n) begin: reg_update integer i; if (!reset_n) ...
+    auto e = extract("module t(input clk, input reset_n, input we, input [7:0] d, output reg [7:0] q);\n"
+                     "  reg [7:0] mem [0:3];\n"
+                     "  always @(posedge clk or negedge reset_n)\n"
+                     "    begin: reg_update\n"
+                     "      integer i;\n"
+                     "      if (!reset_n) begin\n"
+                     "        for (i = 0; i < 4; i = i + 1) mem[i] <= 8'h0;\n"
+                     "        q <= 8'h0;\n"
+                     "      end else if (we) q <= d;\n"
+                     "    end\n"
+                     "endmodule\n");
+    REQUIRE(e.design);
+    CHECK(e.countCode("IR-AMBIGUOUS-CLOCK") == 0);
+    CHECK(e.contains("@(posedge clk) arst(!reset_n -> 8'b00000000)"));
+    // negative: a declaration with an initializer is a statement, the block stays ambiguous
+    auto init = extract("module t(input clk, input reset_n, input [7:0] d, output reg [7:0] q);\n"
+                        "  always @(posedge clk or negedge reset_n)\n"
+                        "    begin: b\n"
+                        "      reg [7:0] t = 8'h0;\n"
+                        "      if (!reset_n) q <= 8'h0; else q <= d;\n"
+                        "    end\n"
+                        "endmodule\n");
+    CHECK(init.countCode("IR-AMBIGUOUS-CLOCK") == 1);
+}

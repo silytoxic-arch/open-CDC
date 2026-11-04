@@ -1024,6 +1024,10 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
     using EK = sast::ExpressionKind;
     const std::uint32_t w = exprWidth(e);
     switch (e.kind) {
+        case EK::LValueReference:
+            if (!lvalueRef_.empty())
+                return lvalueRef_.back().resized(w, e.type->isSigned());
+            return opaque(e, "reference to an assignment target outside a compound assignment");
         case EK::IntegerLiteral:
             return SigSpec::constant(fromSVInt(e.as<sast::IntegerLiteral>().getValue(), w));
         case EK::UnbasedUnsizedIntegerLiteral:

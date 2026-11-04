@@ -62,9 +62,21 @@ const sast::Statement& unwrap(const sast::Statement& s) {
     if (s.kind == sast::StatementKind::Block)
         return unwrap(s.as<sast::BlockStatement>().body);
     if (s.kind == sast::StatementKind::List) {
-        const auto& list = s.as<sast::StatementList>().list;
-        if (list.size() == 1)
-            return unwrap(*list[0]);
+        // declarations without an initializer do nothing: a named block
+        // `begin: reg_update integer i; if (!reset_n) ...` (secworks aes)
+        const sast::Statement* only = nullptr;
+        std::size_t n = 0;
+        for (const auto* st : s.as<sast::StatementList>().list) {
+            if (st->kind == sast::StatementKind::Empty)
+                continue;
+            if (st->kind == sast::StatementKind::VariableDeclaration &&
+                !st->as<sast::VariableDeclStatement>().symbol.getInitializer())
+                continue;
+            only = st;
+            ++n;
+        }
+        if (n == 1)
+            return unwrap(*only);
     }
     return s;
 }
@@ -300,24 +312,13 @@ void BodyBuilder::execExpressionStatement(const sast::Expression& e, ProcState& 
             auto targets = lvalue(a.left());
             if (!targets)
                 return;
+            // a op= b: slang's right-hand side is "LValueReference op b", the
+            // reference standing for the target's current value
+            if (a.isCompound())
+                lvalueRef_.push_back(lower(a.left()));
             SigSpec rhs = lower(a.right());
-            if (a.isCompound()) {
-                // a op= b  ->  a = a op b
-                SigSpec cur = lower(a.left());
-                const std::uint32_t w = cur.width();
-                switch (*a.op) {
-                    case sast::BinaryOperator::Add: rhs = cell(CellKind::Add, {cur, rhs.resized(w, false)}, w, l); break;
-                    case sast::BinaryOperator::Subtract: rhs = cell(CellKind::Sub, {cur, rhs.resized(w, false)}, w, l); break;
-                    case sast::BinaryOperator::BinaryAnd: rhs = cell(CellKind::And, {cur, rhs.resized(w, false)}, w, l); break;
-                    case sast::BinaryOperator::BinaryOr: rhs = cell(CellKind::Or, {cur, rhs.resized(w, false)}, w, l); break;
-                    case sast::BinaryOperator::BinaryXor: rhs = cell(CellKind::Xor, {cur, rhs.resized(w, false)}, w, l); break;
-                    case sast::BinaryOperator::LogicalShiftLeft: rhs = cell(CellKind::Shl, {cur, rhs}, w, l); break;
-                    case sast::BinaryOperator::LogicalShiftRight: rhs = cell(CellKind::Shr, {cur, rhs}, w, l); break;
-                    default:
-                        rhs = opaque(e, "compound assignment operator");
-                        break;
-                }
-            }
+            if (a.isCompound())
+                lvalueRef_.pop_back();
             assignTargets(*targets, rhs, a.isNonBlocking(), l);
             return;
         }

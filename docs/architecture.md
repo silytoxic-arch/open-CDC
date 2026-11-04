@@ -131,7 +131,7 @@ gui ──► engine ◄── cli
 ### 2.4 slang 相关风险
 
 - 【风险】**API 随大版本变化**。对策：只有 `frontend/slang_adapter/*.cpp` 包含 slang 头文件；锁定版本；升级时只改适配层。
-- 【风险→已解决】**Verilog-2001 关键字冲突**（如信号名叫 `logic`、`bit`）。阶段 1 已通过 slang 的 `PreprocessorOptions::keywordMapping` 为每个源文件指定 1364-2001/2005 关键字集，并有单元测试覆盖。
+- 【风险→已解决】**Verilog-2001 关键字冲突**（如信号名叫 `logic`、`bit`）。阶段 1 已通过 slang 的 `PreprocessorOptions::keywordMapping` 为每个源文件指定 1364-2001/2005 关键字集，并有单元测试覆盖。阶段 51 起，SystemVerilog 工程中的 `.v` 文件也使用 1364-2005 关键字（与 Vivado 把 `.v` 当作 Verilog 文件一致），每个源文件及其 `include 的文件都有映射（slang 的关键字栈只在全部映射时保持平衡）；设计没有实例化的模块中的语义错误降为警告（语法错误仍是错误）。
 - 【风险】slang 作为 SV 编译器会接受比 Verilog-2001 更多的语法。我们的 RTL 抽取层有自己的"支持清单"，遇到清单外构造（如 `interface`、`class`、`always_latch` 之外的复杂结构）一律报 `FE-UNSUPPORTED` 诊断，**不因为 slang 能解析就假装能分析**。
 
 ---

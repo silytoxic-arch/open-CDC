@@ -54,6 +54,36 @@ fetch adi-hdl      https://github.com/analogdevicesinc/hdl       c9a501d87a420d2
 fetch arty-xadc    https://github.com/Digilent/Arty-A7-100-XADC  2511692cc01c8b38cb8aa7d492b4e6dda97eb3c9
 fetch basys3-xadc  https://github.com/Digilent/Basys-3-XADC      fdfff92eca14c9e4df1ccc38317411e62a2f05d0
 fetch zybo-xadc    https://github.com/Digilent/Zybo-Z7-10-XADC   a55ca0d6f669d84bf1061d7b3e5a439397698634
+# only some directories of a large repository: blobs fetched for the checked-out paths only
+fetch_sparse() { # name url commit dir...
+    local name=$1 url=$2 commit=$3
+    shift 3
+    if [ ! -d "$name/.git" ]; then
+        git init -q "$name"
+        git -C "$name" remote add origin "$url"
+    fi
+    git -C "$name" config filter.lfs.required false
+    git -C "$name" config filter.lfs.process ""
+    git -C "$name" config filter.lfs.smudge cat
+    git -C "$name" config filter.lfs.clean cat
+    git -C "$name" sparse-checkout set "$@"
+    if [ "$(git -C "$name" rev-parse -q --verify HEAD 2>/dev/null)" = "$commit" ] &&
+       [ -z "$(git -C "$name" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        return 0
+    fi
+    local n
+    for n in 1 2 3 4; do
+        git -C "$name" fetch -q --depth 1 --filter=blob:none origin "$commit" && break
+        [ "$n" = 4 ] && { echo "::error::cannot fetch $url ($commit)"; return 1; }
+        echo "fetch $name failed (attempt $n), retrying in $((n * 10)) s"
+        sleep $((n * 10))
+    done
+    git -C "$name" checkout -q -f FETCH_HEAD
+}
+# NonTrivialMIPS (MIT) in the Loongson NSCSCC AXI SoC, and its AES submodule (secworks/aes, BSD-2)
+fetch_sparse nontrivial-mips https://github.com/trivialmips/nontrivial-mips 8e83643c22a3ba7612a9bb9cec93292dad618ab5 \
+    loongson/soc_axi_func/rtl src
+fetch nontrivial-mips/src/asic/aes https://github.com/secworks/aes a2502af731600cb20ddf6d8ed11a95804f011536
 
 cat > axi_cdc_top.sv <<'SV'
 module top (input logic src_clk, input logic src_rst_n, input logic dst_clk, input logic dst_rst_n);
@@ -241,6 +271,27 @@ cat > fmcomms2.ocdc.json <<'JSON'
 JSON
 
 fail=0
+# Loongson NSCSCC soc_axi_func with NonTrivialMIPS: the CPU in cpu_clk (50 MHz), the AXI RAM and confreg in sys_clk
+# (100 MHz) behind the AXI Clock Converter; the converter, both crossbars, the AXI block RAM and the floating point
+# IP modelled from their XML .xci; set_clock_groups as the project's own constraints (false paths between them)
+nt=nontrivial-mips
+nr=$nt/loongson/soc_axi_func/rtl
+cat > soc_axi_func.sdc <<'SDC'
+create_clock -name clk -period 10 [get_ports clk]
+set_clock_groups -asynchronous -group [get_clocks -of_objects [get_pins pll.clk_pll/cpu_clk]] -group [get_clocks -of_objects [get_pins pll.clk_pll/sys_clk]]
+SDC
+python3 - "$nt" "$nr" <<'PY'
+import glob, json, sys
+nt, nr = sys.argv[1], sys.argv[2]
+src = sorted(glob.glob(nt + "/src/**/*.sv", recursive=True)) + \
+      sorted(p for p in glob.glob(nt + "/src/**/*.v", recursive=True) if "/toolruns/" not in p and "/tb/" not in p) + \
+      [nr + "/soc_axi_lite_top.v", nr + "/CONFREG/confreg.v", nr + "/axi_wrap/axi_wrap.v", nr + "/ram_wrap/axi_wrap_ram.v",
+       nr + "/myCPU/mycpu_top.v"] + sorted(glob.glob(nr + "/**/*.xci", recursive=True)) + \
+      sorted(glob.glob(nt + "/src/**/*.xci", recursive=True))
+json.dump({"format": "opencdc-project", "version": 1, "name": "soc_axi_func", "top": "soc_axi_lite_top", "sources": src,
+           "includeDirs": [nt + "/src", nt + "/src/cpu", nt + "/src/utils"], "constraints": ["soc_axi_func.sdc"]},
+          open("soc_axi_func.ocdc.json", "w"), indent=1)
+PY
 check() { # project expected-regex
     local out
     out=$("$BIN/opencdc" analyze "$1" -q 2>&1 || true)
@@ -269,6 +320,7 @@ json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": top,
            "constraints": sorted(glob.glob(d + "/src/constraints/*.xdc"))}, open(name + ".ocdc.json", "w"))
 PY
 done
+check soc_axi_func.ocdc.json "Clocks  : 3 \(991/991 registers resolved\).*CLKOUT0  \[divider\] alias=cpu_clk_clk_pll .*period=20ns.*axi_clock_converter:2.1.*AXI3, s_axi_aclk to m_axi_aclk, asynchronous clocks.*IP 'axi_crossbar_1x2' .*AXI3, 1 x 2, one clock.*blk_mem_gen:8.4.*AXI4 slave, 262144 x 32.*floating_point:7.1.*Summary : 0 error\(s\), 6 warning\(s\).*CDC     : 0 crossing path"
 check arty_xadc.ocdc.json "Clocks  : 1 \(14/14 registers resolved\).*IP 'xadc_wiz_0' \(xilinx.com:ip:xadc_wiz:3.3\) modelled.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check basys3_xadc.ocdc.json "Clocks  : 2 \(24/24 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 0 crossing path"

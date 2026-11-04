@@ -2176,3 +2176,154 @@ TEST_CASE("XCI: AXI DMA (axi_dma) in direct register mode, synchronous and async
     REQUIRE_FALSE(sg);
     CHECK(sg.error().message.find("scatter gather") != std::string::npos);
 }
+
+TEST_CASE("XCI: AXI Clock Converter (axi_clock_converter), ports from the configuration", "[frontend][xci][axi]") {
+    test::TempDir dir;
+    // Loongson NSCSCC soc_axi_func: AXI3, 4-bit IDs, asynchronous clocks
+    auto cc = [&](const std::string& protocol) {
+        return frontend::modelFromXci(
+            dir.write("cc" + protocol + ".xci",
+                      spirit("cc", "axi_clock_converter", "2.1",
+                             {{"C_AXI_PROTOCOL", protocol}, {"C_AXI_ID_WIDTH", "4"}, {"C_AXI_ADDR_WIDTH", "32"},
+                              {"C_AXI_DATA_WIDTH", "32"}, {"C_AXI_IS_ACLK_ASYNC", "1"}, {"C_SYNCHRONIZER_STAGE", "3"},
+                              {"C_AXI_SUPPORTS_USER_SIGNALS", "0"}})),
+            frontend::XciContext{});
+    };
+    auto a3 = cc("1");
+    REQUIRE(a3);
+    const auto& v = a3.value().verilog;
+    INFO(v);
+    for (const char* p : {"input  wire [3:0] s_axi_awid", "input  wire [3:0] s_axi_awlen", "input  wire [1:0] s_axi_awlock",
+                          "input  wire [3:0] s_axi_wid", "input  wire [3:0] s_axi_awqos", "output wire [31:0] m_axi_awaddr",
+                          "input  wire [31:0] m_axi_rdata", "output wire [3:0] s_axi_rid",
+                          "always @(posedge s_axi_aclk[0]) oc_s_axi_rdata_q", "always @(posedge s_axi_aclk[0]) oc_s_axi_awready_q",
+                          "always @(posedge m_axi_aclk[0]) oc_m_axi_awaddr_q", "always @(posedge m_axi_aclk[0]) oc_m_axi_rready_q"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: AXI3 has no region, nothing of one side in the other side's clock
+    CHECK(v.find("awregion") == std::string::npos);
+    CHECK(v.find("posedge m_axi_aclk[0]) oc_s_axi_") == std::string::npos);
+    CHECK(v.find("posedge s_axi_aclk[0]) oc_m_axi_") == std::string::npos);
+    CHECK(a3.value().summary.find("AXI3, s_axi_aclk to m_axi_aclk, asynchronous clocks (3 synchronizer stages)") !=
+          std::string::npos);
+    // AXI4: 8-bit lengths, region, no WID; AXI4-Lite: no IDs, no bursts
+    auto a4 = cc("0");
+    REQUIRE(a4);
+    CHECK(a4.value().verilog.find("input  wire [7:0] s_axi_awlen") != std::string::npos);
+    CHECK(a4.value().verilog.find("s_axi_awregion") != std::string::npos);
+    CHECK(a4.value().verilog.find("s_axi_wid") == std::string::npos);
+    auto lite = cc("2");
+    REQUIRE(lite);
+    CHECK(lite.value().verilog.find("s_axi_awid") == std::string::npos);
+    CHECK(lite.value().verilog.find("s_axi_awlen") == std::string::npos);
+    CHECK(lite.value().verilog.find("input  wire [31:0] s_axi_awaddr") != std::string::npos);
+}
+
+TEST_CASE("XCI: AXI Crossbar (axi_crossbar), one clock, slots concatenated", "[frontend][xci][axi]") {
+    test::TempDir dir;
+    // soc_axi_func axi_crossbar_1x2: 1 slave slot, 2 master slots, AXI3
+    auto m = frontend::modelFromXci(
+        dir.write("xb.xci", spirit("xb", "axi_crossbar", "2.1",
+                                   {{"C_AXI_PROTOCOL", "1"}, {"C_AXI_ID_WIDTH", "4"}, {"C_AXI_ADDR_WIDTH", "32"},
+                                    {"C_AXI_DATA_WIDTH", "32"}, {"C_NUM_SLAVE_SLOTS", "1"}, {"C_NUM_MASTER_SLOTS", "2"},
+                                    {"C_AXI_SUPPORTS_USER_SIGNALS", "0"}})),
+        frontend::XciContext{});
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"input  wire [31:0] s_axi_awaddr", "output wire [63:0] m_axi_awaddr", "output wire [1:0] m_axi_awvalid",
+                          "input  wire [1:0] m_axi_awready", "input  wire [63:0] m_axi_rdata",
+                          "always @(posedge aclk[0]) oc_dom_aclk", "always @(posedge aclk[0]) oc_m_axi_awaddr_q",
+                          "always @(posedge aclk[0]) oc_s_axi_rdata_q"})
+        CHECK(v.find(p) != std::string::npos);
+    CHECK(m.value().summary.find("AXI3, 1 x 2, one clock (aclk)") != std::string::npos);
+    // negative: aresetn is read in aclk, there is no other clock
+    CHECK(v.find("opencdc_async_source") == std::string::npos);
+}
+
+TEST_CASE("XCI: Block Memory Generator with the AXI4 interface, ports from the configuration", "[frontend][xci][bram]") {
+    test::TempDir dir;
+    auto axi = [&](const std::string& type, const std::string& hasId) {
+        return frontend::modelFromXci(
+            dir.write("ram" + type + hasId + ".xci",
+                      spirit("ram", "blk_mem_gen", "8.4",
+                             {{"C_INTERFACE_TYPE", "1"}, {"C_AXI_TYPE", type}, {"C_HAS_AXI_ID", hasId},
+                              {"C_AXI_ID_WIDTH", "4"}, {"C_WRITE_WIDTH_A", "32"}, {"C_WRITE_DEPTH_A", "262144"},
+                              {"C_MEM_TYPE", "1"}})),
+            frontend::XciContext{});
+    };
+    auto m = axi("1", "1");
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"input  wire [3:0] s_axi_awid", "input  wire [7:0] s_axi_arlen", "input  wire [3:0] s_axi_wstrb",
+                          "output wire [31:0] s_axi_rdata", "output wire [3:0] s_axi_bid",
+                          "always @(posedge s_aclk[0]) oc_dom_s_aclk", "always @(posedge s_aclk[0]) oc_s_axi_rdata_q"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: no lock/cache/prot ports (PG058), no IDs without C_HAS_AXI_ID, AXI4-Lite without bursts
+    CHECK(v.find("s_axi_awlock") == std::string::npos);
+    CHECK(v.find("s_axi_arprot") == std::string::npos);
+    auto noId = axi("1", "0");
+    REQUIRE(noId);
+    CHECK(noId.value().verilog.find("s_axi_awid") == std::string::npos);
+    auto lite = axi("0", "0");
+    REQUIRE(lite);
+    CHECK(lite.value().verilog.find("s_axi_awlen") == std::string::npos);
+    CHECK(lite.value().verilog.find("s_axi_wlast") == std::string::npos);
+    CHECK(lite.value().summary.find("AXI4-Lite slave") != std::string::npos);
+}
+
+TEST_CASE("XCI: Floating Point from an XML .xci, ports from the configuration", "[frontend][xci][datapath]") {
+    test::TempDir dir;
+    // nontrivial-mips floating_point_addsub: A, B and the operation channel, result tuser (3 bits)
+    auto m = frontend::modelFromXci(
+        dir.write("fp.xci", spirit("fp", "floating_point", "7.1",
+                                   {{"C_A_TDATA_WIDTH", "32"}, {"C_HAS_B", "1"}, {"C_B_TDATA_WIDTH", "32"}, {"C_HAS_C", "0"},
+                                    {"C_HAS_OPERATION", "1"}, {"C_OPERATION_TDATA_WIDTH", "8"},
+                                    {"C_RESULT_TDATA_WIDTH", "32"}, {"C_HAS_RESULT_TUSER", "1"},
+                                    {"C_RESULT_TUSER_WIDTH", "3"}, {"C_THROTTLE_SCHEME", "3"},
+                                    {"C_HAS_ACLKEN", "0"}, {"C_HAS_ARESETN", "0"}})),
+        frontend::XciContext{});
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    for (const char* p : {"input  wire [31:0] s_axis_a_tdata", "input  wire [31:0] s_axis_b_tdata",
+                          "input  wire [7:0] s_axis_operation_tdata", "output wire [2:0] m_axis_result_tuser",
+                          "always @(posedge aclk) oc_m_axis_result_tdata"})
+        CHECK(v.find(p) != std::string::npos);
+    // negative: non-blocking (no tready), no C channel
+    CHECK(v.find("tready") == std::string::npos);
+    CHECK(v.find("s_axis_c_") == std::string::npos);
+}
+
+TEST_CASE("XCI: Clocking Wizard with stale PLL values uses the MMCM values for the frequencies",
+          "[frontend][xci][clkwiz]") {
+    test::TempDir dir;
+    // soc_axi_func clk_pll: C_PRIMITIVE PLL, C_PLL_* all 1, C_MMCM_* give 50 and 100 MHz from 100 MHz
+    auto wiz = [&](const std::string& pllMult) {
+        return frontend::modelFromXci(
+            dir.write("pll" + pllMult + ".xci",
+                      spirit("clk_pll", "clk_wiz", "6.0",
+                             {{"C_PRIMITIVE", "PLL"}, {"C_PRIM_IN_FREQ", "100.000"}, {"C_CLKOUT2_USED", "1"},
+                              {"C_CLK_OUT1_PORT", "cpu_clk"}, {"C_CLK_OUT2_PORT", "sys_clk"},
+                              {"C_CLKOUT1_OUT_FREQ", "50.000"}, {"C_CLKOUT2_OUT_FREQ", "100.000"},
+                              {"C_PLL_CLKFBOUT_MULT", pllMult}, {"C_PLL_DIVCLK_DIVIDE", "1"},
+                              {"C_PLL_CLKOUT0_DIVIDE", pllMult == "1" ? "1" : "16"},
+                              {"C_PLL_CLKOUT1_DIVIDE", pllMult == "1" ? "1" : "8"},
+                              {"C_MMCM_CLKFBOUT_MULT_F", "9.000"}, {"C_MMCM_DIVCLK_DIVIDE", "1"},
+                              {"C_MMCM_CLKOUT0_DIVIDE_F", "18.000"}, {"C_MMCM_CLKOUT1_DIVIDE", "9"},
+                              {"C_USE_RESET", "0"}, {"C_USE_LOCKED", "0"}})),
+            frontend::XciContext{});
+    };
+    auto stale = wiz("1");
+    REQUIRE(stale);
+    INFO(stale.value().verilog);
+    CHECK(stale.value().verilog.find("MMCME2_ADV #(.CLKIN1_PERIOD(") != std::string::npos);
+    CHECK(stale.value().verilog.find(".CLKFBOUT_MULT_F(9.0)") != std::string::npos);
+    CHECK(std::ranges::any_of(stale.value().notes, [](const std::string& n) { return n.find("C_MMCM_*") != std::string::npos; }));
+    // negative: consistent PLL values (8 x 100 / 16 = 50, / 8 = 100) are used as they are
+    auto good = wiz("8");
+    REQUIRE(good);
+    CHECK(good.value().verilog.find("PLLE2_ADV #(") != std::string::npos);
+    CHECK(good.value().verilog.find(".CLKFBOUT_MULT(8)") != std::string::npos);
+    CHECK(good.value().notes.empty());
+}

@@ -75,8 +75,17 @@ Severity convertSeverity(slang::DiagnosticSeverity sev) {
 }
 
 /// Reports the diagnostics; returns whether any of them is an error.
+/// A source range of a module the design never instantiates.
+struct UnusedRange {
+    slang::BufferID buffer;
+    std::size_t begin = 0, end = 0;
+    std::string module;
+};
+
 bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::SourceManager& sm, DiagnosticSink& sink,
-                            const std::set<std::string>* lenientModules = nullptr) {
+                            const std::set<std::string>* lenientModules = nullptr,
+                            const std::vector<UnusedRange>* unused = nullptr,
+                            const slang::Diagnostics* parseDiags = nullptr) {
     slang::DiagnosticEngine engine(sm);
     (void)engine.setWarningOptions({}); // slang's default warning set
     bool errors = false;
@@ -108,6 +117,27 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
         }
         if (diag.code == slang::diag::UnknownModule)
             out.notes.emplace_back(detail::kUnknownModuleHint);
+        // a semantic error inside a module the design never instantiates: Vivado and
+        // Quartus elaborate from the top and do not look at it; syntax errors stay errors
+        if (unused && out.isError() && diag.location.valid()) {
+            const auto sub = diag.code.getSubsystem();
+            bool syntax = sub == slang::DiagSubsystem::Lexer || sub == slang::DiagSubsystem::Preprocessor ||
+                          sub == slang::DiagSubsystem::Parser;
+            if (parseDiags)
+                for (const auto& pd : *parseDiags)
+                    if (pd.code == diag.code && pd.location == diag.location) {
+                        syntax = true;
+                        break;
+                    }
+            const auto loc = sm.getFullyOriginalLoc(diag.location);
+            for (const auto& u : *unused)
+                if (!syntax && loc.buffer() == u.buffer && loc.offset() >= u.begin && loc.offset() < u.end) {
+                    out.severity = Severity::Warning;
+                    out.notes.push_back("in module '" + u.module + "', which the design does not instantiate (FPGA "
+                                        "tools elaborate from the top and do not check it)");
+                    break;
+                }
+        }
         errors = errors || out.isError();
         for (const auto& note : diag.notes) {
             std::string text = engine.formatMessage(note);
@@ -125,7 +155,8 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
 /// slang as UTF-8 under the path slang caches files by, so slang reads the
 /// decoded text instead of warning about every comment.
 void preloadNonUtf8(const std::vector<std::string>& paths, const std::vector<std::filesystem::path>& includeDirs,
-                    slang::SourceManager& sm, DiagnosticSink& sink) {
+                    slang::SourceManager& sm, DiagnosticSink& sink,
+                    std::map<std::string, std::string>* includedBy = nullptr) {
     static const std::regex includeRe(R"re(`include\s*"([^"]+)")re");
     std::set<std::string> visited;
     std::vector<std::filesystem::path> work;
@@ -155,6 +186,10 @@ void preloadNonUtf8(const std::vector<std::string>& paths, const std::vector<std
                 candidates.push_back(d / inc);
             for (const auto& c : candidates)
                 if (std::filesystem::is_regular_file(c, ec)) {
+                    if (includedBy) {
+                        const auto cc = std::filesystem::weakly_canonical(c, ec);
+                        includedBy->emplace(slang::getU8Str(ec ? c : cc), key);
+                    }
                     work.push_back(c);
                     break;
                 }
@@ -289,6 +324,7 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     for (const auto& dir : input.includeDirs)
         ppOptions.additionalIncludePaths.push_back(dir);
 
+    bool svKeywordMapping = false;
     switch (input.language) {
         case LanguageStd::Verilog2001:
         case LanguageStd::Verilog2005: {
@@ -306,6 +342,14 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
         case LanguageStd::SystemVerilog2017:
             ppOptions.languageVersion = slang::LanguageVersion::v1800_2017;
             compOptions.languageVersion = slang::LanguageVersion::v1800_2017;
+            // as in Vivado (file type Verilog for .v): a .v file of a SystemVerilog
+            // project keeps the Verilog-2005 keywords, so a port named `int` or
+            // `logic` there is an identifier (the Loongson NSCSCC mycpu_top.v)
+            // (every source and every file it includes is mapped below, after the
+            // includes are known: slang's keyword stack stays balanced only for
+            // mapped buffers, an unmapped include inside an unmapped include pops
+            // the includer's entry)
+            svKeywordMapping = true;
             break;
     }
     if (mixed) {
@@ -319,12 +363,33 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     for (const auto& [name, value] : input.topParameters)
         compOptions.paramOverrides.push_back(name + "=" + value);
 
+    slang::SourceManager sourceManager;
+    std::map<std::string, std::string> includedBy;
+    preloadNonUtf8(paths, input.includeDirs, sourceManager, sink, svKeywordMapping ? &includedBy : nullptr);
+    if (svKeywordMapping) {
+        std::map<std::string, slang::parsing::KeywordVersion> version;
+        for (const auto& p : keywordPatterns)
+            version[p] = p.ends_with(".v") || p.ends_with(".V") ? slang::parsing::KeywordVersion::v1364_2005
+                                                                 : slang::parsing::KeywordVersion::v1800_2017;
+        // an include takes the keywords of the file that first includes it
+        std::function<slang::parsing::KeywordVersion(const std::string&, int)> of =
+            [&](const std::string& f, int depth) -> slang::parsing::KeywordVersion {
+            if (auto it = version.find(f); it != version.end())
+                return it->second;
+            auto by = includedBy.find(f);
+            if (by == includedBy.end() || depth > 64)
+                return slang::parsing::KeywordVersion::v1800_2017;
+            return version[f] = of(by->second, depth + 1);
+        };
+        for (const auto& [inc, by] : includedBy)
+            (void)of(inc, 0);
+        for (const auto& [f, v] : version)
+            ppOptions.keywordMapping.emplace_back(f, v);
+    }
+
     slang::Bag options;
     options.set(ppOptions);
     options.set(compOptions);
-
-    slang::SourceManager sourceManager;
-    preloadNonUtf8(paths, input.includeDirs, sourceManager, sink);
     std::vector<std::string_view> pathViews(paths.begin(), paths.end());
     // All files form one compilation unit (macros flow from earlier files to
     // later ones), matching the behaviour of FPGA vendor tools.
@@ -340,8 +405,21 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     const auto& root = compilation.getRoot();
 
     const auto& slangDiags = compilation.getAllDiagnostics();
-    const bool hdlErrors =
-        reportSlangDiagnostics(slangDiags, sourceManager, sink, mixed ? &mixed->lenientModules : nullptr);
+    std::vector<UnusedRange> unused;
+    for (const auto* def : compilation.getUnreferencedDefinitions()) {
+        const auto* syn = def->getSyntax();
+        if (!syn)
+            continue;
+        const auto r = syn->sourceRange();
+        const auto b = sourceManager.getFullyOriginalLoc(r.start());
+        const auto e = sourceManager.getFullyOriginalLoc(r.end());
+        if (b.buffer() == e.buffer())
+            unused.push_back({b.buffer(), b.offset(), e.offset(), std::string(def->name)});
+    }
+    const bool hdlErrors = reportSlangDiagnostics(slangDiags, sourceManager, sink,
+                                                  mixed ? &mixed->lenientModules : nullptr,
+                                                  input.top.empty() && !mixed ? nullptr : &unused,
+                                                  &compilation.getParseDiagnostics());
 
     FrontendOutput output;
     ElaborationSummary& summary = output.summary;

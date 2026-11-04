@@ -112,6 +112,9 @@ public:
 
     // ---- shared helpers (IrBuilder.cpp) ----
     ir::SigSpec lower(const sast::Expression& e);
+    /// The current value of a compound assignment's target (a op= b: slang's
+    /// right-hand side is "LValueReference op b").
+    std::vector<ir::SigSpec> lvalueRef_;
     std::optional<std::vector<LTarget>> lvalue(const sast::Expression& e);
     ir::SigSpec cell(ir::CellKind kind, std::vector<ir::SigSpec> inputs, std::uint32_t width,
                      slang::SourceLocation loc, bool isSigned = false);

@@ -210,9 +210,72 @@ TEST_CASE("Verilog-2001 mode accepts SystemVerilog keywords as identifiers", "[f
         UNSCOPED_INFO(format(d));
     CHECK_FALSE(v2001.hasErrors());
 
-    auto sv = elaborate(singleFile(file, LanguageStd::SystemVerilog2017));
+    // a SystemVerilog project reads a .v file with Verilog keywords, as Vivado does (file type Verilog)
+    auto svv = elaborate(singleFile(file, LanguageStd::SystemVerilog2017));
+    REQUIRE(svv.summary.ok());
+    CHECK_FALSE(svv.hasErrors());
+    // negative: the same text as a .sv file: 'logic' and 'bit' are keywords
+    auto svFile = dir.write("kw.sv", "module kw (input wire clk, output wire o);\n  reg logic;\n  wire bit;\n"
+                                     "  assign bit = logic;\n  always @(posedge clk) logic <= ~logic;\n"
+                                     "  assign o = bit;\nendmodule\n");
+    auto sv = elaborate(singleFile(svFile, LanguageStd::SystemVerilog2017));
     REQUIRE(sv.summary.ok());
     CHECK(sv.hasErrors());
+}
+
+TEST_CASE("SystemVerilog project: Verilog and SystemVerilog files keep their keywords through nested includes",
+          "[frontend][language]") {
+    // nontrivial-mips: soc_top.sv includes common_defs.svh, which includes compile_options.svh;
+    // the files after it kept the SystemVerilog keywords only with every include mapped
+    test::TempDir dir;
+    dir.write("inner.svh", "`define INNER 1\n");
+    dir.write("outer.svh", "`ifndef OUTER\n`define OUTER\n`include \"inner.svh\"\ntypedef logic [7:0] byte_t;\n`endif\n");
+    FrontendInput in;
+    in.sourceFiles = {dir.write("a.sv", "`include \"outer.svh\"\nmodule a(input logic clk); endmodule\n"),
+                      dir.write("v.v", "module v(input clk, input [3:0] int, output o); assign o = int[0]; endmodule\n"),
+                      dir.write("z.sv", "module z #(parameter int unsigned W = 4, parameter type T = logic [W-1:0])\n"
+                                        "  (input logic clk, input T d, output T q);\n"
+                                        "  always_ff @(posedge clk) q <= d;\nendmodule\n"),
+                      dir.write("top.v", "module top(input clk, input [3:0] d, output [3:0] q, output o);\n"
+                                         "  a ua(.clk(clk));\n  v uv(.clk(clk), .int(d), .o(o));\n"
+                                         "  z uz(.clk(clk), .d(d), .q(q));\nendmodule\n")};
+    in.includeDirs = {dir.path()};
+    in.language = LanguageStd::SystemVerilog2017;
+    in.top = "top";
+    auto r = elaborate(in);
+    REQUIRE(r.summary.ok());
+    for (const auto& d : r.diags)
+        UNSCOPED_INFO(format(d));
+    CHECK_FALSE(r.hasErrors());
+}
+
+TEST_CASE("Semantic errors in modules the design does not instantiate are warnings", "[frontend][diag]") {
+    // nontrivial-mips cp0_forward.sv: a stale module, in the Vivado project but instantiated nowhere
+    test::TempDir dir;
+    auto run = [&](const std::string& unusedBody, const std::string& top) {
+        FrontendInput in;
+        in.sourceFiles = {dir.write("u.sv", "typedef struct packed { logic a; } s_t;\n"
+                                            "module unused(input s_t x, output logic y);\n" + unusedBody +
+                                                "endmodule\n"),
+                          dir.write("t.sv", "module t(input logic a, output logic y);\n  assign y = a;\nendmodule\n")};
+        in.language = LanguageStd::SystemVerilog2017;
+        in.top = top;
+        return elaborate(in);
+    };
+    auto unused = run("  assign y = x.missing;\n", "t");
+    REQUIRE(unused.summary.ok());
+    CHECK_FALSE(unused.hasErrors());
+    const auto* w = unused.findCode("FE-SLANG-UnknownMember");
+    REQUIRE(w);
+    CHECK(w->severity == Severity::Warning);
+    // negative: the same module as the top is an error
+    auto used = run("  assign y = x.missing;\n", "unused");
+    REQUIRE(used.summary.ok());
+    CHECK(used.hasErrors());
+    // negative: a syntax error in an unused module stays an error
+    auto syntax = run("  assign y = ;\n", "t");
+    REQUIRE(syntax.summary.ok());
+    CHECK(syntax.hasErrors());
 }
 
 TEST_CASE("Explicit top selection and invalid top", "[frontend][top]") {

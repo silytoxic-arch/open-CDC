@@ -1137,8 +1137,48 @@ Result<XciModel> clockingWizard(const XciInfo& info) {
             return 100.0;
         }
     }();
+    // the multiply/divide values must give the frequencies Vivado reports for the
+    // outputs (C_CLKOUTn_OUT_FREQ): older .xci of a PLL keep stale C_PLL_* values
+    // (all 1) next to the MMCM values Vivado computed for the same frequencies
+    auto real = [&](const std::string& k, double def) {
+        try {
+            return std::stod(text(m, k, ""));
+        }
+        catch (...) {
+            return def;
+        }
+    };
+    auto consistent = [&](bool usePll) {
+        const double mult = usePll ? real("C_PLL_CLKFBOUT_MULT", 1) : real("C_MMCM_CLKFBOUT_MULT_F", 1);
+        const double dv = usePll ? real("C_PLL_DIVCLK_DIVIDE", 1) : real("C_MMCM_DIVCLK_DIVIDE", 1);
+        for (const auto& o : outs) {
+            const std::string k = std::to_string(o.n - 1);
+            const double od = usePll ? real("C_PLL_CLKOUT" + k + "_DIVIDE", 1)
+                                     : real(o.n == 1 ? "C_MMCM_CLKOUT0_DIVIDE_F" : "C_MMCM_CLKOUT" + k + "_DIVIDE", 1);
+            const double want = real("C_CLKOUT" + std::to_string(o.n) + "_OUT_FREQ",
+                                     real("C_CLKOUT" + std::to_string(o.n - 1) + "_ACTUAL_FREQ", 0));
+            if (want <= 0 || dv <= 0 || od <= 0)
+                continue;
+            const double got = inFreq * mult / dv / od;
+            if (std::abs(got - want) > 0.01 * want)
+                return false;
+        }
+        return true;
+    };
+    bool usePllParams = pll;
+    std::string staleNote;
+    if (pll && !consistent(true) && consistent(false)) {
+        usePllParams = false;
+        staleNote = "the PLL's multiply/divide values in the .xci (C_PLL_*) do not give the configured output "
+                    "frequencies; the clock ratios are taken from the MMCM values Vivado computed for the same "
+                    "frequencies (C_MMCM_*)";
+    }
+    else if (!consistent(pll)) {
+        staleNote = "the multiply/divide values in the .xci do not give the configured output frequencies "
+                    "(C_CLKOUTn_OUT_FREQ); the clock periods follow the multiply/divide values";
+    }
     std::ostringstream params;
-    if (pll) {
+    if (usePllParams) {
         params << ".CLKIN1_PERIOD(" << realLit(m, "C_PLL_CLKIN1_PERIOD", 1000.0 / inFreq) << "), .DIVCLK_DIVIDE("
                << num(m, "C_PLL_DIVCLK_DIVIDE", 1) << "), .CLKFBOUT_MULT(" << num(m, "C_PLL_CLKFBOUT_MULT", 1) << ")";
         for (const auto& o : outs)
@@ -1161,8 +1201,9 @@ Result<XciModel> clockingWizard(const XciInfo& info) {
     auto outNet = [&](const Out& o) { return o.port + "_" + info.instance; };
     for (const auto& o : outs)
         v << "  wire " << outNet(o) << ";\n";
+    const std::string primUsed = usePllParams || !pll ? prim : "MMCME2_ADV";
     v << "  wire oc_locked;\n"
-      << "  " << prim << " #(" << params.str() << ")\n    oc_" << (pll ? "pll" : "mmcm") << " (.CLKIN1(oc_clkin1), .CLKIN2(oc_clkin2), .CLKINSEL("
+      << "  " << primUsed << " #(" << params.str() << ")\n    oc_" << (pll ? "pll" : "mmcm") << " (.CLKIN1(oc_clkin1), .CLKIN2(oc_clkin2), .CLKINSEL("
       << (switchover && hasPort("clk_in_sel") ? "clk_in_sel" : "1'b1") << "), .CLKFBIN(oc_clkfb_i), .CLKFBOUT(oc_clkfb_o), .RST(" << rst
       << "), .PWRDWN(" << (powerDown && hasPort("power_down") ? "power_down" : "1'b0") << "), .LOCKED(oc_locked)";
     for (const auto& o : outs)
@@ -1210,6 +1251,8 @@ Result<XciModel> clockingWizard(const XciInfo& info) {
     }
     if (num(m, "C_USE_DYN_RECONFIG", 0) != 0)
         out.notes.push_back("dynamic reconfiguration is not modelled: the output clocks keep the configured frequencies");
+    if (!staleNote.empty())
+        out.notes.push_back(staleNote);
     return out;
 }
 
@@ -1247,11 +1290,12 @@ void emitHeader(std::ostringstream& v, const std::string& module, const std::vec
     v << ");\n";
 }
 
+Result<XciModel> blockMemoryAxi(XciInfo info);
+
 Result<XciModel> blockMemory(const XciInfo& info) {
     const auto& m = info.model;
     if (num(m, "C_INTERFACE_TYPE", 0) != 0)
-        return unsupported("IP '" + info.instance + "': Block Memory Generator with an AXI4 interface is not modelled",
-                           {"use the IP's generated HDL, or set the project option unknownModules to blackbox"});
+        return blockMemoryAxi(info);
     const long long type = num(m, "C_MEM_TYPE", 0); // 0 SP RAM, 1 SDP RAM, 2 TDP RAM, 3 SP ROM, 4 DP ROM
     const bool rom = type == 3 || type == 4;
     const bool hasB = type == 1 || type == 2 || type == 4;
@@ -1754,6 +1798,39 @@ Result<XciModel> oneClockIp(const XciInfo& info) {
         if (num(m, "C_HAS_S_AXIS_PHASE_TLAST", 0) || num(m, "C_HAS_S_AXIS_CARTESIAN_TLAST", 0))
             add("m_axis_dout_tlast", true, 1, false);
         add("m_axis_dout_tdata", true, static_cast<unsigned>(num(m, "C_M_AXIS_DOUT_TDATA_WIDTH", 16)), true);
+    }
+    else if (info.name == "floating_point") {
+        // PG060: the A channel always, B, C and the operation channel when present
+        auto add = [&](std::string n, bool out, unsigned w, bool isVec) { ports.push_back({std::move(n), out, w, isVec}); };
+        add("aclk", false, 1, false);
+        if (num(m, "C_HAS_ACLKEN", 0))
+            add("aclken", false, 1, false);
+        if (num(m, "C_HAS_ARESETN", 0))
+            add("aresetn", false, 1, false);
+        const long long throttle = num(m, "C_THROTTLE_SCHEME", 3);
+        for (const char* ch : {"a", "b", "c", "operation"}) {
+            std::string up = ch;
+            std::ranges::transform(up, up.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            if (up != "A" && !num(m, "C_HAS_" + up, 0))
+                continue;
+            const std::string pre = std::string("s_axis_") + ch;
+            add(pre + "_tvalid", false, 1, false);
+            if (throttle != 3 && throttle != 4)
+                add(pre + "_tready", true, 1, false);
+            add(pre + "_tdata", false, static_cast<unsigned>(num(m, "C_" + up + "_TDATA_WIDTH", 32)), true);
+            if (num(m, "C_HAS_" + up + "_TUSER", 0))
+                add(pre + "_tuser", false, static_cast<unsigned>(num(m, "C_" + up + "_TUSER_WIDTH", 1)), true);
+            if (num(m, "C_HAS_" + up + "_TLAST", 0))
+                add(pre + "_tlast", false, 1, false);
+        }
+        add("m_axis_result_tvalid", true, 1, false);
+        if (throttle == 1 || throttle == 2)
+            add("m_axis_result_tready", false, 1, false);
+        add("m_axis_result_tdata", true, static_cast<unsigned>(num(m, "C_RESULT_TDATA_WIDTH", 32)), true);
+        if (num(m, "C_HAS_RESULT_TUSER", 0))
+            add("m_axis_result_tuser", true, static_cast<unsigned>(num(m, "C_RESULT_TUSER_WIDTH", 1)), true);
+        if (num(m, "C_HAS_RESULT_TLAST", 0))
+            add("m_axis_result_tlast", true, 1, false);
     }
     else {
         return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
@@ -3794,6 +3871,240 @@ Result<XciModel> axiDma(const XciInfo& info) {
     return r;
 }
 
+/// The ports of an AXI interface of a Xilinx infrastructure IP (the clock
+/// converter, the crossbar) from its configuration: AXI4 (C_AXI_PROTOCOL 0),
+/// AXI3 (1) or AXI4-Lite (2), `slots` interfaces concatenated in each port.
+/// AXI4 has region and QoS, AXI3 QoS and WID (as the Xilinx IP ports are).
+std::vector<BoundaryPort> axiInterfacePorts(const std::string& prefix, bool master, long long slots, long long protocol,
+                                            long long id, long long addr, long long data, bool user,
+                                            const std::map<std::string, std::string>& m) {
+    std::vector<BoundaryPort> ports;
+    // `fromMaster`: the signal goes from the AXI master to the slave
+    auto add = [&](const std::string& n, long long width, bool fromMaster) {
+        if (width <= 0)
+            return;
+        BoundaryPort b;
+        b.name = prefix + "_" + n;
+        // the IP's slave interface receives the master's signals, its master interface drives them
+        b.output = master == fromMaster;
+        if (width * slots > 1 || n.ends_with("id") || n.ends_with("data") || n.ends_with("strb") || n.ends_with("addr"))
+            b.range = std::pair<long long, long long>{width * slots - 1, 0};
+        ports.push_back(b);
+    };
+    const bool lite = protocol == 2;
+    const bool axi3 = protocol == 1;
+    const auto uw = [&](const char* k) { return user ? num(m, k, 1) : 0LL; };
+    for (const char* ch : {"aw", "ar"}) {
+        const std::string c = ch;
+        if (!lite) {
+            add(c + "id", id, true);
+        }
+        add(c + "addr", addr, true);
+        if (!lite) {
+            add(c + "len", axi3 ? 4 : 8, true);
+            add(c + "size", 3, true);
+            add(c + "burst", 2, true);
+            add(c + "lock", axi3 ? 2 : 1, true);
+            add(c + "cache", 4, true);
+        }
+        add(c + "prot", 3, true);
+        if (!lite) {
+            if (!axi3)
+                add(c + "region", 4, true);
+            add(c + "qos", 4, true);
+            add(c + "user", uw(c == "aw" ? "C_AXI_AWUSER_WIDTH" : "C_AXI_ARUSER_WIDTH"), true);
+        }
+        add(c + "valid", 1, true);
+        add(c + "ready", 1, false);
+    }
+    if (axi3)
+        add("wid", id, true);
+    add("wdata", data, true);
+    add("wstrb", data / 8, true);
+    if (!lite) {
+        add("wlast", 1, true);
+        add("wuser", uw("C_AXI_WUSER_WIDTH"), true);
+    }
+    add("wvalid", 1, true);
+    add("wready", 1, false);
+    if (!lite)
+        add("bid", id, false);
+    add("bresp", 2, false);
+    if (!lite)
+        add("buser", uw("C_AXI_BUSER_WIDTH"), false);
+    add("bvalid", 1, false);
+    add("bready", 1, true);
+    if (!lite)
+        add("rid", id, false);
+    add("rdata", data, false);
+    add("rresp", 2, false);
+    if (!lite) {
+        add("rlast", 1, false);
+        add("ruser", uw("C_AXI_RUSER_WIDTH"), false);
+    }
+    add("rvalid", 1, false);
+    add("rready", 1, true);
+    return ports;
+}
+
+/// AXI Clock Converter (axi_clock_converter, PG164): the slave interface and
+/// s_axi_aresetn in s_axi_aclk, the master interface and m_axi_aresetn in
+/// m_axi_aclk; the IP crosses between them (asynchronous FIFOs with
+/// C_AXI_IS_ACLK_ASYNC 1, a synchronous integer ratio otherwise).
+Result<XciModel> axiClockConverter(XciInfo info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const long long protocol = num(m, "C_AXI_PROTOCOL", 0);
+    const bool fromConfig = info.ports.empty();
+    if (fromConfig) {
+        const long long id = protocol == 2 ? 0 : num(m, "C_AXI_ID_WIDTH", 0);
+        const long long addr = num(m, "C_AXI_ADDR_WIDTH", 32), data = num(m, "C_AXI_DATA_WIDTH", 32);
+        const bool user = num(m, "C_AXI_SUPPORTS_USER_SIGNALS", 0) != 0;
+        info.ports = {{"s_axi_aclk", false, false, {}}, {"s_axi_aresetn", false, false, {}},
+                      {"m_axi_aclk", false, false, {}}, {"m_axi_aresetn", false, false, {}}};
+        for (auto& p : axiInterfacePorts("s_axi", false, 1, protocol, id, addr, data, user, m))
+            info.ports.push_back(p);
+        for (auto& p : axiInterfacePorts("m_axi", true, 1, protocol, id, addr, data, user, m))
+            info.ports.push_back(p);
+    }
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "s_axi_aclk" || n == "m_axi_aclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n.starts_with("s_axi_"))
+            return PortClass{K::Sync, "s_axi_aclk", 0, {}, 0};
+        if (n.starts_with("m_axi_"))
+            return PortClass{K::Sync, "m_axi_aclk", 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    const bool async = num(m, "C_AXI_IS_ACLK_ASYNC", 1) != 0;
+    r.value().summary = std::string(protocol == 2 ? "AXI4-Lite" : protocol == 1 ? "AXI3" : "AXI4") +
+                        ", s_axi_aclk to m_axi_aclk, " +
+                        (async ? "asynchronous clocks (" + text(m, "C_SYNCHRONIZER_STAGE", "?") + " synchronizer stages)"
+                               : "synchronous clocks, ratio " + text(m, "C_S_AXI_ACLK_RATIO", "?") + ":" +
+                                     text(m, "C_M_AXI_ACLK_RATIO", "?")) +
+                        (fromConfig ? ", ports from the configuration" : "");
+    r.value().notes.push_back("the slave interface is in s_axi_aclk, the master interface in m_axi_aclk (PG164); the IP "
+                              "crosses between them");
+    return r;
+}
+
+/// AXI Crossbar (axi_crossbar, PG059): one clock, aclk, for every interface.
+Result<XciModel> axiCrossbar(XciInfo info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const long long protocol = num(m, "C_AXI_PROTOCOL", 0);
+    const bool fromConfig = info.ports.empty();
+    if (fromConfig) {
+        const long long id = protocol == 2 ? 0 : num(m, "C_AXI_ID_WIDTH", 0);
+        const long long addr = num(m, "C_AXI_ADDR_WIDTH", 32), data = num(m, "C_AXI_DATA_WIDTH", 32);
+        const bool user = num(m, "C_AXI_SUPPORTS_USER_SIGNALS", 0) != 0;
+        info.ports = {{"aclk", false, false, {}}, {"aresetn", false, false, {}}};
+        for (auto& p : axiInterfacePorts("s_axi", false, num(m, "C_NUM_SLAVE_SLOTS", 1), protocol, id, addr, data, user, m))
+            info.ports.push_back(p);
+        for (auto& p : axiInterfacePorts("m_axi", true, num(m, "C_NUM_MASTER_SLOTS", 1), protocol, id, addr, data, user, m))
+            info.ports.push_back(p);
+    }
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "aclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n == "aresetn" || n.starts_with("s_axi_") || n.starts_with("m_axi_"))
+            return PortClass{K::Sync, "aclk", 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    r.value().summary = std::string(protocol == 2 ? "AXI4-Lite" : protocol == 1 ? "AXI3" : "AXI4") + ", " +
+                        text(m, "C_NUM_SLAVE_SLOTS", "?") + " x " + text(m, "C_NUM_MASTER_SLOTS", "?") +
+                        ", one clock (aclk)" + (fromConfig ? ", ports from the configuration" : "");
+    r.value().notes.push_back("every interface of the crossbar is in aclk (PG059)");
+    return r;
+}
+
+/// Block Memory Generator with the AXI4 or AXI4-Lite slave interface (PG058,
+/// C_INTERFACE_TYPE 1): one clock, s_aclk, for the AXI interface, s_aresetn
+/// and the ECC ports; the ports from the configuration (32-bit addresses,
+/// C_WRITE_WIDTH_A data, C_AXI_ID_WIDTH when C_HAS_AXI_ID).
+Result<XciModel> blockMemoryAxi(XciInfo info) {
+    const auto& m = info.model;
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    const bool lite = num(m, "C_AXI_TYPE", 1) == 0;
+    const bool fromConfig = info.ports.empty();
+    if (fromConfig) {
+        const long long data = num(m, "C_WRITE_WIDTH_A", 32);
+        const long long id = !lite && num(m, "C_HAS_AXI_ID", 0) != 0 ? num(m, "C_AXI_ID_WIDTH", 4) : 0;
+        auto add = [&](const std::string& n, long long width, bool out, bool vector = false) {
+            if (width <= 0)
+                return;
+            BoundaryPort b;
+            b.name = n;
+            b.output = out;
+            if (width > 1 || vector)
+                b.range = std::pair<long long, long long>{width - 1, 0};
+            info.ports.push_back(b);
+        };
+        add("s_aclk", 1, false);
+        add("s_aresetn", 1, false);
+        for (const char* ch : {"aw", "ar"}) {
+            const std::string c = std::string("s_axi_") + ch;
+            add(c + "id", id, false, true);
+            add(c + "addr", 32, false);
+            if (!lite) {
+                add(c + "len", 8, false);
+                add(c + "size", 3, false);
+                add(c + "burst", 2, false);
+            }
+            add(c + "valid", 1, false);
+            add(c + "ready", 1, true);
+        }
+        add("s_axi_wdata", data, false, true);
+        add("s_axi_wstrb", data / 8, false, true);
+        if (!lite)
+            add("s_axi_wlast", 1, false);
+        add("s_axi_wvalid", 1, false);
+        add("s_axi_wready", 1, true);
+        add("s_axi_bid", id, true, true);
+        add("s_axi_bresp", 2, true);
+        add("s_axi_bvalid", 1, true);
+        add("s_axi_bready", 1, false);
+        add("s_axi_rid", id, true, true);
+        add("s_axi_rdata", data, true, true);
+        add("s_axi_rresp", 2, true);
+        if (!lite)
+            add("s_axi_rlast", 1, true);
+        add("s_axi_rvalid", 1, true);
+        add("s_axi_rready", 1, false);
+        if (num(m, "C_USE_ECC", 0) != 0 || num(m, "C_USE_SOFTECC", 0) != 0) {
+            add("s_axi_injectsbiterr", 1, false);
+            add("s_axi_injectdbiterr", 1, false);
+            add("s_axi_sbiterr", 1, true);
+            add("s_axi_dbiterr", 1, true);
+            add("s_axi_rdaddrecc", num(m, "C_ADDRB_WIDTH", 1), true);
+        }
+    }
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "s_aclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n == "s_aresetn" || n.starts_with("s_axi_") || n == "rsta_busy" || n == "rstb_busy")
+            return PortClass{K::Sync, "s_aclk", 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnv, classify, {});
+    if (!r)
+        return r;
+    r.value().summary = std::string(lite ? "AXI4-Lite" : "AXI4") + " slave, " + text(m, "C_WRITE_DEPTH_A", "?") +
+                        " x " + text(m, "C_WRITE_WIDTH_A", "?") + ", one clock (s_aclk)" +
+                        (fromConfig ? ", ports from the configuration" : "");
+    r.value().notes.push_back("the AXI interface of the Block Memory Generator is in s_aclk (PG058)");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -3854,6 +4165,10 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return clause74Fec(info);
     if (info.name == "axi_dma")
         return axiDma(info);
+    if (info.name == "axi_clock_converter")
+        return axiClockConverter(info);
+    if (info.name == "axi_crossbar")
+        return axiCrossbar(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +
