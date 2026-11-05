@@ -155,11 +155,14 @@ private:
 
     std::optional<XciCellInterface> cellInterface(const json& c, const std::string& xci) {
         if (!xci.empty()) {
-            const auto base = dir_ / "ip" / xci;
-            for (const char* ext : {".xml", ".xci"})
-                if (const auto t = readSourceText(base / (xci + ext)))
-                    if (auto ci = cellInterfaceFromText(t->utf8))
-                        return ci;
+            std::vector<std::filesystem::path> bases = {dir_ / "ip" / xci};
+            if (const auto gen = generatedProductsDir(dir_ / "ip" / xci))
+                bases.push_back(*gen); // Vivado 2020.2+: the component file in <project>.gen
+            for (const auto& base : bases)
+                for (const char* ext : {".xml", ".xci"})
+                    if (const auto t = readSourceText(base / (xci + ext)))
+                        if (auto ci = cellInterfaceFromText(t->utf8))
+                            return ci;
         }
         // a module reference: the ports and port maps in the block design itself
         if (!c.contains("ports") && !c.contains("interface_ports"))

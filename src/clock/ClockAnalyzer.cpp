@@ -155,6 +155,13 @@ private:
             std::erase(v, '"');
             c.name = c.name.substr(0, c.name.size() - net.name.size()) + v;
         }
+        // the name the IP's own constraints give the clock (Zynq FCLK_CLK0: clk_fpga_0)
+        if (const auto* al = net.findAttr("OPENCDC_CLOCK_ALIAS")) {
+            std::string v = al->value;
+            std::erase(v, '"');
+            if (!v.empty())
+                c.aliases.push_back(v);
+        }
         // a period an IP configuration gives its clock output (a transceiver's TXOUTCLK)
         if (const auto* per = net.findAttr("OPENCDC_CLOCK_PERIOD")) {
             try {

@@ -77,6 +77,8 @@ same name are not used. The model's note names the declaration it used.
 | AXI Interrupt Controller (`xilinx.com:ip:axi_intc`) | PG099: the registers in `s_axi_aclk`, `irq` in `s_axi_aclk` (in `processor_clk` with `C_ENABLE_ASYNC`); interrupt inputs marked asynchronous in `C_ASYNC_INTR` are synchronized inside the IP (not read by the model), the others are sampled in `s_axi_aclk` (all of them with `C_DISABLE_SYNCHRONIZERS`). Not modelled: fast interrupt mode, cascade mode. |
 | AXI Ethernet Lite (`xilinx.com:ip:axi_ethernetlite`), MII | PG135: the registers, `ip2intc_irpt`, `phy_rst_n` and MDIO (`phy_mdc`, `phy_mdio_o/_t`) in `s_axi_aclk`; `phy_rx_data`, `phy_dv`, `phy_rx_er` in `phy_rx_clk`; `phy_tx_data`, `phy_tx_en` in `phy_tx_clk`; `phy_crs`, `phy_col`, `phy_mdio_i` are synchronized inside the IP. |
 | System ILA (`xilinx.com:ip:system_ila`) | Inputs only. |
+| Zynq-7000 Processing System (`xilinx.com:ip:processing_system7`) | Ports from the instance. PG082/UG585: `FCLK_CLK0..3` are clocks of their own (the PS PLLs; period from `PCW_ACT_FPGAn_PERIPHERAL_FREQMHZ`) carrying Vivado's names `clk_fpga_0..3`, so `get_clocks clk_fpga_0` works in the user's constraints; the AXI ports in their interface clocks (`M_AXI_GPn_ACLK`, `S_AXI_GPn_ACLK`, `S_AXI_HPn_ACLK`, `S_AXI_ACP_ACLK`), the DMA request interfaces in `DMAn_ACLK`, EMIO GMII in `ENETn_GMII_TX_CLK`/`RX_CLK`; the EMIO GPIO outputs are registers of the PS clock `cpu_1x` (the CPU clock / 6 or / 4, a clock of its own), so fabric logic using them without a synchronizer is reported; `FCLK_RESETn_N`, the interrupts to the fabric and the other EMIO signals have no fabric clock domain; `IRQ_F2P` and the EMIO inputs are synchronized in the PS; MIO, DDR and PS pins are not read. |
+| SmartConnect (`xilinx.com:ip:smartconnect`) | PG247: each AXI interface in the clock its clock interface associates with it (`ASSOCIATED_BUSIF` of `aclk`, `aclk1`, ... in the component file or the JSON `.xci`), `aresetn` in `aclk`; the IP crosses between the clocks. Without the associations the IP is not modelled. |
 | ILA (`xilinx.com:ip:ila`) | Inputs only (`clk`, `probe<i>`); `trig_out` and `trig_in_ack` are in the `clk` domain. Constraints that refer to the inside of debug cores (`*ila_core_inst/*`, `dbg_hub`) are noted (`CON-UNMATCHED` info), not warned. |
 | VIO (`xilinx.com:ip:vio`) | `probe_out<i>` are registers in the `clk` domain with their initial value: VIO synchronizes the values set over JTAG to `clk`. `probe_in<i>` are inputs only. |
 
@@ -110,6 +112,10 @@ its IP cells from their configurations:
   (`fuxi_inst_ARADDR`). An interface port of the design becomes one port per
   signal, `<interface>_<signal>` in lower case (`DDR3_addr`, `UART_txd`), as
   in Vivado's module.
+- **Vivado 2020.2 and later** keep the output products in `<project>.gen`:
+  the component files are looked up there too (`<project>.srcs/sources_1/bd/...`
+  → `<project>.gen/sources_1/bd/...`), for the block design and for an XML
+  `.xci`.
 - **Widths and defaults.** A net takes the width of its driver; narrower
   inputs get its low bits, wider inputs are padded with 0. An input that is not
   connected gets the default value of its component file, as in Vivado.
@@ -118,7 +124,7 @@ The `FE-BD-MODULE` info gives the number of cells, hierarchical cells and
 IP configurations, with notes for nets with several drivers or without a
 driver. A cell whose ports are not known (the output products were not
 generated, so `ip/<cell>/<cell>.xml` is missing) is an error (`FE-BD-CELL`):
-generate the output products in Vivado. Verified with the Fuxi SoC (45 cells,
+generate the output products in Vivado. Verified with four Zynq-7000 block designs (PS7, SmartConnect, AXI GPIO, XADC, Vivado 2019.2 to 2021.2) and the Fuxi SoC (45 cells,
 three AXI interconnects, MIG, Quad SPI with STARTUP, Ethernet Lite, interrupt
 controller, processor system reset).
 

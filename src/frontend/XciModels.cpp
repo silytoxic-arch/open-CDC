@@ -85,6 +85,8 @@ struct XciInfo {
     std::map<std::string, std::string> user;  ///< component (user) parameters
     std::vector<BoundaryPort> ports;          ///< JSON format only
     bool json = false;
+    /// lower-case bus interface -> its clock port (ASSOCIATED_BUSIF of the clock interfaces)
+    std::map<std::string, std::string> busClock;
 };
 
 std::string unescapeXml(std::string s) {
@@ -158,6 +160,29 @@ Result<XciInfo> parseJson(const std::string& text) {
             if (params.contains("model_parameters"))
                 readParams(params["model_parameters"], info.model);
         }
+        if (ip.contains("boundary") && ip["boundary"].contains("interfaces"))
+            for (const auto& [ifName, itf] : ip["boundary"]["interfaces"].items()) {
+                if (!itf.is_object() || itf.value("vlnv", std::string()).find(":signal:clock:") == std::string::npos ||
+                    !itf.contains("port_maps") || !itf.contains("parameters"))
+                    continue;
+                std::string clk;
+                for (const auto& [logical, maps] : itf["port_maps"].items()) {
+                    const auto& e = maps.is_array() && !maps.empty() ? maps[0] : maps;
+                    if (e.is_object() && e.contains("physical_name"))
+                        clk = e["physical_name"].get<std::string>();
+                }
+                const auto& params = itf["parameters"];
+                if (clk.empty() || !params.contains("ASSOCIATED_BUSIF"))
+                    continue;
+                const auto& a = params["ASSOCIATED_BUSIF"];
+                const auto& av = a.is_array() && !a.empty() ? a[0] : a;
+                if (!av.is_object() || !av.contains("value") || !av["value"].is_string())
+                    continue;
+                std::stringstream list(av["value"].get<std::string>());
+                for (std::string bus; std::getline(list, bus, ':');)
+                    if (!bus.empty())
+                        info.busClock[lower(bus)] = clk;
+            }
         if (ip.contains("boundary") && ip["boundary"].contains("ports"))
             for (const auto& [name, v] : ip["boundary"]["ports"].items()) {
                 const auto& e = v.is_array() && !v.empty() ? v[0] : v;
@@ -2631,6 +2656,24 @@ std::optional<XciCellInterface> cellInterfaceFromText(std::string_view text) {
     return out;
 }
 
+std::optional<std::filesystem::path> generatedProductsDir(const std::filesystem::path& dir) {
+    std::filesystem::path out;
+    bool found = false;
+    for (const auto& part : dir) {
+        const std::string s = toUtf8(part);
+        if (!found && s.size() > 5 && s.ends_with(".srcs")) {
+            out /= std::filesystem::path(s.substr(0, s.size() - 5) + ".gen");
+            found = true;
+        }
+        else {
+            out /= part;
+        }
+    }
+    if (!found)
+        return std::nullopt;
+    return out;
+}
+
 bool isXciFile(const std::filesystem::path& file) {
     const std::string ext = lower(file.extension().string());
     return ext == ".xci" || ext == ".xcix";
@@ -2772,13 +2815,42 @@ Result<XciInfo> parseXci(std::string_view text) {
 /// looked up (the memory interface's XML_INPUT_FILE).
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir);
 
+/// The bus interfaces of each clock interface of a component file
+/// (ASSOCIATED_BUSIF "M00_AXI:S00_AXI"): lower-case interface -> clock port.
+std::map<std::string, std::string> clockAssociations(const std::string& text) {
+    std::map<std::string, std::string> out;
+    static const std::regex physRe(R"(<spirit:physicalPort>\s*<spirit:name>\s*([^<\s]+)\s*</spirit:name>)");
+    static const std::regex assocRe(
+        R"(<spirit:name>\s*ASSOCIATED_BUSIF\s*</spirit:name>\s*<spirit:value\b(?:[^>"]|"[^"]*")*>([^<]*)</spirit:value>)");
+    for (const auto& body : elements(text, "spirit:busInterface")) {
+        if (body.find("spirit:name=\"clock\"") == std::string::npos)
+            continue;
+        std::smatch p, a;
+        if (!std::regex_search(body, p, physRe) || !std::regex_search(body, a, assocRe))
+            continue;
+        std::stringstream list(a[1].str());
+        for (std::string bus; std::getline(list, bus, ':');)
+            if (!bus.empty())
+                out[lower(bus)] = p[1].str();
+    }
+    return out;
+}
+
 Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const XciContext* context = nullptr) {
     // XML .xci: the port list from the component file next to it, when present,
     // otherwise from a VHDL component declaration of the IP in the design
-    if (!info.json && info.ports.empty() && dir)
-        if (auto t = readSourceText(*dir / (info.instance + ".xml")))
-            if (auto ports = parseComponentPorts(t->utf8))
-                info.ports = std::move(*ports);
+    if (!info.json && info.ports.empty() && dir) {
+        std::vector<std::filesystem::path> where = {*dir};
+        if (const auto gen = generatedProductsDir(*dir))
+            where.push_back(*gen); // Vivado 2020.2+: <project>.gen
+        for (const auto& d : where)
+            if (auto t = readSourceText(d / (info.instance + ".xml")))
+                if (auto ports = parseComponentPorts(t->utf8)) {
+                    info.ports = std::move(*ports);
+                    info.busClock = clockAssociations(t->utf8);
+                    break;
+                }
+    }
     std::string fromComponent;
     if (!info.json && info.ports.empty() && context)
         if (const auto it = context->vhdlComponents.find(lower(info.instance)); it != context->vhdlComponents.end()) {
@@ -3375,7 +3447,8 @@ using PortClassifier = std::function<std::optional<PortClass>(const std::string&
 /// outputs as registers of their clock, output clocks as clocks of their own,
 /// asynchronous outputs from the built-in black box, ignored inputs unread.
 Result<XciModel> portDomainModel(const XciInfo& info, const std::string& vlnv, const PortClassifier& classify,
-                                 const std::vector<InternalClock>& internals) {
+                                 const std::vector<InternalClock>& internals,
+                                 const std::map<std::string, std::string>& aliases = {}) {
     const auto unsupportedIp = [&](const std::string& why) {
         return unsupported("IP '" + info.instance + "' (" + vlnv + "): " + why,
                            {"add the IP's generated HDL to the sources instead, or set the project option "
@@ -3390,17 +3463,22 @@ Result<XciModel> portDomainModel(const XciInfo& info, const std::string& vlnv, c
         bool out;
         unsigned width;
         PortClass c;
+        bool inout = false;
     };
     std::vector<P> ports;
     std::string unknown;
     for (const auto& b : info.ports) {
-        auto c = b.inout ? std::nullopt : classify(lower(b.name), b.output);
+        // an inout (a device pin through the IP) can only be ignored
+        auto c = classify(lower(b.name), b.output || b.inout);
+        if (c && b.inout && c->kind != PortClass::Kind::Ignored)
+            c.reset();
         if (!c) {
             unknown += (unknown.empty() ? "" : ", ") + b.name;
             continue;
         }
         ports.push_back({b.name, b.output,
-                         b.range ? static_cast<unsigned>(std::llabs(b.range->first - b.range->second) + 1) : 1U, *c});
+                         b.range ? static_cast<unsigned>(std::llabs(b.range->first - b.range->second) + 1) : 1U, *c,
+                         b.inout});
     }
     if (!unknown.empty())
         return unsupportedIp("ports whose clock domain is not modelled: " + unknown);
@@ -3409,11 +3487,13 @@ Result<XciModel> portDomainModel(const XciInfo& info, const std::string& vlnv, c
     v << "// Generated by OpenCDC from a Vivado IP configuration (.xci): a CDC model, not a functional model.\n"
       << "module " << info.instance << " (\n";
     for (std::size_t i = 0; i < ports.size(); ++i)
-        v << "  " << (ports[i].out ? "output wire " : "input  wire ") << vec(ports[i].width) << " " << ports[i].name
-          << (i + 1 < ports.size() ? ",\n" : "\n");
+        v << "  " << (ports[i].inout ? "inout  wire " : ports[i].out ? "output wire " : "input  wire ")
+          << vec(ports[i].width) << " " << ports[i].name << (i + 1 < ports.size() ? ",\n" : "\n");
     v << ");\n";
     auto clockSource = [&](const std::string& pin, double mhz, const std::string& wire) {
         v << "  (* OPENCDC_CLOCK_PIN = \"" << pin << "\"";
+        if (const auto a = aliases.find(lower(pin)); a != aliases.end())
+            v << ", OPENCDC_CLOCK_ALIAS = \"" << a->second << "\"";
         if (mhz > 0)
             v << ", OPENCDC_CLOCK_PERIOD = " << fmtReal(1000.0 / mhz);
         v << " *) wire " << wire << ";\n  opencdc_async_source u_" << wire << " (" << wire << ");\n";
@@ -4366,6 +4446,11 @@ Result<XciModel> axiInterconnect(const XciInfo& info) {
 // Block design infrastructure: reset, logic, AXI conversion and peripherals
 // ---------------------------------------------------------------------------
 
+std::string upperCopy(std::string s) {
+    std::ranges::transform(s, s.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return s;
+}
+
 std::string vlnvOf(const XciInfo& info) {
     return info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
 }
@@ -4597,6 +4682,146 @@ Result<XciModel> systemIla(const XciInfo& info) {
     return r;
 }
 
+/// Zynq-7000 Processing System (processing_system7 5.5, PG082/UG585): the
+/// fabric clocks FCLK_CLK0..3 are clocks of their own (the PS PLLs, period
+/// from PCW_ACT_FPGAn_PERIPHERAL_FREQMHZ, Vivado's names clk_fpga_n); every AXI
+/// port in its interface clock (M_AXI_GPn_ACLK, S_AXI_GPn/HPn/ACP_ACLK), the
+/// DMA request interfaces in DMAn_ACLK, EMIO GMII in the GMII clocks; the
+/// fabric resets, interrupts to the fabric and the other EMIO signals come from
+/// PS clocks (no fabric clock domain); interrupts and EMIO inputs are
+/// synchronized in the PS; MIO/DDR pins are not read.
+Result<XciModel> processingSystem7(const XciInfo& info) {
+    using K = PortClass::Kind;
+    std::map<std::string, std::string> aliases;
+    std::vector<std::string> clocks;
+    double mhz[4] = {0, 0, 0, 0};
+    for (int n = 0; n < 4; ++n) {
+        const std::string key = "PCW_ACT_FPGA" + std::to_string(n) + "_PERIPHERAL_FREQMHZ";
+        try {
+            mhz[n] = std::stod(text(info.user, key, text(info.model, key, "0")));
+        }
+        catch (...) {
+        }
+        aliases["fclk_clk" + std::to_string(n)] = "clk_fpga_" + std::to_string(n);
+    }
+    static const std::regex axiRe(R"(^((m_axi_gp[01]|s_axi_gp[01]|s_axi_hp[0-3]|s_axi_acp)_)(.*)$)");
+    static const std::regex dmaRe(R"(^(dma[0-3])_(.*)$)");
+    static const std::regex gmiiRe(R"(^(enet[01])_gmii_(.*)$)");
+    static const std::regex pinRe(R"(^(mio|ddr_.*|ps_srstb|ps_clk|ps_porb)$)");
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        std::smatch m;
+        if (std::regex_match(n, m, std::regex(R"(^fclk_clk([0-3])$)")))
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, mhz[std::stoi(m[1].str())], {}, 0})
+                       : std::nullopt;
+        if (std::regex_match(n, pinRe))
+            return PortClass{K::Ignored, {}, 0, {}, 0};
+        if (std::regex_match(n, m, axiRe)) {
+            if (m[3].str() == "aclk")
+                return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+            return PortClass{K::Sync, m[1].str() + "aclk", 0, {}, 0};
+        }
+        if (std::regex_match(n, m, dmaRe)) {
+            if (m[2].str() == "aclk")
+                return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+            return PortClass{K::Sync, m[1].str() + "_aclk", 0, {}, 0};
+        }
+        if (std::regex_match(n, m, gmiiRe)) {
+            const std::string sig = m[2].str();
+            if (sig == "tx_clk" || sig == "rx_clk")
+                return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+            if (sig == "col" || sig == "crs")
+                return PortClass{K::Async, {}, 0, {}, 0};
+            if (sig.starts_with("tx") && out)
+                return PortClass{K::Sync, m[1].str() + "_gmii_tx_clk", 0, {}, 0};
+            if (sig.starts_with("rx") && !out)
+                return PortClass{K::Sync, m[1].str() + "_gmii_rx_clk", 0, {}, 0};
+            return std::nullopt;
+        }
+        // EMIO GPIO: the GPIO controller runs on the APB clock (CPU_1x)
+        if (out && (n == "gpio_o" || n == "gpio_t"))
+            return PortClass{K::Sync, "cpu_1x", 0, {}, 0};
+        // fabric resets, interrupts, other EMIO peripherals, trace, events: PS clocks
+        return PortClass{K::Async, {}, 0, {}, 0};
+    };
+    // CPU_1x = the CPU clock / 6 (6:2:1) or / 4 (4:2:1)
+    double cpu1x = 0;
+    try {
+        const double apu = std::stod(text(info.user, "PCW_ACT_APU_PERIPHERAL_FREQMHZ",
+                                          text(info.model, "PCW_ACT_APU_PERIPHERAL_FREQMHZ", "0")));
+        const std::string ratio = text(info.user, "PCW_APU_CLK_RATIO_ENABLE", "6:2:1");
+        cpu1x = apu / (ratio.starts_with("4") ? 4.0 : 6.0);
+    }
+    catch (...) {
+    }
+    auto r = portDomainModel(info, vlnvOf(info), classify, {{"cpu_1x", cpu1x}}, aliases);
+    if (!r)
+        return r;
+    std::string fclk;
+    for (const auto& p : info.ports) {
+        std::smatch m;
+        const std::string n = lower(p.name);
+        if (std::regex_match(n, m, std::regex(R"(^fclk_clk([0-3])$)"))) {
+            const int k = std::stoi(m[1].str());
+            fclk += (fclk.empty() ? "" : ", ") + p.name + " " +
+                    (mhz[k] > 0 ? fmtReal(mhz[k]) + " MHz" : std::string("(no frequency)")) + " (clk_fpga_" +
+                    std::to_string(k) + ")";
+        }
+    }
+    r.value().summary = "fabric clocks " + (fclk.empty() ? std::string("none") : fclk) +
+                        "; AXI ports in their interface clocks";
+    r.value().notes.push_back("the fabric clocks are clocks of their own (PS PLLs, Vivado's names clk_fpga_n); "
+                              "EMIO GPIO outputs are registers of the PS clock CPU_1x (a clock of its own, unrelated to "
+                              "the fabric clocks); FCLK_RESETn_N, the interrupts to the fabric and the other EMIO "
+                              "signals come from PS clocks and have no fabric clock domain; IRQ_F2P and EMIO inputs "
+                              "are synchronized in the PS");
+    return r;
+}
+
+/// SmartConnect (smartconnect 1.0, PG247): each AXI interface in the clock
+/// its clock interface associates with it (ASSOCIATED_BUSIF of aclk, aclk1,
+/// ...: the configuration's clock assignment); aresetn in aclk; the IP
+/// crosses between the clocks.
+Result<XciModel> smartConnect(const XciInfo& info) {
+    using K = PortClass::Kind;
+    if (info.busClock.empty())
+        return unsupported("IP '" + info.instance + "' (" + vlnvOf(info) + "): the clock of each interface is not "
+                           "known (no ASSOCIATED_BUSIF in the component file or the JSON .xci)",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    std::set<std::string> clocks;
+    for (const auto& [bus, clk] : info.busClock)
+        clocks.insert(lower(clk));
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (clocks.contains(n) || (n.starts_with("aclk") && !out))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n == "aresetn")
+            return PortClass{K::Sync, clocks.contains("aclk") ? "aclk" : *clocks.begin(), 0, {}, 0};
+        std::string best, clk;
+        for (const auto& [bus, c] : info.busClock)
+            if (n.starts_with(bus + "_") && bus.size() > best.size()) {
+                best = bus;
+                clk = c;
+            }
+        if (best.empty())
+            return std::nullopt;
+        return PortClass{K::Sync, clk, 0, {}, 0};
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    std::map<std::string, std::string> byClock;
+    for (const auto& [bus, clk] : info.busClock)
+        byClock[clk] += (byClock[clk].empty() ? "" : ", ") + upperCopy(bus);
+    std::string s;
+    for (const auto& [clk, buses] : byClock)
+        s += (s.empty() ? "" : "; ") + clk + ": " + buses;
+    r.value().summary = std::to_string(byClock.size()) + " clock(s): " + s;
+    if (byClock.size() > 1)
+        r.value().notes.push_back("the interfaces are in the clocks the configuration associates them with "
+                                  "(ASSOCIATED_BUSIF); the IP crosses between the clocks");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -4665,6 +4890,10 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return axiInterconnect(info);
     if (info.name == "proc_sys_reset")
         return procSysReset(info);
+    if (info.name == "processing_system7")
+        return processingSystem7(info);
+    if (info.name == "smartconnect")
+        return smartConnect(info);
     if (info.name == "util_vector_logic")
         return utilVectorLogic(info);
     if (info.name == "axi_protocol_converter")

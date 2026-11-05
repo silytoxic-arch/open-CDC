@@ -2752,3 +2752,139 @@ TEST_CASE("XCI: the cell interface of a component file and of a JSON .xci", "[fr
     CHECK_FALSE(frontend::cellInterfaceFromText("<spirit:component></spirit:component>"));
     CHECK_FALSE(frontend::cellInterfaceFromText("{ \"ip_inst\": { } }"));
 }
+
+namespace {
+
+std::vector<std::tuple<std::string, std::string, int>> ps7Ports() {
+    return {{"FCLK_CLK0", "out", -1},         {"FCLK_CLK1", "out", -1},        {"FCLK_RESET0_N", "out", -1},
+            {"M_AXI_GP0_ACLK", "in", -1},     {"M_AXI_GP0_ARVALID", "out", -1}, {"M_AXI_GP0_ARADDR", "out", 31},
+            {"M_AXI_GP0_ARREADY", "in", -1},  {"S_AXI_HP0_ACLK", "in", -1},    {"S_AXI_HP0_RDATA", "out", 63},
+            {"S_AXI_HP0_ARVALID", "in", -1},  {"IRQ_F2P", "in", 1},            {"GPIO_O", "out", 3},
+            {"GPIO_I", "in", 3},              {"ENET0_GMII_TX_CLK", "in", -1}, {"ENET0_GMII_TXD", "out", 7},
+            {"MIO", "inout", 53},             {"DDR_DQ", "inout", 31},         {"PS_CLK", "inout", -1}};
+}
+
+} // namespace
+
+TEST_CASE("XCI: Zynq-7000 Processing System, fabric clocks and AXI ports", "[frontend][xci][bd][ps7]") {
+    test::TempDir dir;
+    const auto m = modelOf(dir, "ps7",
+                           jsonIp("ps7", "xilinx.com:ip:processing_system7:5.5",
+                                  {{"PCW_ACT_FPGA0_PERIPHERAL_FREQMHZ", "100.000000"},
+                                   {"PCW_ACT_FPGA1_PERIPHERAL_FREQMHZ", "50.000000"}},
+                                  ps7Ports()));
+    const auto& v = m.verilog;
+    INFO(v);
+    CHECK(has(v, "OPENCDC_CLOCK_PIN = \"FCLK_CLK0\", OPENCDC_CLOCK_ALIAS = \"clk_fpga_0\", OPENCDC_CLOCK_PERIOD = 10"));
+    CHECK(has(v, "OPENCDC_CLOCK_PIN = \"FCLK_CLK1\", OPENCDC_CLOCK_ALIAS = \"clk_fpga_1\", OPENCDC_CLOCK_PERIOD = 20"));
+    CHECK(has(v, "inout  wire [53:0] MIO"));
+    CHECK(has(v, "always @(posedge M_AXI_GP0_ACLK[0]) oc_M_AXI_GP0_ARADDR_q"));
+    CHECK(has(v, "oc_dom_m_axi_gp0_aclk <= ^{M_AXI_GP0_ARREADY}"));
+    CHECK(has(v, "always @(posedge S_AXI_HP0_ACLK[0]) oc_S_AXI_HP0_RDATA_q"));
+    CHECK(has(v, "always @(posedge ENET0_GMII_TX_CLK[0]) oc_ENET0_GMII_TXD_q"));
+    CHECK(has(v, "OPENCDC_CLOCK_PIN = \"cpu_1x\""));
+    CHECK(has(v, "oc_GPIO_O_q"));
+    CHECK(has(v, "opencdc_async_source u_oc_FCLK_RESET0_N"));
+    CHECK(has(m.summary, "FCLK_CLK0 100.0 MHz (clk_fpga_0), FCLK_CLK1 50.0 MHz (clk_fpga_1)"));
+    // negative: interrupts, EMIO inputs and the device pins are not read
+    for (const char* i : {"IRQ_F2P", "GPIO_I", "MIO", "DDR_DQ"}) {
+        CHECK_FALSE(has(v, std::string("{") + i));
+        CHECK_FALSE(has(v, std::string(", ") + i + "}"));
+    }
+    CHECK_FALSE(has(v, "assign MIO"));
+}
+
+TEST_CASE("XCI: the Zynq fabric clocks in a design, named as in Vivado", "[frontend][xci][bd][ps7]") {
+    test::TempDir dir;
+    auto cfg = project(dir,
+                       "module top(input [3:0] gi, output reg qb, output reg qg);\n"
+                       "  wire c0, c1, rn; wire [3:0] go;\n"
+                       "  ps7 u (.FCLK_CLK0(c0), .FCLK_CLK1(c1), .FCLK_RESET0_N(rn), .M_AXI_GP0_ACLK(c0),\n"
+                       "         .M_AXI_GP0_ARREADY(1'b1), .S_AXI_HP0_ACLK(c1), .S_AXI_HP0_ARVALID(1'b0),\n"
+                       "         .IRQ_F2P({qa, qb}), .GPIO_O(go), .GPIO_I(gi), .ENET0_GMII_TX_CLK(1'b0));\n"
+                       "  reg qa; always @(posedge c0) qa <= ~qa;\n"
+                       "  always @(posedge c1) qb <= qa;\n"
+                       "  always @(posedge c0) qg <= go[0];\n"
+                       "endmodule\n",
+                       {dir.write("ps7.xci", jsonIp("ps7", "xilinx.com:ip:processing_system7:5.5",
+                                                    {{"PCW_ACT_FPGA0_PERIPHERAL_FREQMHZ", "100.000000"},
+                                                     {"PCW_ACT_FPGA1_PERIPHERAL_FREQMHZ", "50.000000"}},
+                                                    ps7Ports()))});
+    // Vivado's clock names in the user's constraints
+    cfg.constraints = {dir.write("z.xdc", "set_clock_groups -asynchronous -group [get_clocks clk_fpga_0] "
+                                          "-group [get_clocks clk_fpga_1]\n")};
+    const auto r = run(cfg);
+    REQUIRE(r->clocks);
+    bool c0 = false;
+    for (const auto& c : r->clocks->clocks)
+        c0 = c0 || (std::ranges::find(c.aliases, "clk_fpga_0") != c.aliases.end() && c.periodNs &&
+                    *c.periodNs == 10.0);
+    CHECK(c0);
+    CHECK(find(*r, "CON-UNMATCHED") == nullptr);
+    REQUIRE(r->cdc);
+    // qa (FCLK_CLK0) -> qb (FCLK_CLK1): asynchronous by the constraint, unsynchronized
+    CHECK(r->cdc->stats.unsynchronized >= 1);
+    // the EMIO GPIO output is in the PS clock CPU_1x: GPIO_O -> qg (FCLK_CLK0) is a crossing
+    CHECK(std::ranges::any_of(r->cdc->paths, [](const auto& p) { return p.dstName.find("qg") != std::string::npos; }));
+}
+
+TEST_CASE("XCI: SmartConnect, each interface in the clock associated with it", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    auto sc = [](bool assoc) {
+        const std::string clk1 = assoc ? R"(, "parameters": { "ASSOCIATED_BUSIF": [ { "value": "M00_AXI" } ] })" : "";
+        const std::string clk0 = assoc ? R"(, "parameters": { "ASSOCIATED_BUSIF": [ { "value": "S00_AXI:S01_AXI" } ] })" : "";
+        return std::string(R"({ "ip_inst": { "xci_name": "sc0", "component_reference": "xilinx.com:ip:smartconnect:1.0",
+          "boundary": {
+            "ports": { "aclk": [ { "direction": "in" } ], "aclk1": [ { "direction": "in" } ],
+                       "aresetn": [ { "direction": "in" } ],
+                       "S00_AXI_awaddr": [ { "direction": "in", "size_left": "31", "size_right": "0" } ],
+                       "S00_AXI_awready": [ { "direction": "out" } ],
+                       "M00_AXI_awaddr": [ { "direction": "out", "size_left": "31", "size_right": "0" } ],
+                       "M00_AXI_awready": [ { "direction": "in" } ] },
+            "interfaces": {
+              "CLK.aclk": { "vlnv": "xilinx.com:signal:clock:1.0", "port_maps": { "CLK": [ { "physical_name": "aclk" } ] })") +
+               clk0 + R"( },
+              "CLK.aclk1": { "vlnv": "xilinx.com:signal:clock:1.0", "port_maps": { "CLK": [ { "physical_name": "aclk1" } ] })" +
+               clk1 + R"( } } } } })";
+    };
+    const auto m = modelOf(dir, "sc0", sc(true));
+    CHECK(has(m.verilog, "always @(posedge aclk[0]) oc_S00_AXI_awready_q"));
+    CHECK(has(m.verilog, "always @(posedge aclk1[0]) oc_M00_AXI_awaddr_q"));
+    CHECK(has(m.verilog, "oc_dom_aclk <= ^{S00_AXI_awaddr, aresetn}"));
+    CHECK(m.summary == "2 clock(s): aclk: S00_AXI, S01_AXI; aclk1: M00_AXI");
+    // negative: the master side is not in aclk; without the associations the IP is not modelled
+    CHECK_FALSE(has(m.verilog, "posedge aclk[0]) oc_M00"));
+    auto none = frontend::modelFromXci(dir.write("sc1.xci", sc(false)), frontend::XciContext{});
+    REQUIRE_FALSE(none);
+    CHECK(has(none.error().message, "ASSOCIATED_BUSIF"));
+}
+
+TEST_CASE("XCI: the component file in <project>.gen (Vivado 2020.2+)", "[frontend][xci][bd]") {
+    CHECK(frontend::generatedProductsDir("/w/p.srcs/sources_1/bd/d/ip/x") ==
+          std::filesystem::path("/w/p.gen/sources_1/bd/d/ip/x"));
+    CHECK_FALSE(frontend::generatedProductsDir("/w/src/ip/x"));
+    test::TempDir dir;
+    // an XML .xci in .srcs, its component file (with the clock associations) in .gen
+    const auto xci = dir.write("p.srcs/sources_1/ip/sc2/sc2.xci", spirit("sc2", "smartconnect", "1.0", {}));
+    dir.write("p.gen/sources_1/ip/sc2/sc2.xml",
+              "<spirit:component xmlns:spirit=\"x\">\n<spirit:busInterfaces>\n"
+              "<spirit:busInterface><spirit:name>CLK.aclk</spirit:name>"
+              "<spirit:busType spirit:vendor=\"xilinx.com\" spirit:library=\"signal\" spirit:name=\"clock\" "
+              "spirit:version=\"1.0\"/><spirit:portMaps><spirit:portMap><spirit:logicalPort><spirit:name>CLK"
+              "</spirit:name></spirit:logicalPort><spirit:physicalPort><spirit:name>aclk</spirit:name>"
+              "</spirit:physicalPort></spirit:portMap></spirit:portMaps><spirit:parameters><spirit:parameter>"
+              "<spirit:name>ASSOCIATED_BUSIF</spirit:name><spirit:value spirit:id=\"a\">S00_AXI:M00_AXI</spirit:value>"
+              "</spirit:parameter></spirit:parameters></spirit:busInterface>\n</spirit:busInterfaces>\n"
+              "<spirit:model><spirit:ports>\n"
+              "<spirit:port><spirit:name>aclk</spirit:name><spirit:wire><spirit:direction>in</spirit:direction>"
+              "</spirit:wire></spirit:port>\n"
+              "<spirit:port><spirit:name>S00_AXI_awvalid</spirit:name><spirit:wire><spirit:direction>in"
+              "</spirit:direction></spirit:wire></spirit:port>\n"
+              "<spirit:port><spirit:name>M00_AXI_awvalid</spirit:name><spirit:wire><spirit:direction>out"
+              "</spirit:direction></spirit:wire></spirit:port>\n"
+              "</spirit:ports></spirit:model>\n</spirit:component>\n");
+    auto m = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE(m);
+    CHECK(has(m.value().verilog, "always @(posedge aclk[0]) oc_M00_AXI_awvalid_q"));
+    CHECK(m.value().summary == "1 clock(s): aclk: M00_AXI, S00_AXI");
+}

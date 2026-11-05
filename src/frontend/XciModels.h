@@ -99,6 +99,12 @@ struct XciCellInterface {
 /// nullopt when it has no ports.
 [[nodiscard]] std::optional<XciCellInterface> cellInterfaceFromText(std::string_view text);
 
+/// Vivado 2020.2 and later keep the output products of a project's IP (the
+/// component file <instance>.xml among them) in <project>.gen instead of
+/// <project>.srcs: the same folder there, or nullopt when `dir` is not in a
+/// <project>.srcs folder.
+[[nodiscard]] std::optional<std::filesystem::path> generatedProductsDir(const std::filesystem::path& dir);
+
 /// True for .xci files.
 [[nodiscard]] bool isXciFile(const std::filesystem::path& file);
 
