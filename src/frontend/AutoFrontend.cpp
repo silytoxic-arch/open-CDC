@@ -908,7 +908,7 @@ public:
                     sink.report({"FE-BD-MODULE", Severity::Info,
                                  "block design '" + b.name + "': module '" + b.name + "' with " +
                                      std::to_string(b.cells) + " cell(s)" +
-                                     (b.hierarchies ? ", " + std::to_string(b.hierarchies) + " hierarchical cell(s) flattened"
+                                     (b.hierarchies ? ", " + std::to_string(b.hierarchies) + " hierarchical cell(s)"
                                                     : std::string()) +
                                      ", " + std::to_string(b.ipFiles.size()) + " IP configuration(s)",
                                  SourceLocation{toUtf8(f), 0, 0}, b.notes});

@@ -208,6 +208,7 @@ private:
                 // a hierarchy (also an AXI Interconnect, and the couplers that only pass the interface on)
                 if (c.contains("components") || (!c.contains("vlnv") && !c.contains("xci_name"))) {
                     ++out_.hierarchies;
+                    hierarchies_.push_back(full);
                     walk(c, full, depth + 1);
                     continue;
                 }
@@ -215,7 +216,7 @@ private:
                 const std::string xci = c.value("xci_name", std::string());
                 Leaf leaf;
                 leaf.path = full;
-                leaf.instance = ident(full);
+                leaf.instance = ident(cell);
                 leaf.moduleRef = vlnv.find(":module_ref:") != std::string::npos;
                 if (leaf.moduleRef && c.contains("reference_info"))
                     leaf.module = c["reference_info"].value("ref_name", std::string());
@@ -447,6 +448,20 @@ private:
         return net + "[" + std::to_string(r - bits + 1) + ":" + std::to_string(r) + "]";
     }
 
+    static std::string parentOf(const std::string& path) {
+        const auto slash = path.rfind('/');
+        return slash == std::string::npos ? std::string() : path.substr(0, slash);
+    }
+
+    /// `path` is `module` or inside it ("" is the design).
+    static bool within(const std::string& path, const std::string& module) {
+        return module.empty() || path == module || path.starts_with(module + "/");
+    }
+
+    std::string moduleName(const std::string& hier) const {
+        return hier.empty() ? out_.name : ident(out_.name + "_" + hier) + "_imp";
+    }
+
     void emit() {
         // the nets: classes of terms
         std::map<std::size_t, std::vector<std::size_t>> classes;
@@ -464,6 +479,11 @@ private:
             unsigned width = 1;
             std::optional<std::pair<long long, long long>> range; ///< of a design port
             bool connected = false;
+            bool topPort = false;
+            std::vector<std::string> modules; ///< where its terms are (the leaf's hierarchy, "" for design ports)
+            std::vector<std::string> driverModules;
+            bool inout = false;
+            bool undriven = false;
         };
         std::map<std::size_t, Net> nets;
         std::set<std::string> used;
@@ -471,7 +491,9 @@ private:
             used.insert(p.name);
         for (const auto& l : leaves_)
             used.insert(l.instance);
-        std::ostringstream wires, assigns;
+        for (const auto& h : hierarchies_)
+            used.insert(ident(h.substr(h.rfind('/') + 1)));
+        std::ostringstream topAssigns;
         std::vector<std::string> multi, undriven;
         for (const auto& [root, members] : classes) {
             Net n;
@@ -479,21 +501,27 @@ private:
             std::vector<std::size_t> drivers, tops;
             for (const auto i : members) {
                 const Term& t = terms_[i];
+                const std::string m = t.top ? std::string() : parentOf(leaves_[t.leaf].path);
+                n.modules.push_back(m);
                 if (t.top)
                     tops.push_back(i);
                 const char d = termDir(t);
-                if ((t.top && d == 'i') || (!t.top && d == 'o'))
+                if ((t.top && d == 'i') || (!t.top && d == 'o')) {
                     drivers.push_back(i);
+                    n.driverModules.push_back(m);
+                }
+                n.inout = n.inout || d == 'b';
             }
             if (!tops.empty()) {
                 const Port& p = topPorts_[terms_[tops[0]].leaf];
                 n.name = p.name;
                 n.width = p.width();
                 n.range = p.range;
+                n.topPort = true;
                 for (std::size_t k = 1; k < tops.size(); ++k) {
                     const Port& q = topPorts_[terms_[tops[k]].leaf];
                     if (q.dir == 'o')
-                        assigns << "  assign " << q.name << " = " << n.name << ";\n";
+                        topAssigns << "  assign " << q.name << " = " << n.name << ";\n";
                 }
             }
             else {
@@ -507,10 +535,6 @@ private:
                 if (drivers.empty())
                     for (const auto i : members)
                         n.width = std::max(n.width, termWidth(terms_[i]));
-                if (n.connected) {
-                    wires << "  wire [" << n.width - 1 << ":0] " << n.name << ";\n";
-                    n.range = std::pair{static_cast<long long>(n.width) - 1, 0LL};
-                }
             }
             if (n.connected && drivers.size() > 1) {
                 std::string who;
@@ -518,128 +542,205 @@ private:
                     who += (who.empty() ? "" : ", ") + termKey_[i];
                 multi.push_back(n.name + " (" + who + ")");
             }
-            if (n.connected && drivers.empty() && std::ranges::none_of(members, [&](std::size_t i) {
-                    return termDir(terms_[i]) == 'b';
-                })) {
-                if (tops.empty())
-                    assigns << "  assign " << n.name << " = " << n.width << "'d0;\n";
+            if (n.connected && drivers.empty() && !n.inout) {
+                n.undriven = !n.topPort;
                 undriven.push_back(n.name);
             }
             nets[root] = n;
         }
-        std::ostringstream inst;
+        auto usedIn = [](const Net& n, const std::string& mod) {
+            return std::ranges::any_of(n.modules, [&](const std::string& m) { return within(m, mod); });
+        };
+        auto crosses = [&](const Net& n, const std::string& mod) {
+            return !mod.empty() && usedIn(n, mod) &&
+                   std::ranges::any_of(n.modules, [&](const std::string& m) { return !within(m, mod); });
+        };
+        // the hierarchies directly in a module
+        auto children = [&](const std::string& mod) {
+            std::vector<std::string> out;
+            for (const auto& h : hierarchies_)
+                if (parentOf(h) == mod)
+                    out.push_back(h);
+            return out;
+        };
         int dummy = 0;
-        for (std::size_t li = 0; li < leaves_.size(); ++li) {
-            const Leaf& leaf = leaves_[li];
-            // the terms of each port: the whole port or its parts
-            std::vector<std::vector<std::size_t>> parts(leaf.ports.size());
-            for (std::size_t i = 0; i < terms_.size(); ++i)
-                if (!terms_[i].top && terms_[i].leaf == li)
-                    parts[terms_[i].port].push_back(i);
-            inst << "  " << leaf.module;
-            if (!leaf.parameters.empty()) {
-                inst << " #(\n";
-                for (std::size_t k = 0; k < leaf.parameters.size(); ++k)
-                    inst << "    ." << leaf.parameters[k].first << "(" << leaf.parameters[k].second << ")"
-                         << (k + 1 < leaf.parameters.size() ? ",\n" : "\n");
-                inst << "  )";
-            }
-            inst << " " << leaf.instance << " (\n";
-            for (std::size_t k = 0; k < leaf.ports.size(); ++k) {
-                const Port& p = leaf.ports[k];
-                const unsigned L = p.width();
-                auto fit = [&](const Net& n, unsigned bits) -> std::string {
-                    if (bits == n.width)
-                        return n.name;
-                    if (bits < n.width)
-                        return lowBits(n.name, n.range, bits);
-                    if (p.dir == 'i')
-                        return "{" + std::to_string(bits - n.width) + "'d0, " + n.name + "}";
-                    const std::string d = "oc_nc_" + std::to_string(dummy++);
-                    wires << "  wire [" << bits - n.width - 1 << ":0] " << d << ";\n";
-                    return "{" + d + ", " + n.name + "}";
-                };
-                std::string expr;
-                std::optional<std::size_t> whole;
-                std::vector<std::size_t> pieces;
-                for (const auto i : parts[k]) {
-                    const Net& n = nets[*phys_.lookup(termKey_[i])];
-                    if (!n.connected)
-                        continue;
-                    if (terms_[i].whole)
-                        whole = i;
-                    else
-                        pieces.push_back(i);
+        std::string text;
+        std::vector<std::string> modules = {""};
+        modules.insert(modules.end(), hierarchies_.begin(), hierarchies_.end());
+        for (const auto& mod : modules) {
+            const auto kids = children(mod);
+            std::ostringstream wires, assigns, inst;
+            std::vector<std::string> ports; // of a hierarchy
+            // the nets this module needs: its ports, and the nets its own cells or several children share
+            std::map<std::size_t, std::optional<std::pair<long long, long long>>> range; // as declared here
+            for (const auto& [root, n] : nets) {
+                if (!n.connected || !usedIn(n, mod))
+                    continue;
+                const bool direct = std::ranges::find(n.modules, mod) != n.modules.end();
+                std::size_t inKids = 0;
+                for (const auto& k : kids)
+                    inKids += usedIn(n, k) ? 1U : 0U;
+                const bool port = crosses(n, mod);
+                if (!port && !direct && inKids < 2)
+                    continue; // inside one child only
+                const std::string decl = "[" + std::to_string(n.width - 1) + ":0] " + n.name;
+                if (mod.empty() && n.topPort) {
+                    range[root] = n.range;
                 }
-                if (!pieces.empty()) {
-                    if (whole)
-                        out_.notes.push_back("port '" + leaf.path + "/" + p.name +
-                                             "' is connected both as a whole and in parts: the parts are used");
-                    std::ranges::sort(pieces, [&](std::size_t a, std::size_t b) { return terms_[a].lo > terms_[b].lo; });
-                    std::vector<std::string> items;
-                    unsigned next = L; // bits above `next` are done
-                    auto gap = [&](unsigned from, unsigned to) { // bits [from, to)
-                        if (to <= from)
-                            return;
-                        if (p.dir == 'i') {
-                            items.push_back(std::to_string(to - from) + "'d0");
-                        }
-                        else {
-                            const std::string d = "oc_nc_" + std::to_string(dummy++);
-                            wires << "  wire [" << to - from - 1 << ":0] " << d << ";\n";
-                            items.push_back(d);
-                        }
+                else if (port) {
+                    const bool drivenInside = std::ranges::any_of(n.driverModules, [&](const std::string& m) {
+                        return within(m, mod);
+                    });
+                    ports.push_back(std::string(n.inout ? "inout  wire " : drivenInside ? "output wire " : "input  wire ") +
+                                    decl);
+                    range[root] = std::pair{static_cast<long long>(n.width) - 1, 0LL};
+                }
+                else {
+                    wires << "  wire " << decl << ";\n";
+                    range[root] = std::pair{static_cast<long long>(n.width) - 1, 0LL};
+                    if (n.undriven)
+                        assigns << "  assign " << n.name << " = " << n.width << "'d0;\n";
+                }
+            }
+            auto netExpr = [&](std::size_t root) { return nets[root].name; };
+            // leaf cells
+            for (std::size_t li = 0; li < leaves_.size(); ++li) {
+                const Leaf& leaf = leaves_[li];
+                if (parentOf(leaf.path) != mod)
+                    continue;
+                std::vector<std::vector<std::size_t>> parts(leaf.ports.size());
+                for (std::size_t i = 0; i < terms_.size(); ++i)
+                    if (!terms_[i].top && terms_[i].leaf == li)
+                        parts[terms_[i].port].push_back(i);
+                inst << "  " << leaf.module;
+                if (!leaf.parameters.empty()) {
+                    inst << " #(\n";
+                    for (std::size_t k = 0; k < leaf.parameters.size(); ++k)
+                        inst << "    ." << leaf.parameters[k].first << "(" << leaf.parameters[k].second << ")"
+                             << (k + 1 < leaf.parameters.size() ? ",\n" : "\n");
+                    inst << "  )";
+                }
+                inst << " " << leaf.instance << " (\n";
+                for (std::size_t k = 0; k < leaf.ports.size(); ++k) {
+                    const Port& p = leaf.ports[k];
+                    const unsigned L = p.width();
+                    auto fit = [&](std::size_t root, unsigned bits) -> std::string {
+                        const Net& n = nets[root];
+                        const std::string name = netExpr(root);
+                        if (bits == n.width)
+                            return name;
+                        if (bits < n.width)
+                            return lowBits(name, range[root], bits);
+                        if (p.dir == 'i')
+                            return "{" + std::to_string(bits - n.width) + "'d0, " + name + "}";
+                        const std::string d = "oc_nc_" + std::to_string(dummy++);
+                        wires << "  wire [" << bits - n.width - 1 << ":0] " << d << ";\n";
+                        return "{" + d + ", " + name + "}";
                     };
-                    for (const auto i : pieces) {
-                        const Term& t = terms_[i];
-                        if (t.hi + 1 > next)
-                            continue; // overlapping parts
-                        gap(t.hi + 1, next);
-                        items.push_back(fit(nets[*phys_.lookup(termKey_[i])], t.hi - t.lo + 1));
-                        next = t.lo;
+                    std::string expr;
+                    std::optional<std::size_t> whole;
+                    std::vector<std::size_t> pieces;
+                    for (const auto i : parts[k]) {
+                        if (!nets[*phys_.lookup(termKey_[i])].connected)
+                            continue;
+                        if (terms_[i].whole)
+                            whole = i;
+                        else
+                            pieces.push_back(i);
                     }
-                    gap(0, next);
-                    for (std::size_t j = 0; j < items.size(); ++j)
-                        expr += (j ? ", " : "{") + items[j];
-                    expr += "}";
+                    if (!pieces.empty()) {
+                        if (whole)
+                            out_.notes.push_back("port '" + leaf.path + "/" + p.name +
+                                                 "' is connected both as a whole and in parts: the parts are used");
+                        std::ranges::sort(pieces,
+                                          [&](std::size_t a, std::size_t b) { return terms_[a].lo > terms_[b].lo; });
+                        std::vector<std::string> items;
+                        unsigned next = L; // bits above `next` are done
+                        auto gap = [&](unsigned from, unsigned to) { // bits [from, to)
+                            if (to <= from)
+                                return;
+                            if (p.dir == 'i') {
+                                items.push_back(std::to_string(to - from) + "'d0");
+                            }
+                            else {
+                                const std::string d = "oc_nc_" + std::to_string(dummy++);
+                                wires << "  wire [" << to - from - 1 << ":0] " << d << ";\n";
+                                items.push_back(d);
+                            }
+                        };
+                        for (const auto i : pieces) {
+                            const Term& t = terms_[i];
+                            if (t.hi + 1 > next)
+                                continue; // overlapping parts
+                            gap(t.hi + 1, next);
+                            items.push_back(fit(*phys_.lookup(termKey_[i]), t.hi - t.lo + 1));
+                            next = t.lo;
+                        }
+                        gap(0, next);
+                        for (std::size_t j = 0; j < items.size(); ++j)
+                            expr += (j ? ", " : "{") + items[j];
+                        expr += "}";
+                    }
+                    else if (whole) {
+                        expr = fit(*phys_.lookup(termKey_[*whole]), L);
+                    }
+                    else if (p.dir == 'i') {
+                        const auto d = leaf.defaults.find(p.name);
+                        const long long value = d == leaf.defaults.end() ? 0 : d->second;
+                        expr = value < 0 ? "{" + std::to_string(L) + "{1'b1}}"
+                                         : std::to_string(L) + "'d" + std::to_string(value);
+                    }
+                    inst << "    ." << p.name << "(" << expr << ")" << (k + 1 < leaf.ports.size() ? ",\n" : "\n");
                 }
-                else if (whole) {
-                    expr = fit(nets[*phys_.lookup(termKey_[*whole])], L);
-                }
-                else if (p.dir == 'i') {
-                    const auto d = leaf.defaults.find(p.name);
-                    const long long value = d == leaf.defaults.end() ? 0 : d->second;
-                    expr = std::to_string(L) + "'d" + std::to_string(value < 0 ? 0 : value);
-                    if (value < 0)
-                        expr = "{" + std::to_string(L) + "{1'b1}}";
-                }
-                inst << "    ." << p.name << "(" << expr << ")" << (k + 1 < leaf.ports.size() ? ",\n" : "\n");
+                inst << "  );\n";
             }
-            inst << "  );\n";
+            // hierarchical cells: their ports are the nets that cross them
+            for (const auto& k : kids) {
+                std::vector<std::string> conns;
+                for (const auto& [root, n] : nets)
+                    if (n.connected && crosses(n, k)) {
+                        // the design port's declared range differs from the child's [w-1:0] only in a scalar
+                        conns.push_back("." + n.name + "(" + n.name + ")");
+                    }
+                inst << "  " << moduleName(k) << " " << ident(k.substr(k.rfind('/') + 1)) << " (";
+                for (std::size_t j = 0; j < conns.size(); ++j)
+                    inst << (j ? ",\n    " : "\n    ") << conns[j];
+                inst << (conns.empty() ? ");\n" : "\n  );\n");
+            }
+            std::ostringstream m;
+            if (mod.empty()) {
+                m << "// Generated by OpenCDC from the Vivado block design '" << out_.name
+                  << "' (.bd): the cells and their connections.\n"
+                  << "module " << out_.name << " (\n";
+                for (std::size_t i = 0; i < topPorts_.size(); ++i) {
+                    const Port& p = topPorts_[i];
+                    m << "  " << (p.dir == 'o' ? "output wire " : p.dir == 'b' ? "inout  wire " : "input  wire ");
+                    if (p.range)
+                        m << "[" << p.range->first << ":" << p.range->second << "] ";
+                    m << p.name << (i + 1 < topPorts_.size() ? ",\n" : "\n");
+                }
+                m << ");\n" << wires.str() << topAssigns.str() << assigns.str() << inst.str() << "endmodule\n";
+            }
+            else {
+                m << "\n// hierarchical cell '" << mod << "'\nmodule " << moduleName(mod) << " (";
+                for (std::size_t j = 0; j < ports.size(); ++j)
+                    m << (j ? ",\n  " : "\n  ") << ports[j];
+                m << (ports.empty() ? ");\n" : "\n);\n") << wires.str() << assigns.str() << inst.str()
+                  << "endmodule\n";
+            }
+            text += m.str();
         }
-        std::ostringstream full;
-        full << "// Generated by OpenCDC from the Vivado block design '" << out_.name
-             << "' (.bd): the cells and their connections.\n"
-             << "module " << out_.name << " (\n";
-        for (std::size_t i = 0; i < topPorts_.size(); ++i) {
-            const Port& p = topPorts_[i];
-            full << "  " << (p.dir == 'o' ? "output wire " : p.dir == 'b' ? "inout  wire " : "input  wire ");
-            if (p.range)
-                full << "[" << p.range->first << ":" << p.range->second << "] ";
-            full << p.name << (i + 1 < topPorts_.size() ? ",\n" : "\n");
-        }
-        full << ");\n" << wires.str() << assigns.str() << inst.str() << "endmodule\n";
-        out_.verilog = full.str();
+        out_.verilog = text;
         if (!multi.empty()) {
             std::string s;
-            for (const auto& m : multi)
-                s += (s.empty() ? "" : "; ") + m;
+            for (const auto& x : multi)
+                s += (s.empty() ? "" : "; ") + x;
             out_.notes.push_back("nets with more than one driver: " + s);
         }
         if (!undriven.empty()) {
             std::string s;
-            for (const auto& m : undriven)
-                s += (s.empty() ? "" : ", ") + m;
+            for (const auto& x : undriven)
+                s += (s.empty() ? "" : ", ") + x;
             out_.notes.push_back("nets without a driver (tied to 0): " + s);
         }
     }
@@ -656,6 +757,7 @@ private:
     std::map<std::string, std::size_t> topIndex_;
     std::vector<std::string> topInterfaces_;
     std::vector<Leaf> leaves_;
+    std::vector<std::string> hierarchies_; ///< paths of the hierarchical cells
     std::vector<Term> terms_;
     std::vector<std::string> termKey_;
     std::map<std::string, std::size_t> termIndex_;

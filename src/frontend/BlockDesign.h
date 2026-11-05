@@ -5,9 +5,9 @@
 // A .bd (JSON, Vivado 2014+) lists cells (IP, module references and
 // hierarchies), the nets between their ports and the interface nets between
 // their bus interfaces. Vivado generates a Verilog module from it; OpenCDC
-// does the same: one module named after the design, every leaf cell an
-// instance (hierarchies flattened, the instance name is the cell path with
-// '_'), interface nets expanded to their signals through the port maps of the
+// does the same: one module named after the design, every cell an instance
+// under its name, a module per hierarchical cell (so instance paths are
+// Vivado's), interface nets expanded to their signals through the port maps of the
 // cells' component files (ip/<cell>/<cell>.xml, or the boundary of a JSON
 // .xci). The IP cells are then modelled from their .xci as any other IP.
 
@@ -27,7 +27,7 @@ struct BlockDesign {
     std::vector<std::filesystem::path> ipFiles;
     std::vector<std::string> notes;
     std::size_t cells = 0;       ///< leaf cells
-    std::size_t hierarchies = 0; ///< hierarchical cells flattened
+    std::size_t hierarchies = 0; ///< hierarchical cells (a module each)
 };
 
 [[nodiscard]] bool isBlockDesignFile(const std::filesystem::path& file);

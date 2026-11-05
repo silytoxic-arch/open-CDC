@@ -205,13 +205,17 @@ TEST_CASE("Block design: the module of a .bd, interface nets expanded through th
                           ".s_axis_tdata(prod_M_AXIS_TDATA)", ".m_axis_tdata(cc_M_AXIS_TDATA)",
                           // unconnected inputs get their default value
                           ".s_axis_aresetn(1'd1)",
-                          // the hierarchy is flattened: the instance name is the cell path
-                          "consumer grp_cons (", ".clk(clk_b)", ".s_tdata(cc_M_AXIS_TDATA)", ".q(led)",
+                          // the hierarchy is a module of its own: the instance paths are Vivado's (grp/cons)
+                          "design_1_grp_imp grp (", ".cc_M_AXIS_TDATA(cc_M_AXIS_TDATA)", ".led(led)",
+                          "module design_1_grp_imp (", "input  wire [0:0] clk_b", "input  wire [7:0] cc_M_AXIS_TDATA",
+                          "output wire [0:0] cc_M_AXIS_TREADY", "output wire [7:0] led",
+                          "consumer cons (", ".clk(clk_b)", ".s_tdata(cc_M_AXIS_TDATA)", ".q(led)",
                           ".stat_o(STAT_tri_o)"})
         CHECK(has(v, s));
-    // negative: nothing is driven twice or left without a driver
+    // negative: nothing is driven twice or left without a driver; a net only inside the hierarchy is not its port
     CHECK(b.notes.empty());
     CHECK_FALSE(has(v, "assign"));
+    CHECK_FALSE(has(v, ".clk_a(clk_a)"));
 }
 
 TEST_CASE("Block design: parts of a port in different interfaces, unconnected outputs", "[frontend][bd]") {
@@ -283,7 +287,7 @@ TEST_CASE("Block design: analyzed with the IP models; the clock converter separa
     const auto r = run(project(dir, true));
     const auto* bd = find(*r, "FE-BD-MODULE");
     REQUIRE(bd);
-    CHECK(has(bd->message, "module 'design_1' with 3 cell(s), 1 hierarchical cell(s) flattened, 1 IP configuration(s)"));
+    CHECK(has(bd->message, "module 'design_1' with 3 cell(s), 1 hierarchical cell(s), 1 IP configuration(s)"));
     const auto* ip = find(*r, "FE-XCI-MODEL");
     REQUIRE(ip);
     CHECK(has(ip->message, "AXI4-Stream clock converter, s_axis_aclk to m_axis_aclk, asynchronous clocks"));
@@ -296,7 +300,48 @@ TEST_CASE("Block design: analyzed with the IP models; the clock converter separa
     REQUIRE(r2->cdc);
     REQUIRE_FALSE(r2->cdc->paths.empty());
     const bool toConsumer = std::ranges::any_of(r2->cdc->paths, [](const auto& p) {
-        return p.dstName.find("grp_cons") != std::string::npos;
+        return p.dstName.find("grp.cons.") != std::string::npos;
     });
     CHECK(toConsumer);
+    // the instance paths are Vivado's: a constraint written for the Vivado netlist matches
+    auto cfg3 = project(dir2, false);
+    cfg3.constraints.push_back(dir2.write("fp.xdc", "set_false_path -to [get_cells grp/cons/r_reg*]\n"));
+    const auto r3 = run(cfg3);
+    CHECK(find(*r3, "CON-UNMATCHED") == nullptr);
+    // negative: the flattened name of earlier versions matches nothing
+    auto cfg4 = project(dir2, false);
+    cfg4.constraints.push_back(dir2.write("fp2.xdc", "set_false_path -to [get_cells grp_cons/r_reg*]\n"));
+    const auto r4 = run(cfg4);
+    CHECK(find(*r4, "CON-UNMATCHED") != nullptr);
+}
+
+TEST_CASE("Block design: nested hierarchies keep Vivado's instance paths", "[frontend][bd]") {
+    test::TempDir dir;
+    const std::string ref = R"("vlnv": "xilinx.com:module_ref:cell:1.0", "reference_info": { "ref_name": "cell" },
+        "ports": { "i": { "direction": "I" }, "o": { "direction": "O" } })";
+    // h1/h2/a drives h1/b (inside h1) and c (outside); b drives nothing
+    const std::string bd = R"({ "design": { "design_info": { "name": "d" },
+      "components": {
+        "c": { )" + ref + R"( },
+        "h1": {
+          "ports": { "X": { "direction": "O" } },
+          "components": {
+            "b": { )" + ref + R"( },
+            "h2": { "ports": { "Y": { "direction": "O" } },
+                    "components": { "a": { )" + ref + R"( } },
+                    "nets": { "a_o": { "ports": [ "a/o", "Y" ] } } } },
+          "nets": { "h2_Y": { "ports": [ "h2/Y", "b/i", "X" ] } } } },
+      "nets": { "h1_X": { "ports": [ "h1/X", "c/i" ] } } } })";
+    auto r = frontend::blockDesignFromText(bd, dir.path());
+    REQUIRE(r);
+    const auto& v = r.value().verilog;
+    INFO(v);
+    for (const char* s : {"module d (", "d_h1_imp h1 (", ".h1_X(h1_X)", "cell c (", ".i(h1_X)",
+                          "module d_h1_imp (\n  output wire [0:0] h1_X\n);", "d_h1_h2_imp h2 (", "cell b (",
+                          "module d_h1_h2_imp (\n  output wire [0:0] h1_X\n);", "cell a (", ".o(h1_X)"})
+        CHECK(has(v, s));
+    CHECK(r.value().hierarchies == 2);
+    // negative: b's unconnected output is no port of h1, and no leaf is named after its path
+    CHECK_FALSE(has(v, "h1_h2_a"));
+    CHECK_FALSE(has(v, "h1_b ("));
 }

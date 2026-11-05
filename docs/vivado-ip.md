@@ -94,10 +94,12 @@ its IP cells from their configurations:
   reference (`module_ref`) is an instance of the referenced module, with the
   HDL parameters the configuration passes; the module must be in the sources,
   as in the Vivado project.
-- **Hierarchies.** Hierarchical cells (also the AXI Interconnect, which Vivado
-  builds from crossbar, couplers, clock, width and protocol converters and
-  data FIFOs) are flattened: the instance name is the cell path with `_`
-  (`sys_bus/s00_couplers/auto_cc` becomes `sys_bus_s00_couplers_auto_cc`).
+- **Hierarchies.** Every hierarchical cell (also the AXI Interconnect, which
+  Vivado builds from crossbar, couplers, clock, width and protocol converters
+  and data FIFOs) is a module of its own (`<design>_<path>_imp`) instantiated
+  under the cell's name, so instance paths are Vivado's
+  (`soc_inst/sys_bus/s00_couplers/auto_cc`) and constraints written with full
+  paths match. Its ports are the nets that cross it.
 - **Nets.** A net connects the ports in its list; it carries the block design
   net's name (`clk_gen_clk_peripheral`).
 - **Interface nets** connect bus interfaces signal by signal through the port
@@ -112,7 +114,7 @@ its IP cells from their configurations:
   inputs get its low bits, wider inputs are padded with 0. An input that is not
   connected gets the default value of its component file, as in Vivado.
 
-The `FE-BD-MODULE` info gives the number of cells, flattened hierarchies and
+The `FE-BD-MODULE` info gives the number of cells, hierarchical cells and
 IP configurations, with notes for nets with several drivers or without a
 driver. A cell whose ports are not known (the output products were not
 generated, so `ip/<cell>/<cell>.xml` is missing) is an error (`FE-BD-CELL`):
