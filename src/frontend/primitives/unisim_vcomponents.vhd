@@ -254,4 +254,8 @@ package vcomponents is
   component IOBUFDS port (I : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component OBUFTDS port (I : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component STARTUPE2 port (CLK : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component STARTUPE3 port (GSR : in std_ulogic); end component;
 end package;

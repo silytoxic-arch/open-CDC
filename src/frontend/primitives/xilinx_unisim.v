@@ -463,6 +463,42 @@ module IDELAYCTRL #(parameter SIM_DEVICE = "7SERIES") (output RDY, input REFCLK,
     opencdc_async_source u_rdy (RDY);
 endmodule
 
+// The configuration interface: CFGCLK/CFGMCLK come from the internal
+// configuration oscillator (nominal 65 MHz CFGMCLK; no clock domain of the
+// fabric), EOS and PREQ change asynchronously. USRCCLKO drives the
+// configuration clock pin (CCLK) and USRDONEO the DONE pin: outputs of the
+// device, so their inputs are only read here.
+module STARTUPE2 #(parameter PROG_USR = "FALSE", parameter real SIM_CCLK_FREQ = 0.0)
+                 (output CFGCLK, output CFGMCLK, output EOS, output PREQ, input CLK, input GSR, input GTS,
+                  input KEYCLEARB, input PACK, input USRCCLKO, input USRCCLKTS, input USRDONEO, input USRDONETS);
+    (* OPENCDC_CLOCK_PIN = "CFGMCLK" *) wire cfgmclk_src;
+    opencdc_async_source u_cfgmclk (cfgmclk_src);
+    assign CFGMCLK = cfgmclk_src;
+    (* OPENCDC_CLOCK_PIN = "CFGCLK" *) wire cfgclk_src;
+    opencdc_async_source u_cfgclk (cfgclk_src);
+    assign CFGCLK = cfgclk_src;
+    opencdc_async_source u_eos (EOS);
+    opencdc_async_source u_preq (PREQ);
+endmodule
+
+// UltraScale: as STARTUPE2, and DI/DO/DTS/FCSBO for the configuration data pins.
+module STARTUPE3 #(parameter PROG_USR = "FALSE", parameter real SIM_CCLK_FREQ = 0.0)
+                 (output CFGCLK, output CFGMCLK, output [3:0] DI, output EOS, output PREQ, input [3:0] DO,
+                  input [3:0] DTS, input FCSBO, input FCSBTS, input GSR, input GTS, input KEYCLEARB, input PACK,
+                  input USRCCLKO, input USRCCLKTS, input USRDONEO, input USRDONETS);
+    (* OPENCDC_CLOCK_PIN = "CFGMCLK" *) wire cfgmclk_src;
+    opencdc_async_source u_cfgmclk (cfgmclk_src);
+    assign CFGMCLK = cfgmclk_src;
+    (* OPENCDC_CLOCK_PIN = "CFGCLK" *) wire cfgclk_src;
+    opencdc_async_source u_cfgclk (cfgclk_src);
+    assign CFGCLK = cfgclk_src;
+    wire di_src;
+    opencdc_async_source u_di (di_src); // the configuration data pins, read without a clock
+    assign DI = {4{di_src}};
+    opencdc_async_source u_eos (EOS);
+    opencdc_async_source u_preq (PREQ);
+endmodule
+
 // ---------------------------------------------------------------- block RAM
 // Port A reads and writes on CLKARDCLK, port B on CLKBWRCLK. Each port's
 // writes go to its own array and both arrays are read, so data written by

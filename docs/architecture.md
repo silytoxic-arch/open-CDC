@@ -796,8 +796,12 @@ src/frontend/vhdl/
   VhdlElab                 层次展开：实体 + 结构体 + generic 值 → 唯一模块体；generate、block、端口映射
   VhdlMixed                与 Verilog 之间的值和端口转换
   VhdlFrontend             IFrontend 实现
-src/frontend/AutoFrontend  按扩展名选择前端；混合工程的链接器
+src/frontend/AutoFrontend  按扩展名选择前端；混合工程的链接器；.xci/.xcix/.bd 展开为生成的模型
+src/frontend/XciModels     Vivado IP 配置 → CDC 模型；组件文件的端口与总线接口端口映射
+src/frontend/BlockDesign   Vivado 块设计（.bd）→ Verilog 模块：层次展平，接口网络按端口映射展开
 ```
+
+块设计的连接用两个并查集计算：物理网络按"路径/端口"的字符串键合并（层次单元自己的端口与上一层引用它的键相同，所以层次自然穿透），接口网络先合并接口端点，再对每个逻辑信号把各端点映射到的物理端口（或端口的一段）合并。每个网络取驱动端的宽度，按位片拼接到端口上；未连接的输入取组件文件中的默认值。
 
 ### 15.2 统一求值
 

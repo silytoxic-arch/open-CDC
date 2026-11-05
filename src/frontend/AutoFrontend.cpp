@@ -16,6 +16,7 @@
 #include "frontend/Frontend.h"
 #include "frontend/MixedSupport.h"
 #include "frontend/Primitives.h"
+#include "frontend/BlockDesign.h"
 #include "frontend/XciModels.h"
 #include "core/Version.h"
 #include "frontend/vhdl/VhdlElab.h"
@@ -865,7 +866,8 @@ public:
     Result<FrontendOutput> elaborate(const FrontendInput& original, DiagnosticSink& sink) override {
         // Vivado IP configurations (.xci) are replaced by generated models
         FrontendInput input = original;
-        if (std::ranges::any_of(input.sourceFiles, isXciFile)) {
+        if (std::ranges::any_of(input.sourceFiles,
+                                [](const auto& f) { return isXciFile(f) || isBlockDesignFile(f); })) {
             input.sourceFiles.clear();
             input.sourceLibraries.clear();
             XciContext context;
@@ -888,6 +890,30 @@ public:
                 std::error_code ec;
                 if (!seen.insert(std::filesystem::weakly_canonical(f, ec).string()).second)
                     continue; // the same file listed twice (an IP used by several others)
+                if (isBlockDesignFile(f)) {
+                    // a block design: its module, then the configurations of its IP cells
+                    auto bd = blockDesignFromFile(f);
+                    if (!bd) {
+                        sink.report(std::move(bd).error());
+                        continue;
+                    }
+                    const auto& b = bd.value();
+                    const auto path = primitiveDir() / (b.name + "_bd_" +
+                                                        std::to_string(std::hash<std::string>{}(b.verilog) % 1000000) + ".v");
+                    writeIfChanged(path, b.verilog);
+                    input.sourceFiles.push_back(path);
+                    input.sourceLibraries.push_back(std::string());
+                    for (std::size_t k = 0; k < b.ipFiles.size(); ++k)
+                        queue.insert(queue.begin() + static_cast<std::ptrdiff_t>(q + 1 + k), {b.ipFiles[k], std::string()});
+                    sink.report({"FE-BD-MODULE", Severity::Info,
+                                 "block design '" + b.name + "': module '" + b.name + "' with " +
+                                     std::to_string(b.cells) + " cell(s)" +
+                                     (b.hierarchies ? ", " + std::to_string(b.hierarchies) + " hierarchical cell(s) flattened"
+                                                    : std::string()) +
+                                     ", " + std::to_string(b.ipFiles.size()) + " IP configuration(s)",
+                                 SourceLocation{toUtf8(f), 0, 0}, b.notes});
+                    continue;
+                }
                 if (!isXciFile(f)) {
                     input.sourceFiles.push_back(f);
                     input.sourceLibraries.push_back(lib);

@@ -47,6 +47,7 @@ Sources:
 | `URAM288` | One clock for both ports | |
 | `DSP48E1`, `DSP48E2` | `P` and the cascade outputs depend on all data and control inputs; registered on `CLK` (`CEP` enable, `RSTP` reset) when any pipeline register (`AREG`, `BREG`, `CREG`, `DREG`, `ADREG`, `MREG`, `PREG`) is on, otherwise combinational | The individual pipeline stages are not modelled |
 | `BSCANE2` | `TCK` is a clock source of its own (relation unknown until constrained); `DRCK` = `TCK`; `SEL`, `SHIFT`, `CAPTURE`, `UPDATE`, `RESET`, `RUNTEST`, `TDI`, `TMS` change in the `TCK` domain | The TAP controller is not modelled |
+| `STARTUPE2`, `STARTUPE3` | `CFGCLK` and `CFGMCLK` are clock sources of their own (the configuration oscillator); `EOS`, `PREQ` (and `DI` of `STARTUPE3`) have no clock domain; `USRCCLKO`, `USRDONEO` and the other inputs go to device pins | The configuration logic is not modelled |
 | `MMCME2/3/4_BASE`, `MMCME2/3/4_ADV`, `PLLE2/3/4_BASE`, `PLLE2/3/4_ADV` | Every `CLKOUT*`/`CLKFBOUT` is a clock derived from `CLKIN1` (`CLKIN` for PLLE3/4), named after the pin; `LOCKED` has no clock domain | Period = input period × `DIVCLK_DIVIDE` × `CLKOUTn_DIVIDE[_F]` / `CLKFBOUT_MULT[_F]`. The input period comes from the input clock, or from `CLKIN1_PERIOD` when the input clock has none. Phase shift, duty cycle and DRP are not modelled. |
 | `GTXE2_CHANNEL`, `GTHE2_CHANNEL`, `GTPE2_CHANNEL`, `GTHE3_CHANNEL`, `GTHE4_CHANNEL`, `GTYE3_CHANNEL`, `GTYE4_CHANNEL` | `RXOUTCLK`, `TXOUTCLK`, `RXOUTCLKPCS`, `TXOUTCLKPCS` are clock sources of their own (named `inst.RXOUTCLK` …); `TXDATA` captured on `TXUSRCLK2`, `RXDATA` registered on `RXUSRCLK2`; reset-done and lock outputs have no clock domain; DRP is combinational | The relation of a GT clock to fabric clocks is unknown until constrained (CDC-010). Vivado-style `create_clock … [get_pins ch/RXOUTCLK]` works. About 70 of the most used pins are modelled; the rest are ignored. |
 | `GTXE2_COMMON`, `GTHE2_COMMON`, `GTPE2_COMMON`, `GTHE3_COMMON`, `GTHE4_COMMON`, `GTYE3_COMMON`, `GTYE4_COMMON` | PLL output clocks derived from the first reference clock input; reference outputs pass it through; lock outputs have no clock domain | |
@@ -111,7 +112,7 @@ Generic Gowin cell names (`DFF`, `DFFE`, `CLKDIV`, …) are deliberately not mod
 ## Not modelled
 
 These primitives are still reported as `FE-UNKNOWN-MODULE`:
-- Xilinx: `ICAPE2`/`ICAPE3`, `STARTUPE2/3`, `PCIE*`, `CMAC*`, `HBM*`;
+- Xilinx: `ICAPE2`/`ICAPE3`, `PCIE*`, `CMAC*`, `HBM*`;
 - Intel: transceiver IP, `altlvds`, `altiobuf`;
 - Lattice: SERDES (`DCUA`), gearing DDR (`IDDRX2F`, `ODDRX2F`, …), `PDPW16KD`, iCE40 `SB_IO`; Gowin: `IDDR`/`ODDR` (name clash with Xilinx), `SP`, `pROM`, SERDES; Microchip primitives.
 

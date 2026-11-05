@@ -2454,3 +2454,301 @@ TEST_CASE("XCI: AXI Interconnect (axi_interconnect), each port in its own clock"
     REQUIRE_FALSE(none);
     CHECK(none.error().message.find("needs the ports of the instance") != std::string::npos);
 }
+
+namespace {
+
+// a JSON .xci of `ip` with model parameters and ports {name, direction, left (-1: scalar)}
+std::string jsonIp(const std::string& inst, const std::string& ip,
+                   const std::vector<std::pair<std::string, std::string>>& params,
+                   const std::vector<std::tuple<std::string, std::string, int>>& ports) {
+    std::string ps, pr;
+    for (const auto& [k, v] : params)
+        ps += (ps.empty() ? "" : ",\n        ") + param(k, v);
+    for (const auto& [n, d, l] : ports)
+        pr += (pr.empty() ? "" : ",\n        ") + port(n, d.c_str(), l);
+    return "{\n  \"schema\": \"xilinx.com:schema:json_instance:1.0\",\n  \"ip_inst\": {\n"
+           "    \"xci_name\": \"" + inst + "\",\n"
+           "    \"component_reference\": \"" + ip + "\",\n"
+           "    \"parameters\": {\n      \"component_parameters\": {\n        " + param("Component_Name", inst) +
+           "\n      },\n      \"model_parameters\": {\n        " + ps + "\n      }\n    },\n"
+           "    \"boundary\": {\n      \"ports\": {\n        " + pr + "\n      }\n    }\n  }\n}\n";
+}
+
+frontend::XciModel modelOf(const test::TempDir& dir, const std::string& inst, const std::string& text) {
+    auto m = frontend::modelFromXci(dir.write(inst + ".xci", text), frontend::XciContext{});
+    if (!m)
+        FAIL(m.error().message);
+    INFO(m.value().verilog);
+    return m.value();
+}
+
+bool has(const std::string& v, const std::string& s) {
+    return v.find(s) != std::string::npos;
+}
+
+} // namespace
+
+TEST_CASE("XCI: Processor System Reset, the reset outputs in slowest_sync_clk", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const auto m = modelOf(dir, "rst0",
+                           jsonIp("rst0", "xilinx.com:ip:proc_sys_reset:5.0", {{"C_NUM_BUS_RST", "1"}},
+                                  {{"slowest_sync_clk", "in", -1}, {"ext_reset_in", "in", -1}, {"aux_reset_in", "in", -1},
+                                   {"mb_debug_sys_rst", "in", -1}, {"dcm_locked", "in", -1}, {"mb_reset", "out", -1},
+                                   {"bus_struct_reset", "out", 0}, {"peripheral_reset", "out", 0},
+                                   {"interconnect_aresetn", "out", 0}, {"peripheral_aresetn", "out", 0}}));
+    const auto& v = m.verilog;
+    INFO(v);
+    for (const char* o : {"mb_reset", "bus_struct_reset", "peripheral_reset", "interconnect_aresetn", "peripheral_aresetn"})
+        CHECK(has(v, std::string("always @(posedge slowest_sync_clk[0]) oc_") + o + "_q"));
+    // negative: the asynchronous inputs are synchronized inside the IP, not sampled by the model
+    for (const char* i : {"ext_reset_in", "aux_reset_in", "dcm_locked", "mb_debug_sys_rst"})
+        CHECK_FALSE(has(v, std::string("^{") + i));
+    CHECK(m.summary == "reset outputs synchronous to slowest_sync_clk");
+}
+
+TEST_CASE("XCI: Utility Vector Logic is combinational", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const auto a = modelOf(dir, "and0",
+                           jsonIp("and0", "xilinx.com:ip:util_vector_logic:2.0", {{"C_OPERATION", "and"}, {"C_SIZE", "4"}}, {}));
+    CHECK(has(a.verilog, "input  wire [3:0] Op2"));
+    CHECK(has(a.verilog, "assign Res = Op1 & Op2;"));
+    const auto n = modelOf(dir, "not0",
+                           jsonIp("not0", "xilinx.com:ip:util_vector_logic:2.0", {{"C_OPERATION", "not"}, {"C_SIZE", "1"}}, {}));
+    CHECK(has(n.verilog, "assign Res = ~Op1;"));
+    // negative: NOT has no second operand, and there is no register
+    CHECK_FALSE(has(n.verilog, "Op2"));
+    CHECK_FALSE(has(a.verilog, "always"));
+    auto bad = frontend::modelFromXci(
+        dir.write("bad.xci", jsonIp("bad", "xilinx.com:ip:util_vector_logic:2.0", {{"C_OPERATION", "nand"}}, {})),
+        frontend::XciContext{});
+    REQUIRE_FALSE(bad);
+    CHECK(has(bad.error().message, "operation 'nand' is not known"));
+}
+
+TEST_CASE("XCI: AXI protocol converter, data FIFO and APB bridge on one clock", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const auto pc = modelOf(dir, "pc0",
+                            jsonIp("pc0", "xilinx.com:ip:axi_protocol_converter:2.1",
+                                   {{"C_S_AXI_PROTOCOL", "0"}, {"C_M_AXI_PROTOCOL", "2"}},
+                                   {{"aclk", "in", -1}, {"aresetn", "in", -1}, {"s_axi_awaddr", "in", 31},
+                                    {"s_axi_awready", "out", -1}, {"m_axi_awaddr", "out", 31}, {"m_axi_awready", "in", -1}}));
+    CHECK(has(pc.verilog, "always @(posedge aclk[0]) oc_dom_aclk <= ^{aresetn, m_axi_awready, s_axi_awaddr}"));
+    CHECK(has(pc.verilog, "always @(posedge aclk[0]) oc_m_axi_awaddr_q"));
+    CHECK(pc.summary == "AXI protocol converter AXI4 to AXI4-Lite, one clock (aclk)");
+    const auto apb = modelOf(dir, "apb0",
+                             jsonIp("apb0", "xilinx.com:ip:axi_apb_bridge:3.0", {},
+                                    {{"s_axi_aclk", "in", -1}, {"s_axi_aresetn", "in", -1}, {"s_axi_wdata", "in", 31},
+                                     {"m_apb_pwdata", "out", 31}, {"m_apb_prdata", "in", 31}}));
+    CHECK(has(apb.verilog, "always @(posedge s_axi_aclk[0]) oc_m_apb_pwdata_q"));
+    // negative: a port the model does not know is not guessed
+    auto bad = frontend::modelFromXci(dir.write("df.xci", jsonIp("df", "xilinx.com:ip:axi_data_fifo:2.1", {},
+                                                                 {{"aclk", "in", -1}, {"s_axi_awaddr", "in", 31},
+                                                                  {"strange_clk", "in", -1}})),
+                                      frontend::XciContext{});
+    REQUIRE_FALSE(bad);
+    CHECK(has(bad.error().message, "strange_clk"));
+}
+
+TEST_CASE("XCI: AXI data width converter and AXI4-Stream clock converter, two sides", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const std::vector<std::tuple<std::string, std::string, int>> ports = {
+        {"s_axi_aclk", "in", -1}, {"s_axi_aresetn", "in", -1}, {"s_axi_wdata", "in", 31}, {"s_axi_wready", "out", -1},
+        {"m_axi_aclk", "in", -1}, {"m_axi_aresetn", "in", -1}, {"m_axi_wdata", "out", 63}, {"m_axi_wready", "in", -1}};
+    const auto async = modelOf(dir, "us0",
+                               jsonIp("us0", "xilinx.com:ip:axi_dwidth_converter:2.1",
+                                      {{"C_AXI_IS_ACLK_ASYNC", "1"}, {"C_S_AXI_DATA_WIDTH", "32"}, {"C_M_AXI_DATA_WIDTH", "64"}},
+                                      ports));
+    CHECK(has(async.verilog, "always @(posedge s_axi_aclk[0]) oc_s_axi_wready_q"));
+    CHECK(has(async.verilog, "always @(posedge m_axi_aclk[0]) oc_m_axi_wdata_q"));
+    CHECK(has(async.summary, "32 to 64 bits, s_axi_aclk to m_axi_aclk, asynchronous clocks"));
+    // negative: synchronous without the ratio FIFO: every port in s_axi_aclk
+    const auto sync = modelOf(dir, "us1",
+                              jsonIp("us1", "xilinx.com:ip:axi_dwidth_converter:2.1",
+                                     {{"C_AXI_IS_ACLK_ASYNC", "0"}, {"C_FIFO_MODE", "0"}}, ports));
+    CHECK(has(sync.verilog, "always @(posedge s_axi_aclk[0]) oc_m_axi_wdata_q"));
+    CHECK_FALSE(has(sync.verilog, "posedge m_axi_aclk"));
+    const auto axis = modelOf(dir, "cc0",
+                              jsonIp("cc0", "xilinx.com:ip:axis_clock_converter:1.1", {{"C_IS_ACLK_ASYNC", "1"}},
+                                     {{"s_axis_aclk", "in", -1}, {"s_axis_aresetn", "in", -1}, {"s_axis_tdata", "in", 7},
+                                      {"s_axis_tready", "out", -1}, {"m_axis_aclk", "in", -1}, {"m_axis_aresetn", "in", -1},
+                                      {"m_axis_tdata", "out", 7}, {"m_axis_tready", "in", -1}}));
+    CHECK(has(axis.verilog, "always @(posedge s_axis_aclk[0]) oc_s_axis_tready_q"));
+    CHECK(has(axis.verilog, "always @(posedge m_axis_aclk[0]) oc_m_axis_tdata_q"));
+    CHECK_FALSE(has(axis.verilog, "posedge s_axis_aclk[0]) oc_m_axis"));
+}
+
+TEST_CASE("XCI: AXI BRAM Controller passes s_axi_aclk to the BRAM", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const auto m = modelOf(dir, "bc0",
+                           jsonIp("bc0", "xilinx.com:ip:axi_bram_ctrl:4.1", {},
+                                  {{"s_axi_aclk", "in", -1}, {"s_axi_aresetn", "in", -1}, {"s_axi_araddr", "in", 15},
+                                   {"s_axi_rdata", "out", 31}, {"bram_clk_a", "out", -1}, {"bram_rst_a", "out", -1},
+                                   {"bram_addr_a", "out", 15}, {"bram_rddata_a", "in", 31}}));
+    CHECK(has(m.verilog, "assign bram_clk_a = s_axi_aclk;"));
+    CHECK(has(m.verilog, "always @(posedge s_axi_aclk[0]) oc_bram_addr_a_q"));
+    // negative: the BRAM clock is not a register
+    CHECK_FALSE(has(m.verilog, "oc_bram_clk_a_q"));
+}
+
+TEST_CASE("XCI: AXI Interrupt Controller samples only the synchronous interrupt inputs", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const std::vector<std::tuple<std::string, std::string, int>> ports = {
+        {"s_axi_aclk", "in", -1}, {"s_axi_aresetn", "in", -1}, {"s_axi_wdata", "in", 31}, {"s_axi_rdata", "out", 31},
+        {"intr", "in", 3},        {"irq", "out", -1},          {"processor_clk", "in", -1}, {"processor_rst", "in", -1},
+        {"processor_ack", "in", 1}, {"interrupt_address", "out", 31}};
+    // Fuxi's plic: inputs 0..2 synchronous, input 3 asynchronous
+    const auto mixed = modelOf(dir, "ic0",
+                               jsonIp("ic0", "xilinx.com:ip:axi_intc:4.1",
+                                      {{"C_NUM_INTR_INPUTS", "4"}, {"C_ASYNC_INTR", "0xFFFFFFF8"}}, ports));
+    CHECK(has(mixed.verilog, "oc_dom_s_axi_aclk <= ^{(intr & 4'h7), s_axi_aresetn, s_axi_wdata}"));
+    CHECK(has(mixed.verilog, "always @(posedge s_axi_aclk[0]) oc_irq_q"));
+    CHECK(has(mixed.verilog, "assign interrupt_address = 32'b0;"));
+    CHECK(has(mixed.summary, "4 interrupt input(s) (1 asynchronous)"));
+    // negative: all asynchronous -> intr is not sampled; synchronizers disabled -> all sampled
+    const auto all = modelOf(dir, "ic1",
+                             jsonIp("ic1", "xilinx.com:ip:axi_intc:4.1",
+                                    {{"C_NUM_INTR_INPUTS", "4"}, {"C_ASYNC_INTR", "0xFFFFFFFF"}}, ports));
+    CHECK(has(all.verilog, "oc_dom_s_axi_aclk <= ^{s_axi_aresetn"));
+    CHECK_FALSE(has(all.verilog, "intr &"));
+    const auto none = modelOf(dir, "ic2",
+                              jsonIp("ic2", "xilinx.com:ip:axi_intc:4.1",
+                                     {{"C_NUM_INTR_INPUTS", "4"}, {"C_ASYNC_INTR", "0xFFFFFFFF"},
+                                      {"C_DISABLE_SYNCHRONIZERS", "1"}},
+                                     ports));
+    CHECK(has(none.verilog, "oc_dom_s_axi_aclk <= ^{intr, s_axi_aresetn"));
+    auto fast = frontend::modelFromXci(
+        dir.write("ic3.xci", jsonIp("ic3", "xilinx.com:ip:axi_intc:4.1", {{"C_HAS_FAST", "1"}}, ports)),
+        frontend::XciContext{});
+    REQUIRE_FALSE(fast);
+    CHECK(has(fast.error().message, "fast interrupt mode"));
+}
+
+TEST_CASE("XCI: AXI Ethernet Lite, MII receive and transmit clocks", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const auto m = modelOf(dir, "el0",
+                           jsonIp("el0", "xilinx.com:ip:axi_ethernetlite:3.0", {},
+                                  {{"s_axi_aclk", "in", -1}, {"s_axi_aresetn", "in", -1}, {"s_axi_wdata", "in", 31},
+                                   {"s_axi_rdata", "out", 31}, {"ip2intc_irpt", "out", -1}, {"phy_tx_clk", "in", -1},
+                                   {"phy_rx_clk", "in", -1}, {"phy_crs", "in", -1}, {"phy_dv", "in", -1},
+                                   {"phy_rx_data", "in", 3}, {"phy_col", "in", -1}, {"phy_rx_er", "in", -1},
+                                   {"phy_rst_n", "out", -1}, {"phy_tx_en", "out", -1}, {"phy_tx_data", "out", 3},
+                                   {"phy_mdio_i", "in", -1}, {"phy_mdio_o", "out", -1}, {"phy_mdio_t", "out", -1},
+                                   {"phy_mdc", "out", -1}}));
+    CHECK(has(m.verilog, "always @(posedge phy_rx_clk[0]) oc_dom_phy_rx_clk <= ^{phy_dv, phy_rx_data, phy_rx_er}"));
+    CHECK(has(m.verilog, "always @(posedge phy_tx_clk[0]) oc_phy_tx_data_q"));
+    CHECK(has(m.verilog, "always @(posedge s_axi_aclk[0]) oc_phy_mdc_q"));
+    CHECK(has(m.verilog, "always @(posedge s_axi_aclk[0]) oc_ip2intc_irpt_q"));
+    // negative: carrier sense, collision and MDIO input are synchronized inside the IP
+    for (const char* i : {"phy_crs", "phy_col", "phy_mdio_i"}) {
+        CHECK_FALSE(has(m.verilog, std::string(", ") + i));
+        CHECK_FALSE(has(m.verilog, std::string("{") + i));
+    }
+}
+
+TEST_CASE("XCI: System ILA observes its inputs only", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const auto m = modelOf(dir, "ila0",
+                           jsonIp("ila0", "xilinx.com:ip:system_ila:1.1", {},
+                                  {{"clk", "in", -1}, {"SLOT_0_AXI_awaddr", "in", 31}, {"resetn", "in", -1}}));
+    CHECK(m.summary == "debug core, inputs only");
+    CHECK_FALSE(has(m.verilog, "always"));
+    // negative: an output is not a debug core's
+    auto bad = frontend::modelFromXci(dir.write("ila1.xci", jsonIp("ila1", "xilinx.com:ip:system_ila:1.1", {},
+                                                                   {{"clk", "in", -1}, {"trig_out", "out", -1}})),
+                                      frontend::XciContext{});
+    REQUIRE_FALSE(bad);
+}
+
+TEST_CASE("XCI: AXI Quad SPI with the AXI4 memory interface and the STARTUP primitive", "[frontend][xci][bd]") {
+    test::TempDir dir;
+    const std::vector<std::tuple<std::string, std::string, int>> ports = {
+        {"ext_spi_clk", "in", -1},  {"s_axi_aclk", "in", -1},    {"s_axi_aresetn", "in", -1},
+        {"s_axi4_aclk", "in", -1},  {"s_axi4_aresetn", "in", -1}, {"s_axi_wdata", "in", 31},
+        {"s_axi_rdata", "out", 31}, {"s_axi4_araddr", "in", 23},  {"s_axi4_rdata", "out", 31},
+        {"io0_i", "in", -1},        {"io0_o", "out", -1},         {"ss_o", "out", 0},
+        {"cfgclk", "out", -1},      {"cfgmclk", "out", -1},       {"eos", "out", -1},
+        {"preq", "out", -1},        {"gsr", "in", -1},            {"usrcclkts", "in", -1},
+        {"ip2intc_irpt", "out", -1}};
+    const auto m = modelOf(dir, "qs0",
+                           jsonIp("qs0", "xilinx.com:ip:axi_quad_spi:3.2",
+                                  {{"Async_Clk", "1"}, {"C_USE_STARTUP", "1"}, {"C_TYPE_OF_AXI4_INTERFACE", "1"},
+                                   {"C_FAMILY", "artix7"}},
+                                  ports));
+    const auto& v = m.verilog;
+    INFO(v);
+    CHECK(has(v, "always @(posedge s_axi4_aclk) oc_axi4_mix <= ^{s_axi4_araddr, s_axi4_aresetn}"));
+    CHECK(has(v, "always @(posedge s_axi4_aclk) oc_s_axi4_rdata <= {32{oc_to_axi4 ^ oc_axi4_mix}}"));
+    CHECK(has(v, "u_oc_tx4_fifo (.wr_clk(s_axi4_aclk), .rd_clk(ext_spi_clk)"));
+    CHECK(has(v, "STARTUPE2 STARTUP2_7SERIES_inst (.CFGCLK(cfgclk), .CFGMCLK(cfgmclk), .EOS(eos), .PREQ(preq)"));
+    CHECK(has(v, ".USRCCLKO(oc_sck)"));
+    CHECK(has(m.summary, "AXI4 memory interface on s_axi4_aclk"));
+    // negative: the AXI4 side is not in the AXI4-Lite clock; the STARTUP inputs are not sampled
+    CHECK_FALSE(has(v, "posedge s_axi_aclk) oc_s_axi4"));
+    CHECK_FALSE(has(v, "gsr}"));
+    CHECK_FALSE(has(v, ", gsr"));
+    // UltraScale: STARTUPE3
+    const auto us = modelOf(dir, "qs1",
+                            jsonIp("qs1", "xilinx.com:ip:axi_quad_spi:3.2",
+                                   {{"Async_Clk", "1"}, {"C_USE_STARTUP", "1"}, {"C_FAMILY", "kintexu"}}, ports));
+    CHECK(has(us.verilog, "STARTUPE3 STARTUP3_ULTRASCALE_inst"));
+}
+
+TEST_CASE("XCI: the cell interface of a component file and of a JSON .xci", "[frontend][xci][bd]") {
+    const std::string xml =
+        "<spirit:component xmlns:spirit=\"x\">\n<spirit:busInterfaces>\n<spirit:busInterface>\n"
+        "<spirit:name>S01_AXI</spirit:name>\n<spirit:portMaps>\n"
+        "<spirit:portMap><spirit:logicalPort><spirit:name>AWADDR</spirit:name></spirit:logicalPort>"
+        "<spirit:physicalPort><spirit:name>s_axi_awaddr</spirit:name><spirit:vector>"
+        "<spirit:left spirit:format=\"long\" spirit:dependency=\"(2 * x) - 1 > 0\">63</spirit:left>"
+        "<spirit:right spirit:format=\"long\">32</spirit:right></spirit:vector></spirit:physicalPort></spirit:portMap>\n"
+        "<spirit:portMap><spirit:logicalPort><spirit:name>AWVALID</spirit:name></spirit:logicalPort>"
+        "<spirit:physicalPort><spirit:name>s_axi_awvalid</spirit:name></spirit:physicalPort></spirit:portMap>\n"
+        "</spirit:portMaps>\n</spirit:busInterface>\n</spirit:busInterfaces>\n<spirit:model><spirit:ports>\n"
+        "<spirit:port><spirit:name>s_axi_awaddr</spirit:name><spirit:wire><spirit:direction>in</spirit:direction>"
+        "<spirit:vector><spirit:left spirit:format=\"long\" spirit:dependency=\"a > b\">63</spirit:left>"
+        "<spirit:right spirit:format=\"long\">0</spirit:right></spirit:vector>"
+        "<spirit:driver><spirit:defaultValue spirit:format=\"long\">0</spirit:defaultValue></spirit:driver>"
+        "</spirit:wire></spirit:port>\n"
+        "<spirit:port><spirit:name>s_axi_awvalid</spirit:name><spirit:wire><spirit:direction>in</spirit:direction>"
+        "<spirit:driver><spirit:defaultValue spirit:format=\"long\">1</spirit:defaultValue></spirit:driver>"
+        "</spirit:wire></spirit:port>\n"
+        "</spirit:ports>\n<spirit:modelParameters>\n"
+        "<spirit:modelParameter spirit:dataType=\"integer\"><spirit:name>BUS_WIDTH</spirit:name>"
+        "<spirit:value spirit:format=\"long\" spirit:resolve=\"generated\">6</spirit:value></spirit:modelParameter>\n"
+        "<spirit:modelParameter><spirit:name>SIMULATION</spirit:name><spirit:value spirit:format=\"bitString\" "
+        "spirit:bitStringLength=\"1\">&quot;0&quot;</spirit:value></spirit:modelParameter>\n"
+        "<spirit:modelParameter><spirit:name>MODE</spirit:name><spirit:value spirit:format=\"string\">fast"
+        "</spirit:value></spirit:modelParameter>\n"
+        "</spirit:modelParameters>\n</spirit:model>\n</spirit:component>\n";
+    const auto ci = frontend::cellInterfaceFromText(xml);
+    REQUIRE(ci);
+    REQUIRE(ci->ports.size() == 2);
+    CHECK(ci->ports[0].range == std::pair{63LL, 0LL}); // the dependency with '>' does not hide the width
+    REQUIRE(ci->interfaces.size() == 1);
+    const auto& bi = ci->interfaces[0];
+    CHECK(bi.name == "S01_AXI");
+    REQUIRE(bi.ports.size() == 2);
+    CHECK(bi.ports[0].logical == "AWADDR");
+    CHECK(bi.ports[0].slice == std::pair{63LL, 32LL});
+    CHECK_FALSE(bi.ports[1].slice);
+    CHECK(ci->defaults.at("s_axi_awvalid") == 1);
+    REQUIRE(ci->parameters.size() == 3);
+    CHECK(ci->parameters[0] == std::pair<std::string, std::string>{"BUS_WIDTH", "6"});
+    CHECK(ci->parameters[1] == std::pair<std::string, std::string>{"SIMULATION", "1'b0"});
+    CHECK(ci->parameters[2] == std::pair<std::string, std::string>{"MODE", "\"fast\""});
+    // JSON .xci: ports and port maps of the boundary
+    const std::string json =
+        "{ \"ip_inst\": { \"xci_name\": \"x\", \"component_reference\": \"xilinx.com:ip:axi_crossbar:2.1\",\n"
+        "  \"boundary\": { \"ports\": { \"s_axi_awid\": [ { \"direction\": \"in\", \"size_left\": \"7\", "
+        "\"size_right\": \"0\", \"driver_value\": \"0\" } ] },\n"
+        "  \"interfaces\": { \"S01_AXI\": { \"vlnv\": \"xilinx.com:interface:aximm:1.0\", \"port_maps\": {\n"
+        "    \"AWID\": [ { \"physical_name\": \"s_axi_awid\", \"physical_left\": \"7\", \"physical_right\": \"4\" } ] } } } } } }";
+    const auto cj = frontend::cellInterfaceFromText(json);
+    REQUIRE(cj);
+    REQUIRE(cj->interfaces.size() == 1);
+    CHECK(cj->interfaces[0].ports[0].slice == std::pair{7LL, 4LL});
+    CHECK(cj->defaults.at("s_axi_awid") == 0);
+    // negative: no ports
+    CHECK_FALSE(frontend::cellInterfaceFromText("<spirit:component></spirit:component>"));
+    CHECK_FALSE(frontend::cellInterfaceFromText("{ \"ip_inst\": { } }"));
+}

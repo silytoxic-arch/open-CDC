@@ -1149,6 +1149,39 @@ TEST_CASE("Primitives: DSP48 slices, BSCANE2 JTAG clock, differential I/O buffer
     CHECK(crosses(*run, "top.bs.", "top.sel_q")); // TAP state in the TCK domain
 }
 
+TEST_CASE("Primitives: STARTUPE2/STARTUPE3 configuration clocks", "[primitives][startup]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input sck, output reg q_m, output reg q_a, output reg q_e, output reg q3);\n"
+        "  wire cfgmclk, eos, cfgmclk3;\n"
+        "  STARTUPE2 s2 (.CFGMCLK(cfgmclk), .EOS(eos), .USRCCLKO(sck), .USRCCLKTS(1'b0), .USRDONEO(1'b1),\n"
+        "                .USRDONETS(1'b1), .GSR(1'b0), .GTS(1'b0), .KEYCLEARB(1'b1), .PACK(1'b0), .CLK(1'b0));\n"
+        "  STARTUPE3 s3 (.CFGMCLK(cfgmclk3), .USRCCLKO(sck), .DO(4'd0), .DTS(4'd0), .FCSBO(1'b1), .FCSBTS(1'b0));\n"
+        "  reg t = 1'b0; always @(posedge cfgmclk) t <= ~t;\n"
+        "  always @(posedge clk_a) q_m <= t;\n"
+        "  always @(posedge clk_a) q_e <= eos;\n"
+        "  reg t3 = 1'b0; always @(posedge cfgmclk3) t3 <= ~t3;\n"
+        "  always @(posedge clk_a) q3 <= t3;\n"
+        "  always @(posedge clk_a) q_a <= sck;\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    bool m2 = false, m3 = false;
+    for (const auto& c : run->r->clocks->clocks) {
+        m2 = m2 || (c.name == "top.s2.CFGMCLK" && c.kind == clock::ClockKind::BlackBox);
+        m3 = m3 || (c.name == "top.s3.CFGMCLK" && c.kind == clock::ClockKind::BlackBox);
+    }
+    CHECK(m2);
+    CHECK(m3);
+    CHECK(crosses(*run, "top.t", "top.q_m")); // the configuration oscillator is a clock of its own
+    CHECK(crosses(*run, "top.t3", "top.q3"));
+    // negative: USRCCLKO is an input of the primitive, not a clock it drives
+    for (const auto& c : run->r->clocks->clocks)
+        CHECK(c.name.find("USRCCLKO") == std::string::npos);
+}
+
 TEST_CASE("Sources with `timescale and the primitive linker", "[primitives][timescale]") {
     // verilog-ethernet: every file starts with `timescale; the generated
     // wrapper has none, which slang rejected silently (0 errors, no design)

@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <fstream>
 #include <functional>
@@ -45,8 +46,8 @@ std::optional<std::vector<BoundaryPort>> parseComponentPorts(const std::string& 
     static const std::regex portRe(R"(<spirit:port>([\s\S]*?)</spirit:port>)");
     static const std::regex nameRe(R"(<spirit:name>\s*([^<\s]+)\s*</spirit:name>)");
     static const std::regex dirRe(R"(<spirit:direction>\s*([a-z]+)\s*</spirit:direction>)");
-    static const std::regex leftRe(R"(<spirit:left\b[^>]*>\s*(-?[0-9]+)\s*</spirit:left>)");
-    static const std::regex rightRe(R"(<spirit:right\b[^>]*>\s*(-?[0-9]+)\s*</spirit:right>)");
+    static const std::regex leftRe(R"(<spirit:left\b(?:[^>"]|"[^"]*")*>\s*(-?[0-9]+)\s*</spirit:left>)");
+    static const std::regex rightRe(R"(<spirit:right\b(?:[^>"]|"[^"]*")*>\s*(-?[0-9]+)\s*</spirit:right>)");
     // (the attributes may contain '>' in their dependency expressions)
     static const std::regex enabledRe(R"(>\s*(true|false)\s*</xilinx:isEnabled>)");
     std::vector<BoundaryPort> ports;
@@ -1674,35 +1675,41 @@ Result<XciModel> quadSpi(const XciInfo& info) {
                             "unknownModules to blackbox"});
     std::vector<SimplePort> ports = boundaryPorts(info);
     auto has = [&](const std::string& n) { return std::ranges::any_of(ports, [&](const SimplePort& p) { return p.name == n; }); };
-    for (const auto& p : ports)
-        if (p.name.starts_with("s_axi4_") || p.name == "cfgclk" || p.name == "cfgmclk" || p.name == "eos" ||
-            p.name == "preq" || p.name == "usrcclkts")
-            return unsupported("IP '" + info.instance + "' (AXI Quad SPI): the AXI4 memory interface and the STARTUP "
-                               "primitive ports are not modelled",
-                               {"add the IP's generated HDL to the sources instead, or set the project option "
-                                "unknownModules to blackbox"});
     if (!has("s_axi_aclk") || !has("ext_spi_clk"))
         return unsupported("IP '" + info.instance + "' (AXI Quad SPI): no s_axi_aclk / ext_spi_clk port");
     const bool async = num(m, "Async_Clk", 0) != 0;
+    const bool axi4 = has("s_axi4_aclk"); // the AXI4 memory interface (C_TYPE_OF_AXI4_INTERFACE = 1)
     // the SPI side: pins (io*, sck, ss, spisel)
     auto spiSide = [](const std::string& n) {
         return n.starts_with("io") || n.starts_with("sck_") || n.starts_with("ss_") || n == "spisel";
     };
-    std::string axiIn, spiIn;
+    auto axi4Side = [](const std::string& n) { return n.starts_with("s_axi4_"); };
+    // the STARTUP primitive (C_USE_STARTUP): its configuration clocks, end of startup and
+    // program request come from the primitive; its inputs go to it
+    static const std::set<std::string> kStartupOut = {"cfgclk", "cfgmclk", "eos", "preq"};
+    static const std::set<std::string> kStartupIn = {"gsr",      "gts",      "keyclearb", "usrcclkts",
+                                                     "usrdoneo", "usrdonets", "pack",     "clk"};
+    std::string axiIn, axi4In, spiIn;
     for (const auto& p : ports) {
-        if (p.output || p.name == "s_axi_aclk" || p.name == "ext_spi_clk")
+        if (p.output || p.name == "s_axi_aclk" || p.name == "ext_spi_clk" || p.name == "s_axi4_aclk" ||
+            kStartupIn.contains(p.name))
             continue;
-        std::string& list = spiSide(p.name) ? spiIn : axiIn;
+        std::string& list = spiSide(p.name) ? spiIn : axi4Side(p.name) && axi4 ? axi4In : axiIn;
         list += (list.empty() ? "" : ", ") + p.name;
     }
     std::ostringstream v;
     std::vector<std::string> notes;
-    // asynchronous FIFOs between the sides (transmit and receive)
+    // asynchronous FIFOs between the sides (transmit and receive; also for the AXI4 interface)
     std::string fifos;
     if (async) {
         long long depth = num(m, "C_FIFO_DEPTH", 16);
         unsigned bits = std::max(2U, clog2(std::max(depth, 4LL)));
-        for (const char* dirName : {"tx", "rx"}) {
+        std::vector<std::string> names = {"tx", "rx"};
+        if (axi4) {
+            names.push_back("tx4");
+            names.push_back("rx4");
+        }
+        for (const auto& dirName : names) {
             FifoSpec f;
             f.module = info.instance + "_oc_" + dirName + "_fifo";
             f.independent = true;
@@ -1719,12 +1726,16 @@ Result<XciModel> quadSpi(const XciInfo& info) {
     }
     emitHeader(v, info.instance, ports);
     const std::string rst = has("s_axi_aresetn") ? "~s_axi_aresetn" : "1'b0";
+    const std::string rst4 = has("s_axi4_aresetn") ? "~s_axi4_aresetn" : rst;
     v << "  reg oc_axi_mix = 1'b0, oc_spi_mix = 1'b0;\n"
       << "  always @(posedge s_axi_aclk) oc_axi_mix <= " << (axiIn.empty() ? std::string("1'b0") : "^{" + axiIn + "}")
       << ";\n"
       << "  always @(posedge ext_spi_clk) oc_spi_mix <= " << (spiIn.empty() ? std::string("1'b0") : "^{" + spiIn + "}")
       << ";\n"
-      << "  wire oc_to_spi, oc_to_axi;\n";
+      << "  wire oc_to_spi, oc_to_axi, oc_to_spi4, oc_to_axi4;\n";
+    if (axi4)
+        v << "  reg oc_axi4_mix = 1'b0;\n  always @(posedge s_axi4_aclk) oc_axi4_mix <= "
+          << (axi4In.empty() ? std::string("1'b0") : "^{" + axi4In + "}") << ";\n";
     if (async) {
         v << "  wire oc_tx_full, oc_tx_empty, oc_rx_full, oc_rx_empty;\n"
           << "  " << info.instance << "_oc_tx_fifo u_oc_tx_fifo (.wr_clk(s_axi_aclk), .rd_clk(ext_spi_clk), .rst(" << rst
@@ -1733,19 +1744,51 @@ Result<XciModel> quadSpi(const XciInfo& info) {
           << "  " << info.instance << "_oc_rx_fifo u_oc_rx_fifo (.wr_clk(ext_spi_clk), .rd_clk(s_axi_aclk), .rst(" << rst
           << "), .din(oc_spi_mix), .wr_en(1'b1), .rd_en(1'b1), .dout(oc_to_axi), .full(oc_rx_full), "
              ".empty(oc_rx_empty));\n";
+        if (axi4)
+            v << "  wire oc_tx4_full, oc_tx4_empty, oc_rx4_full, oc_rx4_empty;\n"
+              << "  " << info.instance << "_oc_tx4_fifo u_oc_tx4_fifo (.wr_clk(s_axi4_aclk), .rd_clk(ext_spi_clk), .rst("
+              << rst4 << "), .din(oc_axi4_mix), .wr_en(1'b1), .rd_en(1'b1), .dout(oc_to_spi4), .full(oc_tx4_full), "
+                 ".empty(oc_tx4_empty));\n"
+              << "  " << info.instance << "_oc_rx4_fifo u_oc_rx4_fifo (.wr_clk(ext_spi_clk), .rd_clk(s_axi4_aclk), .rst("
+              << rst4 << "), .din(oc_spi_mix), .wr_en(1'b1), .rd_en(1'b1), .dout(oc_to_axi4), .full(oc_rx4_full), "
+                 ".empty(oc_rx4_empty));\n";
+        else
+            v << "  assign oc_to_spi4 = 1'b0;\n  assign oc_to_axi4 = 1'b0;\n";
     }
     else {
-        v << "  assign oc_to_spi = oc_axi_mix;\n  assign oc_to_axi = oc_spi_mix;\n";
+        v << "  assign oc_to_spi = oc_axi_mix;\n  assign oc_to_axi = oc_spi_mix;\n"
+          << "  assign oc_to_spi4 = " << (axi4 ? "oc_axi4_mix" : "1'b0") << ";\n  assign oc_to_axi4 = oc_spi_mix;\n";
+    }
+    // the STARTUP primitive: the SPI clock drives the configuration clock pin (USRCCLKO)
+    const bool startup = num(m, "C_USE_STARTUP", 0) != 0 || has("cfgclk") || has("eos");
+    if (startup) {
+        const std::string fam = lower(text(m, "C_FAMILY", ""));
+        const bool us = fam.find("ultrascale") != std::string::npos || fam.find("kintexu") != std::string::npos ||
+                        fam.find("virtexu") != std::string::npos || fam.find("zynquplus") != std::string::npos;
+        auto pin = [&](const char* name) { return has(name) ? std::string(name) : std::string(); };
+        v << "  reg oc_sck = 1'b0;\n  always @(posedge ext_spi_clk) oc_sck <= oc_to_spi ^ oc_to_spi4 ^ oc_spi_mix;\n"
+          << "  " << (us ? "STARTUPE3 STARTUP3_ULTRASCALE_inst" : "STARTUPE2 STARTUP2_7SERIES_inst") << " (.CFGCLK("
+          << pin("cfgclk") << "), .CFGMCLK(" << pin("cfgmclk") << "), .EOS(" << pin("eos") << "), .PREQ(" << pin("preq")
+          << "), .GSR(1'b0), .GTS(1'b0), .KEYCLEARB(1'b1), .PACK(1'b0), .USRCCLKO(oc_sck), .USRCCLKTS(1'b0), "
+             ".USRDONEO(1'b1), .USRDONETS(1'b1));\n";
     }
     for (const auto& p : ports) {
         if (!p.output)
             continue;
+        if (kStartupOut.contains(p.name)) {
+            if (!startup)
+                v << "  assign " << p.name << " = 1'b0;\n";
+            continue;
+        }
         const bool spi = spiSide(p.name);
+        const bool side4 = axi4 && axi4Side(p.name);
         const std::string r = "oc_" + p.name;
         const std::string w = std::to_string(p.width);
         v << "  reg " << (p.isVec ? vec(p.width) + " " : std::string()) << r << " = 0;\n"
-          << "  always @(posedge " << (spi ? "ext_spi_clk" : "s_axi_aclk") << ") " << r << " <= {" << w << "{"
-          << (spi ? "oc_to_spi ^ oc_spi_mix" : "oc_to_axi ^ oc_axi_mix") << "}};\n"
+          << "  always @(posedge " << (spi ? "ext_spi_clk" : side4 ? "s_axi4_aclk" : "s_axi_aclk") << ") " << r
+          << " <= {" << w << "{"
+          << (spi ? "oc_to_spi ^ oc_to_spi4 ^ oc_spi_mix" : side4 ? "oc_to_axi4 ^ oc_axi4_mix" : "oc_to_axi ^ oc_axi_mix")
+          << "}};\n"
           << "  assign " << p.name << " = " << r << ";\n";
     }
     v << "endmodule\n\n" << fifos;
@@ -1753,9 +1796,13 @@ Result<XciModel> quadSpi(const XciInfo& info) {
     out.module = info.instance;
     out.ip = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
     out.verilog = v.str();
-    out.summary = std::string("AXI side on s_axi_aclk, SPI side on ext_spi_clk, ") +
+    out.summary = std::string("AXI side on s_axi_aclk") + (axi4 ? ", AXI4 memory interface on s_axi4_aclk" : "") +
+                  ", SPI side on ext_spi_clk, " +
                   (async ? "exchanged through asynchronous FIFOs (Async_Clk)"
-                         : "exchanged directly (Async_Clk = 0: both clocks must be the same)");
+                         : "exchanged directly (Async_Clk = 0: the clocks must be the same)");
+    if (startup)
+        out.notes.push_back("STARTUP primitive (C_USE_STARTUP): the SPI clock drives its USRCCLKO pin; cfgclk/cfgmclk "
+                            "are clocks of the configuration oscillator, eos/preq asynchronous outputs");
     return out;
 }
 
@@ -2428,6 +2475,161 @@ Result<XciModel> userIp(const XciInfo& info, const ComponentEntry& comp) {
 }
 
 } // namespace
+
+/// The contents of the elements <tag ...>...</tag> in `text` (not nested in each other).
+std::vector<std::string> elements(const std::string& text, const std::string& tag) {
+    std::vector<std::string> out;
+    const std::string open = "<" + tag, close = "</" + tag + ">";
+    for (std::size_t p = text.find(open); p != std::string::npos; p = text.find(open, p)) {
+        const char next = p + open.size() < text.size() ? text[p + open.size()] : '\0';
+        if (next != '>' && next != ' ' && next != '\n' && next != '\t' && next != '\r') {
+            p += open.size();
+            continue; // <spirit:portMaps> while looking for <spirit:portMap>
+        }
+        const auto body = text.find('>', p);
+        const auto end = text.find(close, body);
+        if (body == std::string::npos || end == std::string::npos)
+            break;
+        out.push_back(text.substr(body + 1, end - body - 1));
+        p = end + close.size();
+    }
+    return out;
+}
+
+std::optional<XciCellInterface> cellInterfaceFromText(std::string_view text) {
+    const std::string t(text);
+    const auto first = t.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos)
+        return std::nullopt;
+    XciCellInterface out;
+    auto toNum = [](const nlohmann::json& n) -> long long {
+        return n.is_string() ? std::stoll(n.get<std::string>()) : n.get<long long>();
+    };
+    if (t[first] == '{') { // JSON .xci (Vivado 2020.2+): the boundary
+        try {
+            const auto root = nlohmann::json::parse(t);
+            const auto& ip = root.at("ip_inst");
+            if (!ip.contains("boundary"))
+                return std::nullopt;
+            const auto& b = ip["boundary"];
+            if (b.contains("ports"))
+                for (const auto& [name, v] : b["ports"].items()) {
+                    const auto& e = v.is_array() && !v.empty() ? v[0] : v;
+                    XciPort p;
+                    p.name = name;
+                    const std::string dir = lower(e.value("direction", std::string("in")));
+                    p.output = dir == "out";
+                    p.inout = dir == "inout";
+                    if (e.contains("size_left") && e.contains("size_right"))
+                        p.range = std::pair{toNum(e["size_left"]), toNum(e["size_right"])};
+                    if (e.contains("driver_value") && !p.output)
+                        try {
+                            out.defaults[name] = toNum(e["driver_value"]);
+                        }
+                        catch (const std::exception&) {
+                        }
+                    out.ports.push_back(std::move(p));
+                }
+            if (b.contains("interfaces"))
+                for (const auto& [name, v] : b["interfaces"].items()) {
+                    if (!v.is_object() || !v.contains("port_maps"))
+                        continue;
+                    XciBusInterface bi;
+                    bi.name = name;
+                    for (const auto& [logical, maps] : v["port_maps"].items()) {
+                        const auto& e = maps.is_array() && !maps.empty() ? maps[0] : maps;
+                        if (!e.is_object() || !e.contains("physical_name"))
+                            continue;
+                        XciPortMap pm;
+                        pm.logical = logical;
+                        pm.physical = e["physical_name"].get<std::string>();
+                        if (e.contains("physical_left") && e.contains("physical_right"))
+                            pm.slice = std::pair{toNum(e["physical_left"]), toNum(e["physical_right"])};
+                        bi.ports.push_back(std::move(pm));
+                    }
+                    out.interfaces.push_back(std::move(bi));
+                }
+        }
+        catch (const std::exception&) {
+            return std::nullopt;
+        }
+    }
+    else { // IP-XACT component file
+        auto ports = parseComponentPorts(t);
+        if (!ports)
+            return std::nullopt;
+        out.ports = std::move(*ports);
+        static const std::regex nameRe(R"(<spirit:name>\s*([^<\s]+)\s*</spirit:name>)");
+        static const std::regex defRe(R"(<spirit:defaultValue\b[^>]*>\s*(-?[0-9]+|0x[0-9A-Fa-f]+)\s*</spirit:defaultValue>)");
+        for (const auto& body : elements(t, "spirit:port")) {
+            std::smatch n, d;
+            if (std::regex_search(body, n, nameRe) && std::regex_search(body, d, defRe))
+                out.defaults[n[1].str()] = std::stoll(d[1].str(), nullptr, 0);
+        }
+        static const std::regex logRe(R"(<spirit:logicalPort>\s*<spirit:name>\s*([^<\s]+)\s*</spirit:name>)");
+        static const std::regex physRe(R"(^\s*<spirit:name>\s*([^<\s]+)\s*</spirit:name>)");
+        static const std::regex leftRe(R"(<spirit:left\b(?:[^>"]|"[^"]*")*>\s*(-?[0-9]+)\s*</spirit:left>)");
+        static const std::regex rightRe(R"(<spirit:right\b(?:[^>"]|"[^"]*")*>\s*(-?[0-9]+)\s*</spirit:right>)");
+        for (const auto& body : elements(t, "spirit:busInterface")) {
+            std::smatch n;
+            if (!std::regex_search(body, n, nameRe))
+                continue;
+            XciBusInterface bi;
+            bi.name = n[1].str();
+            for (const auto& pm : elements(body, "spirit:portMap")) {
+                std::smatch l, p;
+                const auto phys = elements(pm, "spirit:physicalPort");
+                if (!std::regex_search(pm, l, logRe) || phys.empty() || !std::regex_search(phys[0], p, physRe))
+                    continue;
+                XciPortMap e;
+                e.logical = l[1].str();
+                e.physical = p[1].str();
+                const std::string vecText = phys[0];
+                std::smatch a, b;
+                if (std::regex_search(vecText, a, leftRe) && std::regex_search(vecText, b, rightRe))
+                    e.slice = std::pair{std::stoll(a[1].str()), std::stoll(b[1].str())};
+                bi.ports.push_back(std::move(e));
+            }
+            out.interfaces.push_back(std::move(bi));
+        }
+        // HDL parameters (a module reference passes them to its module)
+        static const std::regex valRe(R"(<spirit:value\b((?:[^>"]|"[^"]*")*)>([^<]*)</spirit:value>)");
+        for (const auto& body : elements(t, "spirit:modelParameter")) {
+            std::smatch n, v;
+            if (!std::regex_search(body, n, nameRe) || !std::regex_search(body, v, valRe))
+                continue;
+            const std::string attrs = v[1].str();
+            std::string value = unescapeXml(v[2].str());
+            static const std::regex lenRe(R"re(spirit:bitStringLength="([0-9]+)")re");
+            std::smatch len;
+            if (attrs.find("format=\"bitString\"") != std::string::npos) {
+                if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+                    value = value.substr(1, value.size() - 2);
+                if (value.starts_with("0x") || value.starts_with("0X"))
+                    value = (std::regex_search(attrs, len, lenRe) ? len[1].str() : std::string()) + "'h" + value.substr(2);
+                else
+                    value = (std::regex_search(attrs, len, lenRe) ? len[1].str() : std::to_string(value.size())) +
+                            "'b" + value;
+            }
+            else if (attrs.find("format=\"long\"") != std::string::npos ||
+                     attrs.find("format=\"float\"") != std::string::npos) {
+                // a number as written
+            }
+            else if (attrs.find("format=\"bool\"") != std::string::npos) {
+                value = lower(value) == "true" ? "1" : "0";
+            }
+            else {
+                if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+                    value = value.substr(1, value.size() - 2);
+                value = "\"" + value + "\"";
+            }
+            out.parameters.emplace_back(n[1].str(), value);
+        }
+    }
+    if (out.ports.empty())
+        return std::nullopt;
+    return out;
+}
 
 bool isXciFile(const std::filesystem::path& file) {
     const std::string ext = lower(file.extension().string());
@@ -3151,11 +3353,12 @@ Result<XciModel> gtWizard7(const XciInfo& info) {
 
 /// The clock domain of a port, for IP whose ports are classified one by one.
 struct PortClass {
-    enum class Kind { Sync, Async, Ignored, ClockIn, ClockOut };
+    enum class Kind { Sync, Async, Ignored, ClockIn, ClockOut, Through };
     Kind kind = Kind::Ignored;
     std::string clock; ///< Sync: the clock (an input or output clock port, or an internal clock's name)
     double mhz = 0;    ///< ClockOut: the frequency, 0 when not configured
-    std::string source; ///< ClockOut: derived from this clock (an input or output clock port, or an internal clock)
+    std::string source; ///< ClockOut: derived from this clock (an input or output clock port, or an internal clock);
+                        ///< Through: the input port the output passes on
     double ratio = 0;   ///< ClockOut with a source: output period / source period
 };
 
@@ -3291,6 +3494,8 @@ Result<XciModel> portDomainModel(const XciInfo& info, const std::string& vlnv, c
               << "_a);\n  assign " << p.name << " = {" << p.width << "{oc_" << p.name << "_a}};\n";
         else if (p.c.kind == PortClass::Kind::Ignored || p.c.kind == PortClass::Kind::ClockIn)
             v << "  assign " << p.name << " = " << p.width << "'b0;\n";
+        else if (p.c.kind == PortClass::Kind::Through)
+            v << "  assign " << p.name << " = " << p.c.source << ";\n";
     }
     v << "endmodule\n";
     XciModel model;
@@ -4157,6 +4362,241 @@ Result<XciModel> axiInterconnect(const XciInfo& info) {
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Block design infrastructure: reset, logic, AXI conversion and peripherals
+// ---------------------------------------------------------------------------
+
+std::string vlnvOf(const XciInfo& info) {
+    return info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+}
+
+/// Processor System Reset (proc_sys_reset 5.0, PG164): the external, auxiliary
+/// and debug resets and dcm_locked are synchronized into slowest_sync_clk;
+/// every reset output is a register of that clock.
+Result<XciModel> procSysReset(const XciInfo& info) {
+    using K = PortClass::Kind;
+    PortClassifier classify = [](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "slowest_sync_clk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (!out && (n == "ext_reset_in" || n == "aux_reset_in" || n == "mb_debug_sys_rst" || n == "dcm_locked"))
+            return PortClass{K::Async, {}, 0, {}, 0};
+        if (out && (n == "mb_reset" || n == "bus_struct_reset" || n == "peripheral_reset" ||
+                    n == "interconnect_aresetn" || n == "peripheral_aresetn"))
+            return PortClass{K::Sync, "slowest_sync_clk", 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    r.value().summary = "reset outputs synchronous to slowest_sync_clk";
+    r.value().notes.push_back("ext_reset_in, aux_reset_in, mb_debug_sys_rst and dcm_locked are synchronized into "
+                              "slowest_sync_clk inside the IP (PG164); the reset outputs are registers of that clock");
+    return r;
+}
+
+/// Utility Vector Logic (util_vector_logic 2.0): Res = Op1 op Op2 (or ~Op1), combinational.
+Result<XciModel> utilVectorLogic(const XciInfo& info) {
+    const std::string op = lower(text(info.model, "C_OPERATION", text(info.user, "C_OPERATION", "and")));
+    const long long size = num(info.model, "C_SIZE", num(info.user, "C_SIZE", 1));
+    static const std::map<std::string, std::string> kOps = {{"and", "&"}, {"or", "|"}, {"xor", "^"}, {"not", "~"}};
+    const auto it = kOps.find(op);
+    if (it == kOps.end() || size < 1)
+        return unsupported("IP '" + info.instance + "' (" + vlnvOf(info) + "): operation '" + op + "' is not known");
+    const std::string w = size > 1 ? "[" + std::to_string(size - 1) + ":0] " : std::string();
+    std::ostringstream v;
+    v << "// Generated by OpenCDC from a Vivado IP configuration (.xci): a CDC model, not a functional model.\n"
+      << "module " << info.instance << " (\n  input  wire " << w << "Op1,\n";
+    if (op != "not")
+        v << "  input  wire " << w << "Op2,\n";
+    v << "  output wire " << w << "Res\n);\n"
+      << "  assign Res = " << (op == "not" ? "~Op1" : "Op1 " + it->second + " Op2") << ";\nendmodule\n";
+    XciModel out;
+    out.module = info.instance;
+    out.ip = vlnvOf(info);
+    out.verilog = v.str();
+    out.summary = op == "not" ? "Res = ~Op1, " + std::to_string(size) + " bit(s), combinational"
+                              : "Res = Op1 " + it->second + " Op2, " + std::to_string(size) + " bit(s), combinational";
+    return out;
+}
+
+/// One-clock AXI infrastructure (axi_protocol_converter, axi_data_fifo,
+/// axi_register_slice, axis_register_slice, axis_dwidth_converter, ...):
+/// every port in `clock`.
+Result<XciModel> axiOneClock(const XciInfo& info, const std::string& clock, const std::string& what) {
+    using K = PortClass::Kind;
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == clock)
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n == "aresetn" || n == "aclken" || n.starts_with("s_axi_") || n.starts_with("m_axi_") ||
+            n.starts_with("s_axis_") || n.starts_with("m_axis_") || n.starts_with("m_apb_"))
+            return PortClass{K::Sync, clock, 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    r.value().summary = what + ", one clock (" + clock + ")";
+    return r;
+}
+
+/// A converter between two AXI interfaces: the slave side (s_*) in
+/// `sclk`, the master side (m_*) in `mclk`, crossing inside the IP when the
+/// clocks are asynchronous; otherwise every port in `sclk`.
+Result<XciModel> axiTwoSided(const XciInfo& info, const std::string& sclk, const std::string& mclk, bool async,
+                             const std::string& what) {
+    using K = PortClass::Kind;
+    const std::string sp = sclk.substr(0, sclk.find("_aclk") + 1), mp = mclk.substr(0, mclk.find("_aclk") + 1);
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == sclk || n == mclk)
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n.starts_with(sp))
+            return PortClass{K::Sync, sclk, 0, {}, 0};
+        if (n.starts_with(mp))
+            return PortClass{K::Sync, async ? mclk : sclk, 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    r.value().summary = what + (async ? ", " + sclk + " to " + mclk + ", asynchronous clocks"
+                                      : ", synchronous: every port in " + sclk);
+    if (!async)
+        r.value().notes.push_back("without asynchronous clocks both sides must be on one clock; every port is "
+                                  "modelled in " + sclk + ", so another clock on " + mclk +
+                                  " shows as crossings into the IP");
+    return r;
+}
+
+/// AXI BRAM Controller (axi_bram_ctrl 4.x, PG078): every port in s_axi_aclk;
+/// the BRAM clocks pass s_axi_aclk on.
+Result<XciModel> axiBramCtrl(const XciInfo& info) {
+    using K = PortClass::Kind;
+    PortClassifier classify = [](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "s_axi_aclk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (out && (n == "bram_clk_a" || n == "bram_clk_b"))
+            return PortClass{K::Through, {}, 0, "s_axi_aclk", 0};
+        if (n == "s_axi_aresetn" || n.starts_with("s_axi_") || n.starts_with("bram_") || n == "ecc_interrupt" ||
+            n == "ecc_ue")
+            return PortClass{K::Sync, "s_axi_aclk", 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    r.value().summary = "every port in s_axi_aclk; bram_clk_a/b are s_axi_aclk";
+    return r;
+}
+
+/// AXI Interrupt Controller (axi_intc 4.1, PG099): the registers and irq in
+/// s_axi_aclk (irq in processor_clk with C_ENABLE_ASYNC); interrupt inputs
+/// marked asynchronous in C_ASYNC_INTR are synchronized inside the IP.
+Result<XciModel> axiIntc(const XciInfo& info) {
+    const auto& m = info.model;
+    using K = PortClass::Kind;
+    const auto unsupportedIp = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + vlnvOf(info) + "): " + why,
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    };
+    if (num(m, "C_HAS_FAST", 0) != 0 || num(m, "C_EN_CASCADE_MODE", 0) != 0)
+        return unsupportedIp("fast interrupt mode and cascade mode are not modelled");
+    const bool procAsync = num(m, "C_ENABLE_ASYNC", 0) != 0;
+    const long long n = num(m, "C_NUM_INTR_INPUTS", 1);
+    if (n < 1 || n > 32)
+        return unsupportedIp("C_NUM_INTR_INPUTS out of range");
+    const unsigned long long all = n == 64 ? ~0ULL : ((1ULL << n) - 1);
+    const unsigned long long asyncMask =
+        num(m, "C_DISABLE_SYNCHRONIZERS", 0) != 0 ? 0ULL : static_cast<unsigned long long>(num(m, "C_ASYNC_INTR", 0)) & all;
+    const std::string irqClock = procAsync ? "processor_clk" : "s_axi_aclk";
+    PortClassifier classify = [&](const std::string& p, bool out) -> std::optional<PortClass> {
+        if (p == "s_axi_aclk" || p == "processor_clk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (p.starts_with("s_axi_"))
+            return PortClass{K::Sync, "s_axi_aclk", 0, {}, 0};
+        if (p == "intr")
+            return PortClass{asyncMask == all ? K::Async : K::Sync, asyncMask == all ? "" : "s_axi_aclk", 0, {}, 0};
+        if (p == "irq")
+            return PortClass{K::Sync, irqClock, 0, {}, 0};
+        if (p == "processor_rst" || p == "processor_ack" || p == "irq_in" || p == "interrupt_address_in")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0});
+        if (p == "interrupt_address" || p == "processor_ack_out")
+            return out ? std::optional<PortClass>(PortClass{K::Ignored, {}, 0, {}, 0}) : std::nullopt;
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    auto& model = r.value();
+    if (asyncMask != 0 && asyncMask != all) {
+        // the synchronous interrupt inputs only: the others are synchronized inside the IP
+        std::ostringstream mask;
+        mask << n << "'h" << std::hex << (all & ~asyncMask);
+        const std::string masked = "(intr & " + mask.str() + ")";
+        static const std::regex intrRe(R"(\bintr\b(?![\w\[]))");
+        std::string out, line;
+        std::istringstream in(model.verilog);
+        while (std::getline(in, line)) {
+            if (line.find("oc_dom_") != std::string::npos && line.find("<=") != std::string::npos)
+                line = std::regex_replace(line, intrRe, masked);
+            out += line + "\n";
+        }
+        model.verilog = out;
+    }
+    std::ostringstream ss;
+    ss << n << " interrupt input(s) (" << std::popcount(asyncMask) << " asynchronous), registers in s_axi_aclk, irq in "
+       << irqClock;
+    model.summary = ss.str();
+    if (asyncMask != 0)
+        model.notes.push_back("interrupt inputs marked asynchronous (C_ASYNC_INTR) are synchronized inside the IP "
+                              "(C_NUM_SYNC_FF stages); the others are sampled in s_axi_aclk");
+    return r;
+}
+
+/// AXI Ethernet Lite (axi_ethernetlite 3.0, PG135), MII: the registers, the
+/// interrupt, the PHY reset and MDIO in s_axi_aclk; receive data in
+/// phy_rx_clk, transmit data in phy_tx_clk; carrier sense and collision are
+/// asynchronous (synchronized inside the IP).
+Result<XciModel> axiEthernetLite(const XciInfo& info) {
+    using K = PortClass::Kind;
+    PortClassifier classify = [](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (n == "s_axi_aclk" || n == "phy_tx_clk" || n == "phy_rx_clk")
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (n.starts_with("s_axi_") || n == "ip2intc_irpt" || n == "phy_rst_n" || n == "phy_mdc" ||
+            n == "phy_mdio_o" || n == "phy_mdio_t")
+            return PortClass{K::Sync, "s_axi_aclk", 0, {}, 0};
+        if (!out && (n == "phy_rx_data" || n == "phy_dv" || n == "phy_rx_er"))
+            return PortClass{K::Sync, "phy_rx_clk", 0, {}, 0};
+        if (out && (n == "phy_tx_data" || n == "phy_tx_en"))
+            return PortClass{K::Sync, "phy_tx_clk", 0, {}, 0};
+        if (!out && (n == "phy_crs" || n == "phy_col" || n == "phy_mdio_i"))
+            return PortClass{K::Async, {}, 0, {}, 0};
+        return std::nullopt;
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    r.value().summary = "MII: registers in s_axi_aclk, receive in phy_rx_clk, transmit in phy_tx_clk";
+    r.value().notes.push_back("phy_crs, phy_col and phy_mdio_i are asynchronous inputs synchronized inside the IP; the "
+                              "IP crosses between s_axi_aclk and the PHY clocks (PG135)");
+    return r;
+}
+
+/// System ILA (system_ila 1.x): a debug core that only observes its inputs.
+Result<XciModel> systemIla(const XciInfo& info) {
+    using K = PortClass::Kind;
+    PortClassifier classify = [](const std::string&, bool out) -> std::optional<PortClass> {
+        if (out)
+            return std::nullopt;
+        return PortClass{K::Ignored, {}, 0, {}, 0};
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    r.value().summary = "debug core, inputs only";
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -4223,6 +4663,46 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return axiCrossbar(info);
     if (info.name == "axi_interconnect")
         return axiInterconnect(info);
+    if (info.name == "proc_sys_reset")
+        return procSysReset(info);
+    if (info.name == "util_vector_logic")
+        return utilVectorLogic(info);
+    if (info.name == "axi_protocol_converter")
+    {
+        auto proto = [&](const char* key) {
+            const long long v = num(info.model, key, -1);
+            return v == 0 ? std::string("AXI4") : v == 1 ? std::string("AXI3") : v == 2 ? std::string("AXI4-Lite") : "?";
+        };
+        return axiOneClock(info, "aclk",
+                           "AXI protocol converter " + proto("C_S_AXI_PROTOCOL") + " to " + proto("C_M_AXI_PROTOCOL"));
+    }
+    if (info.name == "axi_data_fifo")
+        return axiOneClock(info, "aclk", "AXI data FIFO");
+    if (info.name == "axi_register_slice")
+        return axiOneClock(info, "aclk", "AXI register slice");
+    if (info.name == "axis_register_slice" || info.name == "axis_dwidth_converter" ||
+        info.name == "axis_subset_converter" || info.name == "axis_broadcaster" || info.name == "axis_combiner")
+        return axiOneClock(info, "aclk", "AXI4-Stream " + info.name.substr(5));
+    if (info.name == "axi_dwidth_converter") {
+        // asynchronous clocks (C_AXI_IS_ACLK_ASYNC) or the ratio mode of the FIFO (C_FIFO_MODE 2)
+        const bool split = num(info.model, "C_AXI_IS_ACLK_ASYNC", 0) != 0 || num(info.model, "C_FIFO_MODE", 0) == 2;
+        return axiTwoSided(info, "s_axi_aclk", "m_axi_aclk", split,
+                           "AXI data width converter " + text(info.model, "C_S_AXI_DATA_WIDTH", "?") + " to " +
+                               text(info.model, "C_M_AXI_DATA_WIDTH", "?") + " bits");
+    }
+    if (info.name == "axis_clock_converter")
+        return axiTwoSided(info, "s_axis_aclk", "m_axis_aclk", num(info.model, "C_IS_ACLK_ASYNC", 1) != 0,
+                           "AXI4-Stream clock converter");
+    if (info.name == "axi_bram_ctrl")
+        return axiBramCtrl(info);
+    if (info.name == "axi_apb_bridge")
+        return axiOneClock(info, "s_axi_aclk", "AXI to APB bridge");
+    if (info.name == "axi_intc")
+        return axiIntc(info);
+    if (info.name == "axi_ethernetlite")
+        return axiEthernetLite(info);
+    if (info.name == "system_ila")
+        return systemIla(info);
     return unsupported("IP '" + info.instance + "' (" + info.vendor + ":" + info.library + ":" + info.name + ":" +
                            info.version + ") is not modelled from its .xci",
                        {"add the IP's generated HDL to the sources instead (Vivado: <ip>/synth/" + info.instance +

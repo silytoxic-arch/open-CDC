@@ -52,7 +52,7 @@ same name are not used. The model's note names the declaration it used.
 | CORDIC, Floating-point, Divider, Multiplier, Adder/Subtracter, Accumulator, Counter, Shift RAM, DDS, FIR, CIC, Complex Multiplier, DSP48 Macro | A one-clock datapath: every output is a register of the IP's clock (`aclk`/`CLK`) that depends on every input. The ports come from a JSON `.xci` or the component file next to an XML `.xci`; without it, from an XML `.xci` for the CORDIC and the Floating-point IP (PG060: the A, B, C and operation channels, `tready` unless non-blocking, `tuser`/`tlast` when configured). |
 | Memory Interface Generator (`xilinx.com:ip:mig_7series`), one DDR2 or DDR3 controller, native or AXI4 interface | `ui_clk` is a clock derived from the system clock (`sys_clk_i`, or `sys_clk_p`/`sys_clk_n` through `IBUFDS`), with Vivado's name `clk_pll_i` as an alias. Its period comes from the memory configuration that Vivado keeps next to the `.xci` (`XML_INPUT_FILE`, usually `mig_a.prj`: memory clock period x PHY ratio, as a ratio to the configured input clock); without that file, from the configured user interface frequency (`FREQ_HZ`), still related to the system clock. Additional clocks `ui_addn_clk_<n>` (`MMCM_CLKOUT<n>_FREQ`) likewise. Every user interface port (`app_*`, or `s_axi_*` and `aresetn`) belongs to `ui_clk`: inputs are read on `ui_clk`, outputs are `ui_clk` registers. `sys_rst` (with its polarity) is synchronized into `ui_clk` by `u_<ip>_mig/u_<mem>_infrastructure/rstdiv0_sync_r`, the register of the IP, so constraints on it match; `ui_clk_sync_rst` and `mmcm_locked` come from it. Memory pins are driven by `ui_clk` registers (`ck_p`/`ck_n` with 0); `device_temp_i` is not read. |
 | AXI GPIO, AXI IIC, AXI Timer, AXI UART Lite, AXI UART 16550 (`axi_gpio`, `axi_iic`, `axi_timer`, `axi_uartlite`, `axi_uart16550`) | One clock, `s_axi_aclk`: every output is a register of it that depends on every input. Inputs from pins are sampled by one register: the input synchronizers inside the IP are not modelled, so an input driven from another clock is reported. The UART 16550 with an external clock (`xin`/`rclk`) is not modelled. Ports from a JSON `.xci` or the component file. |
-| AXI Quad SPI (`axi_quad_spi`), standard mode | The AXI side on `s_axi_aclk`, the SPI pins (`io*`, `sck_*`, `ss_*`, `spisel`) on `ext_spi_clk`. With `Async_Clk` the two sides exchange data through two asynchronous FIFOs (recognized as such), otherwise directly: both clocks must then be the same, and different clocks are reported. The AXI4 memory interface (`s_axi4_*`, XIP) and the STARTUP primitive ports are not modelled. Ports from a JSON `.xci` or the component file. |
+| AXI Quad SPI (`axi_quad_spi`) | The AXI side on `s_axi_aclk`, the SPI pins (`io*`, `sck_*`, `ss_*`, `spisel`) on `ext_spi_clk`; the AXI4 memory interface (`s_axi4_*`, `C_TYPE_OF_AXI4_INTERFACE` 1, also XIP) on `s_axi4_aclk`. With `Async_Clk` each AXI side exchanges data with the SPI side through two asynchronous FIFOs (recognized as such), otherwise directly: the clocks must then be the same, and different clocks are reported. With the STARTUP primitive (`C_USE_STARTUP`) the model instantiates `STARTUPE2` (`STARTUPE3` on UltraScale) as the IP does: the SPI clock drives its `USRCCLKO` pin (constraints on `*USRCCLKO` match), `cfgclk`/`cfgmclk` are clocks of the configuration oscillator, `eos`/`preq` have no clock domain. Ports from a JSON `.xci` or the component file. |
 | Slice, Concat, Constant (`xlslice`, `xlconcat`, `xlconstant`) of block designs | Wiring: `Dout = Din[DIN_FROM:DIN_TO]` (a reversed range reverses the bits), `dout = {In<n-1>, ..., In0}` (`NUM_PORTS`, `IN<i>_WIDTH`), `dout = CONST_VAL` (`CONST_WIDTH`, up to 62 bits). |
 | XADC Wizard (`xilinx.com:ip:xadc_wiz`), DRP interface | The dynamic reconfiguration port (`do_out`, `drdy_out`) and the status outputs (`channel_out`, `eoc_out`, `eos_out`, `busy_out`, `alarm_out` and the alarms selected) are registers of `dclk_in`, as on the XADC primitive; the analog inputs (`vp_in`/`vn_in`, the `vauxp<n>`/`vauxn<n>` selected) are not read; JTAG status outputs have no clock domain. With the AXI4-Lite interface: one clock, `s_axi_aclk` (ports from a JSON `.xci` or the component file). The AXI4-Stream output is not modelled. |
 | Transceivers Wizard (`xilinx.com:ip:gtwizard_ultrascale`), UltraScale/UltraScale+ GTH and GTY | Ports: those of a JSON `.xci`, otherwise the ports the configuration enables (`INTERNAL_PORT_ENABLED_*` greater than 0, `ENABLE_OPTIONAL_PORTS`) with the widths of the transceiver channel times `C_TOTAL_NUM_CHANNELS` (user data `C_TX_USER_DATA_WIDTH`/`C_RX_USER_DATA_WIDTH` per channel; `drpaddr_in` 9 bits on GTHE3, 10 otherwise; `txdiffctrl_in` 4 bits on GTHE3, 5 otherwise). Clocks: the TX and RX source clocks (`gtwiz_userclk_*_srcclk_out`, or `txoutclk_out`/`rxoutclk_out`) are clocks of their own, period from `C_*_USRCLK_FREQUENCY` x `C_*_USER_CLOCKING_RATIO_FSRC_FUSRCLK`; `usrclk` and `usrclk2` are derived from them (`C_*_USRCLK2_FREQUENCY`), so `get_clocks -of_objects` on the source clock pin finds all three as in Vivado. With user clocking outside the IP (`txusrclk2_in`/`rxusrclk2_in`), the user's clocks. Domains: user data, 8b/10b, gearbox, comma alignment, polarity, buffer status, reset-done and the buffer bypass helper (`gtwiz_buffbypass_*_start_user_in`, `_done_out`, `_error_out`) in the TX or RX `usrclk2`; `drp*` in `drpclk_in`; `gtwiz_reset_rx_cdr_stable_out` and the QPLL reset outputs in `gtwiz_reset_clk_freerun_in`. PMA/PRGDIV reset done, power good, CDR and CPLL lock, `rxsyncdone_out`, `rxphaligndone_out`, `rxdlysresetdone_out`, `cpll*clklost_out` are asynchronous. Not read: resets synchronized in the IP (`gtwiz_reset_*`, `gtwiz_buffbypass_*_reset_in`, channel PMA/PCS/CDR resets), static and analog controls (`loopback_in`, TX swing and emphasis, `txinhibit_in`, CPLL controls), reference clocks and serial pins. A port outside these lists, or user clocks without configured frequencies, makes the IP not modelled (`FE-XCI-UNSUPPORTED`, naming the ports). Verified with the 30 Transceivers Wizard configurations of SURF (PGPv2b, PGPv2fc, PGPv3) and three SURF wrappers. |
@@ -67,8 +67,58 @@ same name are not used. The model's note names the declaration it used.
 | AXI Clock Converter (`xilinx.com:ip:axi_clock_converter`) | PG164: the slave interface and `s_axi_aresetn` in `s_axi_aclk`, the master interface and `m_axi_aresetn` in `m_axi_aclk`; the IP crosses between them (asynchronous FIFOs, or a synchronous integer ratio). Ports from the instance or, for an XML `.xci` instantiated from Verilog, from the configuration: AXI4 (8-bit lengths, region, QoS), AXI3 (4-bit lengths, 2-bit lock, QoS, WID) or AXI4-Lite, `C_AXI_ID_WIDTH`/`ADDR`/`DATA` widths, user signals when enabled. Verified with the Loongson NSCSCC SoC (NonTrivialMIPS). |
 | AXI Crossbar (`xilinx.com:ip:axi_crossbar`) | PG059: one clock, `aclk`, for every interface and `aresetn`. Ports from the instance or from the configuration (as the clock converter, `C_NUM_SLAVE_SLOTS`/`C_NUM_MASTER_SLOTS` interfaces concatenated in each port). Verified with the Loongson NSCSCC SoC (NonTrivialMIPS). |
 | AXI Interconnect (`xilinx.com:ip:axi_interconnect` 1.x) | PG059: each slave port `Sxx_AXI_*` and the master port `M00_AXI_*` in their own clock (`Sxx_AXI_ACLK`, `M00_AXI_ACLK`), with the reset outputs `Sxx_AXI_ARESET_OUT_N`; `INTERCONNECT_ARESETN` in `INTERCONNECT_ACLK`; the IP crosses between the clocks (the summary lists the ports configured asynchronous, `C_Sxx_AXI_IS_ACLK_ASYNC`). The ports come from the instance (JSON `.xci`, component file or VHDL component declaration). Verified with the Loongson chiplab SoC. |
+| Processor System Reset (`xilinx.com:ip:proc_sys_reset`) | PG164: `ext_reset_in`, `aux_reset_in`, `mb_debug_sys_rst` and `dcm_locked` are synchronized into `slowest_sync_clk` inside the IP (not read by the model); `mb_reset`, `bus_struct_reset`, `peripheral_reset`, `interconnect_aresetn`, `peripheral_aresetn` are registers of `slowest_sync_clk`. |
+| Utility Vector Logic (`xilinx.com:ip:util_vector_logic`) | Combinational: `Res = Op1 & Op2` (`|`, `^`), or `~Op1` (`C_OPERATION`, `C_SIZE`). |
+| AXI Protocol Converter, AXI Data FIFO, AXI Register Slice, AXI4-Stream Register Slice / Data Width Converter / Subset Converter / Broadcaster / Combiner | One clock, `aclk`, for every interface, `aresetn` and `aclken`. |
+| AXI Data Width Converter (`xilinx.com:ip:axi_dwidth_converter`) | With asynchronous clocks (`C_AXI_IS_ACLK_ASYNC`) or the synchronous ratio FIFO (`C_FIFO_MODE` 2): the slave side in `s_axi_aclk`, the master side in `m_axi_aclk`, the IP crossing between them; otherwise the converter runs on one clock and every port is in `s_axi_aclk` (another clock on `m_axi_aclk` shows as crossings into the IP). |
+| AXI4-Stream Clock Converter (`xilinx.com:ip:axis_clock_converter`) | The slave side in `s_axis_aclk`, the master side in `m_axis_aclk` (`C_IS_ACLK_ASYNC`); the IP crosses between them. |
+| AXI BRAM Controller (`xilinx.com:ip:axi_bram_ctrl`) | Every port in `s_axi_aclk` (AXI4, AXI4-Lite control, BRAM ports, ECC outputs); `bram_clk_a`/`bram_clk_b` pass `s_axi_aclk` on, so the Block Memory behind it runs on the same clock. |
+| AXI APB Bridge (`xilinx.com:ip:axi_apb_bridge`) | One clock, `s_axi_aclk`, for the AXI and the APB side. |
+| AXI Interrupt Controller (`xilinx.com:ip:axi_intc`) | PG099: the registers in `s_axi_aclk`, `irq` in `s_axi_aclk` (in `processor_clk` with `C_ENABLE_ASYNC`); interrupt inputs marked asynchronous in `C_ASYNC_INTR` are synchronized inside the IP (not read by the model), the others are sampled in `s_axi_aclk` (all of them with `C_DISABLE_SYNCHRONIZERS`). Not modelled: fast interrupt mode, cascade mode. |
+| AXI Ethernet Lite (`xilinx.com:ip:axi_ethernetlite`), MII | PG135: the registers, `ip2intc_irpt`, `phy_rst_n` and MDIO (`phy_mdc`, `phy_mdio_o/_t`) in `s_axi_aclk`; `phy_rx_data`, `phy_dv`, `phy_rx_er` in `phy_rx_clk`; `phy_tx_data`, `phy_tx_en` in `phy_tx_clk`; `phy_crs`, `phy_col`, `phy_mdio_i` are synchronized inside the IP. |
+| System ILA (`xilinx.com:ip:system_ila`) | Inputs only. |
 | ILA (`xilinx.com:ip:ila`) | Inputs only (`clk`, `probe<i>`); `trig_out` and `trig_in_ack` are in the `clk` domain. Constraints that refer to the inside of debug cores (`*ila_core_inst/*`, `dbg_hub`) are noted (`CON-UNMATCHED` info), not warned. |
 | VIO (`xilinx.com:ip:vio`) | `probe_out<i>` are registers in the `clk` domain with their initial value: VIO synchronizes the values set over JTAG to `clk`. `probe_in<i>` are inputs only. |
+
+## Block designs (.bd)
+
+A block design file (`.bd`, JSON since Vivado 2014.1) can be listed in the
+sources as Vivado lists it in the project. OpenCDC generates the module
+Vivado would generate for it (named after the design, for example `soc`, as
+the design's top or the module that the user's top instantiates) and models
+its IP cells from their configurations:
+
+- **Cells.** Every IP cell is an instance of the module named after its
+  configuration (`xci_name`); the configuration `ip/<xci_name>/<xci_name>.xci`
+  next to the `.bd` is then modelled as above (`FE-XCI-MODEL`). A module
+  reference (`module_ref`) is an instance of the referenced module, with the
+  HDL parameters the configuration passes; the module must be in the sources,
+  as in the Vivado project.
+- **Hierarchies.** Hierarchical cells (also the AXI Interconnect, which Vivado
+  builds from crossbar, couplers, clock, width and protocol converters and
+  data FIFOs) are flattened: the instance name is the cell path with `_`
+  (`sys_bus/s00_couplers/auto_cc` becomes `sys_bus_s00_couplers_auto_cc`).
+- **Nets.** A net connects the ports in its list; it carries the block design
+  net's name (`clk_gen_clk_peripheral`).
+- **Interface nets** connect bus interfaces signal by signal through the port
+  maps of the cells: the component file `ip/<cell>/<cell>.xml` (or the
+  boundary of a JSON `.xci`, or, for a module reference, the port maps in the
+  `.bd`). A port map can name a part of a port (an AXI crossbar's slots share
+  its ports). The signal nets are named `<interface net>_<signal>`
+  (`fuxi_inst_ARADDR`). An interface port of the design becomes one port per
+  signal, `<interface>_<signal>` in lower case (`DDR3_addr`, `UART_txd`), as
+  in Vivado's module.
+- **Widths and defaults.** A net takes the width of its driver; narrower
+  inputs get its low bits, wider inputs are padded with 0. An input that is not
+  connected gets the default value of its component file, as in Vivado.
+
+The `FE-BD-MODULE` info gives the number of cells, flattened hierarchies and
+IP configurations, with notes for nets with several drivers or without a
+driver. A cell whose ports are not known (the output products were not
+generated, so `ip/<cell>/<cell>.xml` is missing) is an error (`FE-BD-CELL`):
+generate the output products in Vivado. Verified with the Fuxi SoC (45 cells,
+three AXI interconnects, MIG, Quad SPI with STARTUP, Ethernet Lite, interrupt
+controller, processor system reset).
 
 ## IP from an IP repository
 
@@ -104,11 +154,10 @@ The following IP gets an `FE-XCI-UNSUPPORTED` warning:
 - ILA in AXI monitor mode from an XML file;
 - the one-clock datapath IP and AXI peripherals above (except CORDIC) from an XML file without its component file;
 - the memory interface with another memory type (QDR II+, RLDRAM, LPDDR2), with ECC or with several controllers;
-- any other IP that is not in a listed IP repository, for example the UltraScale memory interface (`ddr4`), DMA and the AXI interconnect.
+- any other IP that is not in a listed IP repository, for example the UltraScale memory interface (`ddr4`), AXI DMA with scatter gather, and the AXI TFT controller (`axi_tft`).
 
 The IP then stays an unknown module. Add its generated HDL, or set the
-project option `unknownModules` to `blackbox`. `.xcix` files (compressed IP
-containers) are not read; extract the `.xci` from them.
+project option `unknownModules` to `blackbox`.
 
 A VHDL component declaration of such an IP still helps. With the IP as a
 black box, its outputs drive their signals: a clock output becomes a clock of

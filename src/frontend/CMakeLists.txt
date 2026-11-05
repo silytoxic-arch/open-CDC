@@ -34,6 +34,7 @@ add_library(opencdc_frontend STATIC
     slang_adapter/ProcessLowering.cpp
     slang_adapter/SlangFrontend.cpp
     XciModels.cpp
+    BlockDesign.cpp
     XciModels.h)
 
 target_link_libraries(opencdc_frontend

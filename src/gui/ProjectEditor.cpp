@@ -161,7 +161,7 @@ ProjectEditor::ProjectEditor(const engine::ProjectConfig& config, const QString&
     connect(addSrc, &QPushButton::clicked, this, [this] {
         addSources(QFileDialog::getOpenFileNames(
             this, tr("Add HDL sources"), baseDir_,
-            tr("HDL sources and Vivado IP (*.v *.vh *.sv *.svh *.vhd *.vhdl *.xci);;All files (*)")));
+            tr("HDL sources and Vivado IP (*.v *.vh *.sv *.svh *.vhd *.vhdl *.xci *.xcix *.bd);;All files (*)")));
     });
     connect(rmSrc, &QPushButton::clicked, this, [this] { removeSource(selectedRow(sources_)); });
     connect(upSrc, &QPushButton::clicked, this, [this] { moveSource(selectedRow(sources_), -1); });

@@ -70,6 +70,35 @@ struct XciContext {
 /// A component with a width that depends on a generic or a constant is left out.
 [[nodiscard]] std::map<std::string, XciComponent> vhdlComponentPorts(std::string_view text, const std::string& fileName);
 
+/// One entry of a bus interface's port map: a logical port of the interface
+/// and the physical port (or a part of it) of the IP that carries it.
+struct XciPortMap {
+    std::string logical;  ///< "AWADDR"
+    std::string physical; ///< "s_axi_awaddr"
+    std::optional<std::pair<long long, long long>> slice; ///< [left:right] of the physical port, absent for all of it
+};
+
+/// A bus interface of an IP ("S_AXI") with its port map.
+struct XciBusInterface {
+    std::string name;
+    std::vector<XciPortMap> ports;
+};
+
+/// What a block design needs to know about one of its cells: the ports, the
+/// bus interfaces with their port maps, the default values of inputs and the
+/// HDL parameters (for a module reference). From the IP-XACT component file
+/// (<instance>.xml) or from the boundary of a JSON .xci.
+struct XciCellInterface {
+    std::vector<XciPort> ports;
+    std::vector<XciBusInterface> interfaces;
+    std::map<std::string, long long> defaults; ///< input -> value it has when not connected
+    std::vector<std::pair<std::string, std::string>> parameters; ///< HDL parameter -> Verilog value
+};
+
+/// Reads a component file (XML, `<spirit:component>`) or a JSON .xci;
+/// nullopt when it has no ports.
+[[nodiscard]] std::optional<XciCellInterface> cellInterfaceFromText(std::string_view text);
+
 /// True for .xci files.
 [[nodiscard]] bool isXciFile(const std::filesystem::path& file);
 
