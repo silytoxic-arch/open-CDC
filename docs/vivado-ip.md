@@ -128,6 +128,27 @@ generate the output products in Vivado. Verified with four Zynq-7000 block desig
 three AXI interconnects, MIG, Quad SPI with STARTUP, Ethernet Lite, interrupt
 controller, processor system reset).
 
+## IP from its output products
+
+An IP without a model (and not found in an IP repository) is analyzed from the
+output products Vivado generated for it, when they are next to its `.xci` (or
+in `<project>.gen` for Vivado 2020.2 and later):
+
+1. **Its generated HDL**: the instance's component file `<instance>.xml` lists
+   the synthesis view (the IP's sources, usually in the block design's
+   `ipshared/` folder) and the synthesis wrapper view (`synth/<instance>.v` or
+   `.vhd`, the module the design instantiates). These files are analyzed as
+   Vivado synthesizes them, with their VHDL libraries.
+2. **Its simulation netlist** (`<instance>_sim_netlist.v`), the gate-level
+   netlist Vivado writes with the primitives the IP uses (registers, LUTs,
+   carry chains, distributed and block RAM), when the HDL cannot be used.
+
+An encrypted file (IEEE 1735 `protect` blocks, as in the debug cores and
+some Xilinx IP) is not used; the reason is given in the `FE-XCI-UNSUPPORTED`
+warning. The `FE-XCI-MODEL` info says "analyzed from its output products".
+The models above take precedence: they are smaller and carry the IP's clock
+names and periods.
+
 ## IP from an IP repository
 
 IP that OpenCDC does not model, for example your own IP or a board vendor's
@@ -164,8 +185,9 @@ The following IP gets an `FE-XCI-UNSUPPORTED` warning:
 - the memory interface with another memory type (QDR II+, RLDRAM, LPDDR2), with ECC or with several controllers;
 - any other IP that is not in a listed IP repository, for example the UltraScale memory interface (`ddr4`), AXI DMA with scatter gather, and the AXI TFT controller (`axi_tft`).
 
-The IP then stays an unknown module. Add its generated HDL, or set the
-project option `unknownModules` to `blackbox`.
+The IP then stays an unknown module, unless its output products can be used
+(see below). Add its generated HDL, or set the project option `unknownModules`
+to `blackbox`.
 
 A VHDL component declaration of such an IP still helps. With the IP as a
 black box, its outputs drive their signals: a clock output becomes a clock of

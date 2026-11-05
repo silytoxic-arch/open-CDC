@@ -2815,6 +2815,114 @@ Result<XciInfo> parseXci(std::string_view text) {
 /// looked up (the memory interface's XML_INPUT_FILE).
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir);
 
+/// A file of an IP's output products that an analysis cannot use: missing,
+/// or encrypted (IEEE 1735 / Xilinx `protect blocks).
+std::optional<std::string> unusableFile(const std::filesystem::path& f) {
+    std::error_code ec;
+    if (!std::filesystem::exists(f, ec))
+        return "missing: " + toUtf8(f);
+    const auto t = readSourceText(f);
+    if (!t)
+        return "cannot be read: " + toUtf8(f);
+    if (t->utf8.find("protect begin_protected") != std::string::npos ||
+        t->utf8.find("pragma protect key_block") != std::string::npos)
+        return "encrypted: " + toUtf8(f);
+    return std::nullopt;
+}
+
+/// An IP without a model, from its output products next to its component
+/// file (<instance>.xml): the HDL of its synthesis view (the instance's
+/// wrapper in synth/ and the IP's sources in ipshared/), or else its
+/// simulation netlist (<instance>_sim_netlist.v), as Vivado synthesizes or
+/// simulates it. nullopt with the reason when neither can be used.
+Result<XciModel> generatedIp(const XciInfo& info, const std::filesystem::path& dir) {
+    const std::string vlnv = info.vendor + ":" + info.library + ":" + info.name + ":" + info.version;
+    std::vector<std::filesystem::path> where = {dir};
+    if (const auto gen = generatedProductsDir(dir))
+        where.push_back(*gen);
+    std::filesystem::path compFile;
+    std::string c;
+    for (const auto& d : where)
+        if (const auto t = readSourceText(d / (info.instance + ".xml"))) {
+            compFile = d / (info.instance + ".xml");
+            c = t->utf8;
+            break;
+        }
+    if (c.empty())
+        return unsupported("IP '" + info.instance + "' (" + vlnv + "): no component file " + info.instance +
+                           ".xml with the IP's output products");
+    const auto base = compFile.parent_path();
+    // file sets by name: (file, VHDL library)
+    std::map<std::string, std::vector<std::pair<std::filesystem::path, std::string>>> sets;
+    for (const auto& fs : elements(c, "spirit:fileSet")) {
+        auto& list = sets[firstTag(fs, "name")];
+        for (const auto& body : elements(fs, "spirit:file")) {
+            const std::string type = firstTag(body, "fileType");
+            const std::string name = firstTag(body, "name");
+            if (name.empty() || firstTag(body, "isIncludeFile") == "true")
+                continue;
+            if (type != "verilogSource" && type != "systemVerilogSource" && type != "vhdlSource")
+                continue;
+            list.emplace_back((base / std::filesystem::path(name)).lexically_normal(),
+                              type == "vhdlSource" ? firstTag(body, "logicalName") : std::string());
+        }
+    }
+    // the synthesis view (the IP's own HDL) and the synthesis wrapper view (the instance)
+    std::string synthSet, wrapperSet;
+    for (const auto& v : elements(c, "spirit:view")) {
+        const std::string env = firstTag(v, "envIdentifier");
+        if (env.ends_with(":synthesis.wrapper"))
+            wrapperSet = firstTag(v, "localName");
+        else if (env.ends_with(":synthesis"))
+            synthSet = firstTag(v, "localName");
+    }
+    std::vector<std::pair<std::filesystem::path, std::string>> hdl;
+    for (const auto* setName : {&synthSet, &wrapperSet})
+        if (!setName->empty())
+            for (const auto& f : sets[*setName])
+                hdl.push_back(f);
+    std::string why;
+    if (!wrapperSet.empty() && !hdl.empty()) {
+        for (const auto& [f, lib] : hdl)
+            if (const auto u = unusableFile(f)) {
+                why = *u;
+                break;
+            }
+        if (why.empty()) {
+            XciModel out;
+            out.module = info.instance;
+            out.ip = vlnv;
+            for (const auto& [f, lib] : hdl) {
+                out.extraSources.push_back(f);
+                out.extraLibraries.push_back(lib);
+            }
+            out.summary = "its generated HDL (synthesis view, " + std::to_string(hdl.size()) + " file(s))";
+            out.notes.push_back("the IP's own HDL is analyzed, as Vivado synthesizes it: " + toUtf8(compFile));
+            return out;
+        }
+    }
+    else {
+        why = "no synthesis view with the instance's wrapper";
+    }
+    // the simulation netlist
+    const auto netlist = base / (info.instance + "_sim_netlist.v");
+    if (const auto u = unusableFile(netlist)) {
+        return unsupported("IP '" + info.instance + "' (" + vlnv + ") is not modelled, and its output products cannot "
+                           "be used (" + why + "; simulation netlist " + *u + ")",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    }
+    XciModel out;
+    out.module = info.instance;
+    out.ip = vlnv;
+    out.extraSources.push_back(netlist);
+    out.extraLibraries.push_back(std::string());
+    out.summary = "its simulation netlist";
+    out.notes.push_back("the gate-level simulation netlist is analyzed (" + toUtf8(netlist) + "); its HDL could not be "
+                        "used (" + why + ")");
+    return out;
+}
+
 /// The bus interfaces of each clock interface of a component file
 /// (ASSOCIATED_BUSIF "M00_AXI:S00_AXI"): lower-case interface -> clock port.
 std::map<std::string, std::string> clockAssociations(const std::string& text) {
@@ -2860,13 +2968,23 @@ Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const 
     auto r = dispatchModelled(info, dir);
     if (r && !fromComponent.empty())
         r.value().notes.push_back("ports from the VHDL component declaration at " + fromComponent);
-    if (r || !context || context->ipRepositories.empty() || r.error().code != "FE-XCI-UNSUPPORTED")
+    if (r || r.error().code != "FE-XCI-UNSUPPORTED")
         return r;
     // not modelled: the IP itself, from an IP repository
-    for (const auto& comp : componentsIn(context->ipRepositories))
-        if (lower(comp.vendor) == lower(info.vendor) && lower(comp.library) == lower(info.library) &&
-            comp.name == info.name && comp.version == info.version)
-            return userIp(info, comp);
+    if (context)
+        for (const auto& comp : componentsIn(context->ipRepositories))
+            if (lower(comp.vendor) == lower(info.vendor) && lower(comp.library) == lower(info.library) &&
+                comp.name == info.name && comp.version == info.version)
+                return userIp(info, comp);
+    // or its own output products (generated HDL, simulation netlist)
+    if (dir && !info.json) {
+        auto g = generatedIp(info, *dir);
+        if (g)
+            return g;
+        auto d = r.error();
+        d.notes.insert(d.notes.begin(), g.error().message);
+        return d;
+    }
     return r;
 }
 

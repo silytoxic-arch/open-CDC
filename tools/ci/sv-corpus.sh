@@ -98,7 +98,10 @@ cq=cteqeu-SoC
 fetch_sparse $cq https://github.com/cteqeu/SoC 8aeef06a58fd1986c3f65ef407860444508bc407 \
     Pynq-Z2/SoC_7_Timers_GIC/SoC_7_Timers_GIC.srcs/sources_1/bd Pynq-Z2/SoC_7_Timers_GIC/SoC_7_Timers_GIC.gen/sources_1/bd \
     MiniZED/SoC_Multiple_IRQ_F2P/SoC_Multiple_IRQ_F2P.srcs MiniZED/SoC_Multiple_IRQ_F2P/SoC_Multiple_IRQ_F2P.gen/sources_1/bd \
-    MiniZED/eFPGA_XADC/Minized_XADC.srcs/sources_1/bd MiniZED/eFPGA_BRAM/eFPGA_BRAM.srcs/sources_1/bd
+    MiniZED/eFPGA_XADC/Minized_XADC.srcs/sources_1/bd MiniZED/eFPGA_BRAM/eFPGA_BRAM.srcs/sources_1/bd \
+    MiniZED/Vitis_Custom_AXI_IP2021/Vitis_Custom_AXI_IP.srcs/sources_1/bd \
+    Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel.srcs \
+    Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel.gen/sources_1/bd
 
 cat > axi_cdc_top.sv <<'SV'
 module top (input logic src_clk, input logic src_rst_n, input logic dst_clk, input logic dst_rst_n);
@@ -150,6 +153,12 @@ xa = q + "MiniZED/eFPGA_XADC/Minized_XADC.srcs/sources_1/bd/design_1/"
 proj("zynq_xadc", xa + "design_1.bd", xa + "hdl/design_1_wrapper.vhd")
 br = q + "MiniZED/eFPGA_BRAM/eFPGA_BRAM.srcs/sources_1/bd/design_1/"
 proj("zynq_bram", br + "design_1.bd", br + "hdl/design_1_wrapper.vhd")
+# user IP whose repository is not in the project: from their generated HDL (synth/ wrapper + ipshared/)
+ma = q + "MiniZED/Vitis_Custom_AXI_IP2021/Vitis_Custom_AXI_IP.srcs/sources_1/bd/design_1/"
+proj("zynq_math_ip", ma + "design_1.bd", ma + "hdl/design_1_wrapper.vhd")
+np = q + "Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel."
+proj("zynq_axi_neopixel", np + "srcs/sources_1/bd/design_1/design_1.bd",
+     np + "gen/sources_1/bd/design_1/hdl/design_1_wrapper.vhd", np + "srcs/constrs_1/new/SoC_AXI_NeoPixel.xdc")
 PY
 
 cat > rgmii.sdc <<'SDC'
@@ -391,6 +400,10 @@ check zynq_timers_gic.ocdc.json "Clocks  : 1 \(99/99 registers resolved\).*FCLK_
 check zynq_irq_f2p.ocdc.json "Clocks  : 2 \(98/98 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=20ns.*cpu_1x  \[black-box\].*FE-BD-MODULE.*7 cell\(s\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zynq_xadc.ocdc.json "Clocks  : 2 \(82/82 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=20ns.*FE-BD-MODULE.*4 cell\(s\).*xadc_wiz:3.3.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zynq_bram.ocdc.json "Clocks  : 2 \(118/118 registers resolved\).*FE-BD-MODULE.*6 cell\(s\), 6 IP configuration\(s\).*smartconnect:1.0.*1 clock\(s\): aclk: M00_AXI, M01_AXI, S00_AXI.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check zynq_math_ip.ocdc.json "Clocks  : 2 \(74/74 registers resolved\).*FE-BD-MODULE.*Math_IP:1.0\) analyzed from its output products: its generated HDL \(synthesis view, 4 file\(s\)\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+# AXI_NeoPixel (generated HDL): the AXI registers (clk_fpga_0, 100 MHz) read straight by the LED logic in clk_fpga_1
+# (50 MHz): 64 registers x 24 bits without synchronization (the relation of the two PS clocks is not constrained)
+check zynq_axi_neopixel.ocdc.json "Clocks  : 2 \(179/179 registers resolved\).*FCLK_CLK1  \[black-box\] alias=clk_fpga_1 .*period=20ns.*AXI_NeoPixel:1.0\) analyzed from its output products.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 64 crossing path\(s\), 0 synchronized, 64 unsynchronized.*64 path\(s\) need review"
 check arty_xadc.ocdc.json "Clocks  : 1 \(14/14 registers resolved\).*IP 'xadc_wiz_0' \(xilinx.com:ip:xadc_wiz:3.3\) modelled.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check basys3_xadc.ocdc.json "Clocks  : 2 \(24/24 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 0 crossing path"

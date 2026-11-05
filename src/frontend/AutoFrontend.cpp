@@ -930,14 +930,19 @@ public:
                 const auto& mv = model.value();
                 const auto path = primitiveDir() / (mv.module + "_xci_" +
                                                     std::to_string(std::hash<std::string>{}(mv.verilog) % 1000000) + ".v");
-                writeIfChanged(path, mv.verilog);
-                input.sourceFiles.push_back(path);
-                input.sourceLibraries.push_back(std::string());
+                if (!mv.verilog.empty()) { // (an IP from its generated HDL brings only its own files)
+                    writeIfChanged(path, mv.verilog);
+                    input.sourceFiles.push_back(path);
+                    input.sourceLibraries.push_back(std::string());
+                }
                 for (std::size_t k = 0; k < mv.extraSources.size(); ++k)
                     queue.insert(queue.begin() + static_cast<std::ptrdiff_t>(q + 1 + k),
                                  {mv.extraSources[k], k < mv.extraLibraries.size() ? mv.extraLibraries[k] : std::string()});
                 Diagnostic d{"FE-XCI-MODEL", Severity::Info,
-                             "IP '" + mv.module + "' (" + mv.ip + ") modelled from its configuration: " + mv.summary,
+                             "IP '" + mv.module + "' (" + mv.ip + ") " +
+                                 (mv.verilog.empty() ? "analyzed from its output products: "
+                                                     : "modelled from its configuration: ") +
+                                 mv.summary,
                              SourceLocation{toUtf8(f), 0, 0}, mv.notes};
                 sink.report(std::move(d));
             }

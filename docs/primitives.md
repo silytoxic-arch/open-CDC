@@ -36,6 +36,9 @@ Sources:
 | `IBUFDS_GTE2`, `IBUFDS_GTE3`, `IBUFDS_GTE4` | Reference clock buffers: `O` follows `I`. `ODIV2`: `IBUFDS_GTE2` divides by 2 (UG476); `IBUFDS_GTE3/4` by `REFCLK_HROW_CK_SEL`: `00` = `O`, `01` = `O` / 2, `10` = low (UG576/UG578) | |
 | `SRL16E`, `SRLC32E` | Shift register in the clock domain of `CLK` | |
 | `LUT1`, `LUT2`, `LUT3`, `LUT4`, `LUT5`, `LUT6`, `LUT6_2`, `MUXF7`, `MUXF8`, `VCC`, `GND` | Combinational | |
+| `CARRY4`, `CARRY8` | Combinational carry chain | |
+| `RAM16X1D`, `RAM32X1D`, `RAM64X1D`, `RAM128X1D`, `RAM32X1S`, `RAM64X1S`, `RAM32M`, `RAM64M` | Distributed RAM: written on `WCLK`, read without a clock (data written in one clock and read by a register of another is a crossing) | `IS_WCLK_INVERTED` is not applied |
+| `BIBUF` | A processing-system pad: no logic | |
 | `IDDR`, `IDDRE1` | Falling-edge capture, rising-edge outputs `Q1`/`Q2` | |
 | `ODDR`, `ODDRE1` | Two rising-edge registers that both reach `Q` | |
 | `IDELAYE2`, `IDELAYE3`, `ODELAYE2`, `ODELAYE3` | Data path is a wire; tap counter `CNTVALUEOUT` in the control clock (`C` / `CLK`); in `FIXED` mode there is no counter (`CNTVALUEOUT` is constant) | |

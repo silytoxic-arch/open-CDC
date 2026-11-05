@@ -294,6 +294,115 @@ module LUT6_2 #(parameter [63:0] INIT = 64'h0000000000000000)
     assign O6 = INIT[{I5, I4, I3, I2, I1, I0}];
 endmodule
 
+// Carry chains (simulation netlists): combinational.
+module CARRY4 (output [3:0] CO, output [3:0] O, input CI, input CYINIT, input [3:0] DI, input [3:0] S);
+    wire c0 = CI | CYINIT;
+    assign CO[0] = S[0] ? c0 : DI[0];
+    assign CO[1] = S[1] ? CO[0] : DI[1];
+    assign CO[2] = S[2] ? CO[1] : DI[2];
+    assign CO[3] = S[3] ? CO[2] : DI[3];
+    assign O = S ^ {CO[2:0], c0};
+endmodule
+
+module CARRY8 #(parameter CARRY_TYPE = "SINGLE_CY8")
+              (output [7:0] CO, output [7:0] O, input CI, input CI_TOP, input [7:0] DI, input [7:0] S);
+    wire [8:0] c;
+    assign c[0] = CI;
+    genvar i;
+    generate
+        for (i = 0; i < 8; i = i + 1) begin : g
+            assign c[i + 1] = S[i] ? c[i] : DI[i];
+        end
+    endgenerate
+    assign CO = c[8:1];
+    assign O = S ^ c[7:0];
+endmodule
+
+// Distributed RAM (LUT RAM): written on WCLK, read without a clock, so data
+// written in one clock and read by a register of another crosses.
+module RAM16X1D #(parameter [15:0] INIT = 16'h0000, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+                 (output DPO, output SPO, input A0, input A1, input A2, input A3, input D, input DPRA0, input DPRA1,
+                  input DPRA2, input DPRA3, input WCLK, input WE);
+    reg [15:0] mem = INIT;
+    always @(posedge WCLK) if (WE) mem[{A3, A2, A1, A0}] <= D;
+    assign SPO = mem[{A3, A2, A1, A0}];
+    assign DPO = mem[{DPRA3, DPRA2, DPRA1, DPRA0}];
+endmodule
+
+module RAM32X1D #(parameter [31:0] INIT = 32'h00000000, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+                 (output DPO, output SPO, input A0, input A1, input A2, input A3, input A4, input D, input DPRA0,
+                  input DPRA1, input DPRA2, input DPRA3, input DPRA4, input WCLK, input WE);
+    reg [31:0] mem = INIT;
+    always @(posedge WCLK) if (WE) mem[{A4, A3, A2, A1, A0}] <= D;
+    assign SPO = mem[{A4, A3, A2, A1, A0}];
+    assign DPO = mem[{DPRA4, DPRA3, DPRA2, DPRA1, DPRA0}];
+endmodule
+
+module RAM64X1D #(parameter [63:0] INIT = 64'h0, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+                 (output DPO, output SPO, input A0, input A1, input A2, input A3, input A4, input A5, input D,
+                  input DPRA0, input DPRA1, input DPRA2, input DPRA3, input DPRA4, input DPRA5, input WCLK, input WE);
+    reg [63:0] mem = INIT;
+    always @(posedge WCLK) if (WE) mem[{A5, A4, A3, A2, A1, A0}] <= D;
+    assign SPO = mem[{A5, A4, A3, A2, A1, A0}];
+    assign DPO = mem[{DPRA5, DPRA4, DPRA3, DPRA2, DPRA1, DPRA0}];
+endmodule
+
+module RAM128X1D #(parameter [127:0] INIT = 128'h0, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+                  (output DPO, output SPO, input [6:0] A, input D, input [6:0] DPRA, input WCLK, input WE);
+    reg [127:0] mem = INIT;
+    always @(posedge WCLK) if (WE) mem[A] <= D;
+    assign SPO = mem[A];
+    assign DPO = mem[DPRA];
+endmodule
+
+module RAM32X1S #(parameter [31:0] INIT = 32'h00000000, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+                 (output O, input A0, input A1, input A2, input A3, input A4, input D, input WCLK, input WE);
+    reg [31:0] mem = INIT;
+    always @(posedge WCLK) if (WE) mem[{A4, A3, A2, A1, A0}] <= D;
+    assign O = mem[{A4, A3, A2, A1, A0}];
+endmodule
+
+module RAM64X1S #(parameter [63:0] INIT = 64'h0, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+                 (output O, input A0, input A1, input A2, input A3, input A4, input A5, input D, input WCLK, input WE);
+    reg [63:0] mem = INIT;
+    always @(posedge WCLK) if (WE) mem[{A5, A4, A3, A2, A1, A0}] <= D;
+    assign O = mem[{A5, A4, A3, A2, A1, A0}];
+endmodule
+
+// Four ports A..D read at their own address, all written at ADDRD.
+module RAM32M #(parameter [63:0] INIT_A = 64'h0, parameter [63:0] INIT_B = 64'h0, parameter [63:0] INIT_C = 64'h0,
+                parameter [63:0] INIT_D = 64'h0, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+               (output [1:0] DOA, output [1:0] DOB, output [1:0] DOC, output [1:0] DOD, input [4:0] ADDRA,
+                input [4:0] ADDRB, input [4:0] ADDRC, input [4:0] ADDRD, input [1:0] DIA, input [1:0] DIB,
+                input [1:0] DIC, input [1:0] DID, input WCLK, input WE);
+    reg [1:0] ma [0:31], mb [0:31], mc [0:31], md [0:31];
+    always @(posedge WCLK) if (WE) begin
+        ma[ADDRD] <= DIA; mb[ADDRD] <= DIB; mc[ADDRD] <= DIC; md[ADDRD] <= DID;
+    end
+    assign DOA = ma[ADDRA];
+    assign DOB = mb[ADDRB];
+    assign DOC = mc[ADDRC];
+    assign DOD = md[ADDRD];
+endmodule
+
+module RAM64M #(parameter [63:0] INIT_A = 64'h0, parameter [63:0] INIT_B = 64'h0, parameter [63:0] INIT_C = 64'h0,
+                parameter [63:0] INIT_D = 64'h0, parameter [0:0] IS_WCLK_INVERTED = 1'b0)
+               (output DOA, output DOB, output DOC, output DOD, input [5:0] ADDRA, input [5:0] ADDRB,
+                input [5:0] ADDRC, input [5:0] ADDRD, input DIA, input DIB, input DIC, input DID, input WCLK, input WE);
+    reg [63:0] ma = INIT_A, mb = INIT_B, mc = INIT_C, md = INIT_D;
+    always @(posedge WCLK) if (WE) begin
+        ma[ADDRD] <= DIA; mb[ADDRD] <= DIB; mc[ADDRD] <= DIC; md[ADDRD] <= DID;
+    end
+    assign DOA = ma[ADDRA];
+    assign DOB = mb[ADDRB];
+    assign DOC = mc[ADDRC];
+    assign DOD = md[ADDRD];
+endmodule
+
+// A bidirectional pad of the processing system (MIO, DDR): no logic.
+module BIBUF (inout IO, inout PAD);
+endmodule
+
 module MUXF7 (output O, input I0, input I1, input S);
     assign O = S ? I1 : I0;
 endmodule

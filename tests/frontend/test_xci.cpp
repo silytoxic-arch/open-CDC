@@ -2888,3 +2888,111 @@ TEST_CASE("XCI: the component file in <project>.gen (Vivado 2020.2+)", "[fronten
     CHECK(has(m.value().verilog, "always @(posedge aclk[0]) oc_M00_AXI_awvalid_q"));
     CHECK(m.value().summary == "1 clock(s): aclk: M00_AXI, S00_AXI");
 }
+
+namespace {
+
+// the component file of an IP instance with its output products: synthesis view (ipshared HDL), wrapper view
+std::string instanceComponent(const std::string& inst, bool views) {
+    std::string s = "<spirit:component xmlns:spirit=\"x\">\n<spirit:model>\n";
+    if (views)
+        s += "<spirit:views>\n"
+             "<spirit:view><spirit:name>xilinx_anylanguagesynthesis</spirit:name><spirit:envIdentifier>"
+             ":vivado.xilinx.com:synthesis</spirit:envIdentifier><spirit:modelName>core</spirit:modelName>"
+             "<spirit:fileSetRef><spirit:localName>synth_fs</spirit:localName></spirit:fileSetRef></spirit:view>\n"
+             "<spirit:view><spirit:name>xilinx_anylanguagesynthesiswrapper</spirit:name><spirit:envIdentifier>"
+             ":vivado.xilinx.com:synthesis.wrapper</spirit:envIdentifier><spirit:modelName>" + inst +
+             "</spirit:modelName><spirit:fileSetRef><spirit:localName>wrap_fs</spirit:localName></spirit:fileSetRef>"
+             "</spirit:view>\n</spirit:views>\n";
+    s += "<spirit:ports>\n";
+    for (const auto& [n, d] : std::vector<std::pair<std::string, std::string>>{
+             {"clk_a", "in"}, {"clk_b", "in"}, {"d", "in"}, {"q", "out"}})
+        s += "<spirit:port><spirit:name>" + n + "</spirit:name><spirit:wire><spirit:direction>" + d +
+             "</spirit:direction></spirit:wire></spirit:port>\n";
+    s += "</spirit:ports>\n</spirit:model>\n<spirit:fileSets>\n"
+         "<spirit:fileSet><spirit:name>synth_fs</spirit:name><spirit:file><spirit:name>../../ipshared/ab12/hdl/core.v"
+         "</spirit:name><spirit:fileType>verilogSource</spirit:fileType></spirit:file></spirit:fileSet>\n"
+         "<spirit:fileSet><spirit:name>wrap_fs</spirit:name><spirit:file><spirit:name>synth/" + inst +
+         ".v</spirit:name><spirit:fileType>verilogSource</spirit:fileType></spirit:file></spirit:fileSet>\n"
+         "</spirit:fileSets>\n</spirit:component>\n";
+    return s;
+}
+
+const char* kIpTop = "module top(input clk_a, input clk_b, input d, output q);\n"
+                     "  gen_ip u (.clk_a(clk_a), .clk_b(clk_b), .d(d), .q(q));\n"
+                     "endmodule\n";
+
+} // namespace
+
+TEST_CASE("XCI: an IP without a model from its generated HDL", "[frontend][xci][generated]") {
+    test::TempDir dir;
+    const auto xci = dir.write("bd/ip/gen_ip/gen_ip.xci", spirit("gen_ip", "my_core", "1.0", {}));
+    dir.write("bd/ip/gen_ip/gen_ip.xml", instanceComponent("gen_ip", true));
+    // the IP's own HDL: a one-flop crossing from clk_a to clk_b
+    dir.write("bd/ipshared/ab12/hdl/core.v", "module core(input clk_a, input clk_b, input d, output reg q);\n"
+                                             "  reg a; always @(posedge clk_a) a <= d;\n"
+                                             "  always @(posedge clk_b) q <= a;\nendmodule\n");
+    dir.write("bd/ip/gen_ip/synth/gen_ip.v", "module gen_ip(input clk_a, input clk_b, input d, output q);\n"
+                                             "  core c (.clk_a(clk_a), .clk_b(clk_b), .d(d), .q(q));\nendmodule\n");
+    auto m = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE(m);
+    CHECK(m.value().verilog.empty());
+    REQUIRE(m.value().extraSources.size() == 2);
+    CHECK(m.value().extraSources[0].filename() == "core.v");
+    CHECK(m.value().extraSources[1].filename() == "gen_ip.v");
+    CHECK(m.value().summary == "its generated HDL (synthesis view, 2 file(s))");
+    // in a design: the IP's own crossing is found
+    const auto r = run(project(dir, kIpTop, {xci}));
+    const auto* d = find(*r, "FE-XCI-MODEL");
+    REQUIRE(d);
+    CHECK(d->message.find("analyzed from its output products") != std::string::npos);
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.unsynchronized >= 1);
+    CHECK(std::ranges::any_of(r->cdc->paths, [](const auto& p) { return p.dstName.find("u.c.q") != std::string::npos; }));
+}
+
+TEST_CASE("XCI: an IP without a model from its simulation netlist; encrypted files are not used",
+          "[frontend][xci][generated]") {
+    test::TempDir dir;
+    const auto xci = dir.write("bd/ip/gen_ip/gen_ip.xci", spirit("gen_ip", "my_core", "1.0", {}));
+    dir.write("bd/ip/gen_ip/gen_ip.xml", instanceComponent("gen_ip", true));
+    // the HDL is encrypted: the netlist is used (FDRE synchronizer, CARRY4, RAM32M as Vivado writes them)
+    dir.write("bd/ipshared/ab12/hdl/core.v", "`pragma protect begin_protected\n`pragma protect end_protected\n");
+    dir.write("bd/ip/gen_ip/synth/gen_ip.v", "module gen_ip(input clk_a, input clk_b, input d, output q);\nendmodule\n");
+    dir.write("bd/ip/gen_ip/gen_ip_sim_netlist.v",
+              "`timescale 1 ps / 1 ps\n"
+              "(* CHECK_LICENSE_TYPE = \"gen_ip,core,{}\" *)\n"
+              "module gen_ip (clk_a, clk_b, d, q);\n  input clk_a; input clk_b; input d; output q;\n"
+              "  wire a, s1, s2; wire [3:0] co, o; wire [1:0] doa;\n"
+              "  FDRE #(.INIT(1'b0)) a_reg (.C(clk_a), .CE(1'b1), .D(d), .Q(a), .R(1'b0));\n"
+              "  (* ASYNC_REG *) FDRE #(.INIT(1'b0)) s1_reg (.C(clk_b), .CE(1'b1), .D(a), .Q(s1), .R(1'b0));\n"
+              "  (* ASYNC_REG *) FDRE #(.INIT(1'b0)) s2_reg (.C(clk_b), .CE(1'b1), .D(s1), .Q(s2), .R(1'b0));\n"
+              "  CARRY4 cy (.CI(1'b0), .CYINIT(s2), .DI(4'b0), .S({3'b0, s2}), .CO(co), .O(o));\n"
+              "  RAM32M ram (.ADDRA(5'd0), .ADDRB(5'd0), .ADDRC(5'd0), .ADDRD(5'd0), .DIA({1'b0, a}), .DIB(2'b0),\n"
+              "              .DIC(2'b0), .DID(2'b0), .DOA(doa), .WCLK(clk_a), .WE(1'b1));\n"
+              "  FDRE #(.INIT(1'b0)) q_reg (.C(clk_b), .CE(1'b1), .D(o[0] ^ doa[0]), .Q(q), .R(1'b0));\n"
+              "endmodule\n"
+              "`ifndef GLBL\n`define GLBL\nmodule glbl ();\n  wire GSR;\nendmodule\n`endif\n");
+    auto m = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE(m);
+    REQUIRE(m.value().extraSources.size() == 1);
+    CHECK(m.value().extraSources[0].filename() == "gen_ip_sim_netlist.v");
+    CHECK(m.value().summary == "its simulation netlist");
+    CHECK(has(m.value().notes.at(0), "encrypted"));
+    const auto r = run(project(dir, kIpTop, {xci}));
+    CHECK(r->count(Severity::Error) == 0);
+    REQUIRE(r->cdc);
+    // a -> s1 -> s2 is a two-flop synchronizer; the RAM read by q_reg (clk_b) is an unsynchronized crossing
+    CHECK(r->cdc->stats.synchronized >= 1);
+    CHECK(r->cdc->stats.unsynchronized >= 1);
+    // negative: an encrypted netlist too -> not modelled, with the reason
+    dir.write("bd/ip/gen_ip/gen_ip_sim_netlist.v", "`protect begin_protected\n`protect end_protected\n");
+    auto none = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE_FALSE(none);
+    CHECK(has(none.error().notes.at(0), "simulation netlist encrypted"));
+    // negative: no output products at all
+    test::TempDir dir2;
+    const auto x2 = dir2.write("gen_ip.xci", spirit("gen_ip", "my_core", "1.0", {}));
+    auto bare = frontend::modelFromXci(x2, frontend::XciContext{});
+    REQUIRE_FALSE(bare);
+    CHECK(has(bare.error().notes.at(0), "no component file"));
+}

@@ -258,4 +258,25 @@ package vcomponents is
   component STARTUPE2 port (CLK : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component STARTUPE3 port (GSR : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM16X1D port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM32X1D port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM64X1D port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM128X1D port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM32X1S port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM64X1S port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM32M port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component RAM64M port (WE : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component CARRY4 port (CI : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component CARRY8 port (CI : in std_ulogic); end component;
+  component BIBUF port (IO : inout std_ulogic; PAD : inout std_ulogic); end component;
 end package;
