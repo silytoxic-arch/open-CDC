@@ -134,3 +134,5 @@ else
     note "结果: 有失败（见上面和 $SRC/$LOG）"
 fi
 note "完整日志: $SRC/$LOG"
+# exit status for CI: 0 only when tests and corpora pass
+[ "$CTEST_RC" = 0 ] && [ $CORPUS_RC = 0 ]
