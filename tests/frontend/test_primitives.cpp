@@ -870,7 +870,8 @@ TEST_CASE("Primitive library: every Xilinx unisim model has a VHDL component in 
     REQUIRE_FALSE(pkg.empty());
     std::string upper = pkg;
     std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    const std::regex moduleRe(R"(^module (\w+))", std::regex::multiline);
+    // std::regex::multiline is not in MSVC's library: match the line start by hand
+    const std::regex moduleRe(R"((?:^|\n)module (\w+))");
     int count = 0;
     for (auto it = std::sregex_iterator(models.begin(), models.end(), moduleRe); it != std::sregex_iterator(); ++it) {
         std::string n = (*it)[1].str();
