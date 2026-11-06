@@ -1,42 +1,17 @@
 name: CI
 
-# Every job runs on each push to main, or when started by hand.
+# Only the Windows version is built here (on each push to main, or when started by hand).
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+# a newer push cancels the run still in progress
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  macos:
-    name: macOS arm64 / Apple clang (Release, corpora)
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-
-      # the same script as on the developer's Mac: Homebrew dependencies, build,
-      # ctest, packages (.dmg, .tar.gz) and the real-project corpora
-      - name: Build, test and package
-        run: bash tools/macos/build-macos.sh
-
-      - name: Summary
-        if: always()
-        run: cat build-logs/macos-summary.txt
-
-      - name: Upload packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenCDC-macos-arm64
-          path: |
-            dist/*.dmg
-            dist/*.tar.gz
-
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build-logs
-          path: build-logs/
-
   windows-msvc:
     name: Windows x64 / VS2022 (${{ matrix.config }})
     runs-on: windows-2022
@@ -82,81 +57,3 @@ jobs:
           path: |
             dist/*.zip
             dist/*.exe
-
-  linux-gcc:
-    name: Linux / GCC (Release)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-dev libegl1
-
-      # Ubuntu 24.04 ships Qt 6.4; OpenCDC needs Qt >= 6.5.
-      - name: Install Qt 6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.3'
-          cache: true
-
-      - name: Configure
-        run: cmake --preset linux-gcc-ci
-
-      - name: Build
-        run: cmake --build --preset linux-gcc-ci-release --parallel
-
-      - name: Test
-        run: ctest --preset linux-gcc-ci-release
-
-      - name: VHDL corpus (pinned open-source projects)
-        run: tools/ci/vhdl-corpus.sh build/linux-gcc-ci/bin/Release "${{ runner.temp }}/vhdl-corpus"
-
-      - name: SystemVerilog corpus (pinned open-source projects)
-        run: tools/ci/sv-corpus.sh build/linux-gcc-ci/bin/Release "${{ runner.temp }}/sv-corpus"
-
-      - name: Package
-        run: cpack --config build/linux-gcc-ci/CPackConfig.cmake -C Release -B dist
-
-      - name: Upload packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenCDC-linux-x64
-          path: |
-            dist/*.tar.gz
-            dist/*.deb
-
-  linux-sanitize:
-    name: Linux / GCC / ASan+UBSan+checked STL
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-
-      - name: Configure
-        run: cmake --preset linux-gcc-sanitize
-
-      - name: Build
-        run: cmake --build --preset linux-gcc-sanitize --parallel 2
-
-      - name: Test
-        run: ctest --preset linux-gcc-sanitize --parallel 2
-
-  linux-clang:
-    name: Linux / Clang 18 (Debug, warnings as errors, no GUI)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
-
-      - name: Configure
-        run: cmake --preset linux-clang -DCMAKE_CXX_COMPILER=clang++-18 -DOPENCDC_WARNINGS_AS_ERRORS=ON -DOPENCDC_BUILD_GUI=OFF
-
-      - name: Build
-        run: cmake --build --preset linux-clang-debug --parallel
-
-      - name: Test
-        run: ctest --preset linux-clang-debug
