@@ -458,6 +458,27 @@ module ODDR #(parameter DDR_CLK_EDGE = "OPPOSITE_EDGE", parameter [0:0] INIT = 1
     assign Q = q1 | q2; // both halves reach the pin
 endmodule
 
+// Spartan-6 DDR registers (Vivado retargets them to ODDR/IDDR): C0 and its
+// inverse C1 clock the two halves; both are modelled in C0.
+module ODDR2 #(parameter DDR_ALIGNMENT = "NONE", parameter [0:0] INIT = 1'b0, parameter SRTYPE = "SYNC")
+              (output Q, input C0, input C1, input CE, input D0, input D1, input R, input S);
+    reg q0, q1;
+    always @(posedge C0)
+        if (R) begin q0 <= 1'b0; q1 <= 1'b0; end
+        else if (S) begin q0 <= 1'b1; q1 <= 1'b1; end
+        else if (CE) begin q0 <= D0; q1 <= D1; end
+    assign Q = q0 | q1; // both halves reach the pin
+endmodule
+
+module IDDR2 #(parameter DDR_ALIGNMENT = "NONE", parameter [0:0] INIT_Q0 = 1'b0, parameter [0:0] INIT_Q1 = 1'b0,
+               parameter SRTYPE = "SYNC")
+              (output reg Q0, output reg Q1, input C0, input C1, input CE, input D, input R, input S);
+    always @(posedge C0)
+        if (R) begin Q0 <= 1'b0; Q1 <= 1'b0; end
+        else if (S) begin Q0 <= 1'b1; Q1 <= 1'b1; end
+        else if (CE) begin Q0 <= D; Q1 <= D; end
+endmodule
+
 module ODDRE1 #(parameter [0:0] IS_C_INVERTED = 1'b0, parameter [0:0] IS_D1_INVERTED = 1'b0,
                 parameter [0:0] IS_D2_INVERTED = 1'b0, parameter SIM_DEVICE = "ULTRASCALE",
                 parameter [0:0] SRVAL = 1'b0)

@@ -20,9 +20,10 @@ public:
     std::vector<Object> ports(std::string_view p, bool nocase) override {
         queries.push_back("ports:" + std::string(p));
         std::vector<Object> out;
-        for (const auto& n : portNames)
-            if (globMatch(p, n, nocase))
-                out.push_back({ObjectKind::Port, n, {graph::BitRef{ir::InstanceId{0}, ir::NetId{0}, 0}}});
+        for (std::size_t i = 0; i < portNames.size(); ++i) // each port its own bit
+            if (globMatch(p, portNames[i], nocase))
+                out.push_back({ObjectKind::Port, portNames[i],
+                               {graph::BitRef{ir::InstanceId{0}, ir::NetId{static_cast<std::uint32_t>(i)}, 0}}});
         return out;
     }
     std::vector<Object> pins(std::string_view p, bool, bool) override {
@@ -206,6 +207,32 @@ TEST_CASE("set_output_delay -clock names the clock outputs are sampled with", "[
     CHECK(p.set.outputDelays[1].clockFall);
     CHECK(p.set.inputDelays.empty());
     CHECK(p.set.ignoredCommands.at("set_output_delay (without -clock)") == 1);
+}
+
+TEST_CASE("Vivado clock overrides: the same name (also with -add), the same source without -add", "[constraints]") {
+    FakeResolver r;
+    // the Digilent master XDC: two clocks named sys_clk_pin, and the 100 MHz one twice
+    auto p = parse("create_clock -add -name sys_clk_pin -period 83.333 [get_ports clk]\n"
+                   "create_clock -add -name sys_clk_pin -period 10.000 [get_ports clk_b]\n"
+                   "create_clock -period 10.000 -name sys_clk_pin -add [get_ports clk_b]\n",
+                   r);
+    CHECK(p.countCode("CON-DUPLICATE-CLOCK") == 2);
+    REQUIRE(p.set.clocks.size() == 1);
+    CHECK(p.set.clocks[0].periodNs == 10.0);
+    CHECK(p.set.clocks[0].loc.line == 3);
+    // a second clock on the same port without -add replaces the first
+    auto q = parse("create_clock -name a -period 10 [get_ports clk]\n"
+                   "create_clock -name b -period 5 [get_ports clk]\n",
+                   r);
+    REQUIRE(q.set.clocks.size() == 1);
+    CHECK(q.set.clocks[0].name == "b");
+    // negative: with -add (another name) both stay; clocks on other ports stay
+    auto k = parse("create_clock -name a -period 10 [get_ports clk]\n"
+                   "create_clock -name b -period 5 -add [get_ports clk]\n"
+                   "create_clock -name c -period 4 [get_ports clk_b]\n",
+                   r);
+    CHECK(k.countCode("CON-DUPLICATE-CLOCK") == 0);
+    CHECK(k.set.clocks.size() == 3);
 }
 
 TEST_CASE("Redefinition replaces a clock unless -add", "[constraints]") {

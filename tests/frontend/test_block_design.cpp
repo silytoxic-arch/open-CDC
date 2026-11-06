@@ -345,3 +345,151 @@ TEST_CASE("Block design: nested hierarchies keep Vivado's instance paths", "[fro
     CHECK_FALSE(has(v, "h1_h2_a"));
     CHECK_FALSE(has(v, "h1_b ("));
 }
+
+namespace {
+
+// an IP whose ports and interface come from its JSON .xci (the boundary)
+std::string xmlCellXci(const std::string& inst, const std::string& dir) {
+    const std::string d = dir == "out" ? "out" : "in";
+    return R"({ "ip_inst": { "xci_name": ")" + inst + R"(", "component_reference": "xilinx.com:ip:my_ip:1.0",
+      "boundary": {
+        "ports": { "clk": [ { "direction": "in" } ],
+                   "tdata": [ { "direction": ")" + d + R"(", "size_left": "7", "size_right": "0" } ] },
+        "interfaces": { "AXIS": { "port_maps": { "TDATA": [ { "physical_name": "tdata" } ] } } } } } })";
+}
+
+// an XML block design (Vivado 2018.2 and earlier) with a hierarchy:
+// src (top level) -> h/dst, the clock from the design port clk, the result to a design port
+const char* kXmlBd = R"(<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<bd:repository xmlns:bd="http://www.xilinx.com/bd" bd:tool_version="2018.2" bd:top="xd" bd:version="1.00.a">
+  <spirit:component xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009">
+    <spirit:vendor>xilinx.com</spirit:vendor>
+    <spirit:library>BlockDiagram</spirit:library>
+    <spirit:name>xd</spirit:name>
+    <spirit:version>1.00.a</spirit:version>
+    <spirit:model>
+      <spirit:views><spirit:view><spirit:name>BlockDiagram</spirit:name>
+        <spirit:hierarchyRef spirit:library="BlockDiagram" spirit:name="xd_imp" spirit:vendor="xilinx.com" spirit:version="1.00.a"/>
+      </spirit:view></spirit:views>
+      <spirit:ports>
+        <spirit:port><spirit:name>clk</spirit:name><spirit:wire><spirit:direction>in</spirit:direction></spirit:wire></spirit:port>
+        <spirit:port><spirit:name>q</spirit:name><spirit:wire><spirit:direction>out</spirit:direction>
+          <spirit:vector><spirit:left spirit:format="long">7</spirit:left><spirit:right spirit:format="long">0</spirit:right></spirit:vector>
+        </spirit:wire></spirit:port>
+      </spirit:ports>
+    </spirit:model>
+  </spirit:component>
+  <spirit:design xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009">
+    <spirit:vendor>xilinx.com</spirit:vendor>
+    <spirit:library>BlockDiagram</spirit:library>
+    <spirit:name>xd_imp</spirit:name>
+    <spirit:version>1.00.a</spirit:version>
+    <spirit:componentInstances>
+      <spirit:componentInstance>
+        <spirit:instanceName>src</spirit:instanceName>
+        <spirit:componentRef spirit:library="ip" spirit:name="my_ip" spirit:vendor="xilinx.com" spirit:version="1.0"/>
+        <spirit:configurableElementValues>
+          <spirit:configurableElementValue spirit:referenceId="bd:xciName">xd_src_0</spirit:configurableElementValue>
+        </spirit:configurableElementValues>
+      </spirit:componentInstance>
+      <spirit:componentInstance>
+        <spirit:instanceName>h</spirit:instanceName>
+        <spirit:componentRef spirit:library="BlockDiagram/xd_imp" spirit:name="h" spirit:vendor="xilinx.com" spirit:version="1.00.a"/>
+      </spirit:componentInstance>
+    </spirit:componentInstances>
+    <spirit:interconnections>
+      <spirit:interconnection>
+        <spirit:name>src_AXIS</spirit:name>
+        <spirit:activeInterface spirit:busRef="AXIS" spirit:componentRef="src"/>
+        <spirit:activeInterface spirit:busRef="S" spirit:componentRef="h"/>
+      </spirit:interconnection>
+    </spirit:interconnections>
+    <spirit:adHocConnections>
+      <spirit:adHocConnection>
+        <spirit:name>clk_1</spirit:name>
+        <spirit:externalPortReference spirit:portRef="clk"/>
+        <spirit:internalPortReference spirit:componentRef="src" spirit:portRef="clk"/>
+        <spirit:internalPortReference spirit:componentRef="h" spirit:portRef="CLK"/>
+      </spirit:adHocConnection>
+    </spirit:adHocConnections>
+  </spirit:design>
+  <spirit:component xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009">
+    <spirit:vendor>xilinx.com</spirit:vendor>
+    <spirit:library>BlockDiagram/xd_imp</spirit:library>
+    <spirit:name>h</spirit:name>
+    <spirit:version>1.00.a</spirit:version>
+    <spirit:busInterfaces><spirit:busInterface><spirit:name>S</spirit:name></spirit:busInterface></spirit:busInterfaces>
+    <spirit:model>
+      <spirit:views><spirit:view><spirit:name>BlockDiagram</spirit:name>
+        <spirit:hierarchyRef spirit:library="BlockDiagram/xd_imp" spirit:name="h_imp" spirit:vendor="xilinx.com" spirit:version="1.00.a"/>
+      </spirit:view></spirit:views>
+      <spirit:ports>
+        <spirit:port><spirit:name>CLK</spirit:name><spirit:wire><spirit:direction>in</spirit:direction></spirit:wire></spirit:port>
+      </spirit:ports>
+    </spirit:model>
+  </spirit:component>
+  <spirit:design xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009">
+    <spirit:vendor>xilinx.com</spirit:vendor>
+    <spirit:library>BlockDiagram/xd_imp</spirit:library>
+    <spirit:name>h_imp</spirit:name>
+    <spirit:version>1.00.a</spirit:version>
+    <spirit:componentInstances>
+      <spirit:componentInstance>
+        <spirit:instanceName>dst</spirit:instanceName>
+        <spirit:componentRef spirit:library="ip" spirit:name="my_ip" spirit:vendor="xilinx.com" spirit:version="1.0"/>
+        <spirit:configurableElementValues>
+          <spirit:configurableElementValue spirit:referenceId="bd:xciName">xd_dst_0</spirit:configurableElementValue>
+        </spirit:configurableElementValues>
+      </spirit:componentInstance>
+    </spirit:componentInstances>
+    <spirit:hierConnections>
+      <spirit:hierConnection spirit:interfaceRef="S/S_1">
+        <spirit:activeInterface spirit:busRef="AXIS" spirit:componentRef="dst"/>
+      </spirit:hierConnection>
+    </spirit:hierConnections>
+    <spirit:adHocConnections>
+      <spirit:adHocConnection>
+        <spirit:name>CLK_1</spirit:name>
+        <spirit:externalPortReference spirit:portRef="CLK"/>
+        <spirit:internalPortReference spirit:componentRef="dst" spirit:portRef="clk"/>
+      </spirit:adHocConnection>
+    </spirit:adHocConnections>
+  </spirit:design>
+</bd:repository>
+)";
+
+} // namespace
+
+TEST_CASE("Block design: the XML format of Vivado 2018.2 and earlier", "[frontend][bd]") {
+    test::TempDir dir;
+    dir.write("xd/ip/xd_src_0/xd_src_0.xci", xmlCellXci("xd_src_0", "out"));
+    dir.write("xd/ip/xd_dst_0/xd_dst_0.xci", xmlCellXci("xd_dst_0", "in"));
+    // a byte order mark, as Vivado writes it
+    auto r = frontend::blockDesignFromText(std::string("\xEF\xBB\xBF") + kXmlBd, dir.path() / "xd");
+    REQUIRE(r);
+    const auto& b = r.value();
+    const auto& v = b.verilog;
+    INFO(v);
+    CHECK(b.name == "xd");
+    CHECK(b.cells == 2);
+    CHECK(b.hierarchies == 1);
+    CHECK(b.ipFiles.size() == 2);
+    for (const char* s : {"module xd (", "input  wire clk", "output wire [7:0] q",
+                          // the interconnection and the hier connection: one net from src into h/dst
+                          "wire [7:0] src_AXIS_TDATA;", "xd_src_0 src (", ".tdata(src_AXIS_TDATA)", "xd_h_imp h (",
+                          "module xd_h_imp (", "input  wire [7:0] src_AXIS_TDATA", "xd_dst_0 dst (",
+                          // the ad-hoc connections through the hierarchy's port CLK
+                          ".clk(clk)"})
+        CHECK(has(v, s));
+    // negative: a repository without the top component, and XML that is no block design
+    auto noTop = frontend::blockDesignFromText(
+        "<bd:repository bd:top=\"zz\"><spirit:component><spirit:library>BlockDiagram</spirit:library>"
+        "<spirit:name>xd</spirit:name></spirit:component></bd:repository>",
+        dir.path());
+    REQUIRE_FALSE(noTop);
+    CHECK(noTop.error().code == "FE-BD-PARSE");
+    CHECK(has(noTop.error().message, "no top component 'zz'"));
+    auto notBd = frontend::blockDesignFromText("<?xml version=\"1.0\"?><spirit:component/>", dir.path());
+    REQUIRE_FALSE(notBd);
+    CHECK(has(notBd.error().message, "bd:repository"));
+}

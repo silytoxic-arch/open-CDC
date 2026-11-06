@@ -84,7 +84,8 @@ same name are not used. The model's note names the declaration it used.
 
 ## Block designs (.bd)
 
-A block design file (`.bd`, JSON since Vivado 2014.1) can be listed in the
+A block design file (`.bd`: JSON since Vivado 2018.3, an IP-XACT XML repository
+before) can be listed in the
 sources as Vivado lists it in the project. OpenCDC generates the module
 Vivado would generate for it (named after the design, for example `soc`, as
 the design's top or the module that the user's top instantiates) and models
@@ -112,6 +113,10 @@ its IP cells from their configurations:
   (`fuxi_inst_ARADDR`). An interface port of the design becomes one port per
   signal, `<interface>_<signal>` in lower case (`DDR3_addr`, `UART_txd`), as
   in Vivado's module.
+- **The XML format** (Vivado 2018.2 and earlier) holds a component per
+  hierarchy and a `spirit:design` with its component instances, ad-hoc
+  connections (nets), interconnections and hier connections (interface nets);
+  it is read into the same structure as the JSON format.
 - **Vivado 2020.2 and later** keep the output products in `<project>.gen`:
   the component files are looked up there too (`<project>.srcs/sources_1/bd/...`
   → `<project>.gen/sources_1/bd/...`), for the block design and for an XML
@@ -127,6 +132,14 @@ generated, so `ip/<cell>/<cell>.xml` is missing) is an error (`FE-BD-CELL`):
 generate the output products in Vivado. Verified with four Zynq-7000 block designs (PS7, SmartConnect, AXI GPIO, XADC, Vivado 2019.2 to 2021.2) and the Fuxi SoC (45 cells,
 three AXI interconnects, MIG, Quad SPI with STARTUP, Ethernet Lite, interrupt
 controller, processor system reset).
+
+## Ports from the synthesis stub
+
+When Vivado wrote the IP's synthesis stub (`<instance>_stub.v`, next to the
+`.xci` or in `<project>.gen`), its ports are used instead of those of the
+component file: the stub is what synthesis of the design sees, while a
+component file can be stale after the IP was reconfigured (seen with a MIG
+whose component file still had 32-bit user data instead of 128).
 
 ## IP from its output products
 

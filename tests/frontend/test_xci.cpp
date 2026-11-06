@@ -666,7 +666,8 @@ TEST_CASE("XCI: memory interface (MIG) ports from the configuration", "[frontend
           "input  wire sys_clk_i", "input  wire sys_rst", "input  wire [26:0] app_addr", "input  wire [127:0] app_wdf_data",
           "input  wire [15:0] app_wdf_mask", "output wire [127:0] app_rd_data", "output wire app_rdy",
           "output wire ui_clk", "output wire ui_clk_sync_rst", "input  wire [11:0] device_temp_i",
-          "output wire init_calib_complete", "OPENCDC_CLOCK_PERIOD = 13.33199", "rstdiv0_sync_r", "~sys_rst"})
+          // the temperature output is there also with an external XADC (as in the IP's stub)
+          "output wire [11:0] device_temp", "output wire init_calib_complete", "OPENCDC_CLOCK_PERIOD = 13.33199", "rstdiv0_sync_r", "~sys_rst"})
         CHECK(v.find(p) != std::string::npos);
     // negative: no DDR3 reset, no reference clock, no AXI, no extra clocks
     for (const char* p : {"reset_n", "clk_ref", "s_axi", "ui_addn_clk", "mmcm_locked", "ddr3_"})
@@ -2995,4 +2996,36 @@ TEST_CASE("XCI: an IP without a model from its simulation netlist; encrypted fil
     auto bare = frontend::modelFromXci(x2, frontend::XciContext{});
     REQUIRE_FALSE(bare);
     CHECK(has(bare.error().notes.at(0), "no component file"));
+}
+
+TEST_CASE("XCI: the ports of the synthesis stub take precedence over a stale component file",
+          "[frontend][xci][stub]") {
+    test::TempDir dir;
+    const auto xci = dir.write("rst/rst.xci", spirit("rst", "proc_sys_reset", "5.0", {}));
+    // the component file lists an old configuration (no peripheral_aresetn, 1-bit bus_struct_reset)
+    dir.write("rst/rst.xml", "<spirit:component xmlns:spirit=\"x\"><spirit:model><spirit:ports>\n"
+                             "<spirit:port><spirit:name>slowest_sync_clk</spirit:name><spirit:wire><spirit:direction>in"
+                             "</spirit:direction></spirit:wire></spirit:port>\n"
+                             "<spirit:port><spirit:name>ext_reset_in</spirit:name><spirit:wire><spirit:direction>in"
+                             "</spirit:direction></spirit:wire></spirit:port>\n"
+                             "<spirit:port><spirit:name>mb_reset</spirit:name><spirit:wire><spirit:direction>out"
+                             "</spirit:direction></spirit:wire></spirit:port>\n"
+                             "</spirit:ports></spirit:model></spirit:component>\n");
+    // the stub Vivado wrote with the current output products
+    dir.write("rst/rst_stub.v", "// Copyright\n(* x_core_info = \"proc_sys_reset,Vivado 2018.1\" *)\n"
+                                "module rst(slowest_sync_clk, ext_reset_in, mb_reset, peripheral_aresetn)\n"
+                                "/* synthesis syn_black_box black_box_pad_pin=\"slowest_sync_clk,ext_reset_in\" */;\n"
+                                "  input slowest_sync_clk;\n  input ext_reset_in;\n  output mb_reset;\n"
+                                "  output [1:0]peripheral_aresetn;\nendmodule\n");
+    auto m = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    CHECK(has(v, "output wire [1:0] peripheral_aresetn"));
+    CHECK(has(v, "always @(posedge slowest_sync_clk[0]) oc_peripheral_aresetn_q"));
+    // negative: without the stub, the component file's ports
+    std::filesystem::remove(dir.path() / "rst/rst_stub.v");
+    auto old = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE(old);
+    CHECK_FALSE(has(old.value().verilog, "peripheral_aresetn"));
 }

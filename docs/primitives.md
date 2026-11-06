@@ -41,6 +41,7 @@ Sources:
 | `BIBUF` | A processing-system pad: no logic | |
 | `IDDR`, `IDDRE1` | Falling-edge capture, rising-edge outputs `Q1`/`Q2` | |
 | `ODDR`, `ODDRE1` | Two rising-edge registers that both reach `Q` | |
+| `ODDR2`, `IDDR2` (Spartan-6, retargeted by Vivado) | Both halves in the clock domain of `C0` (`C1` is its inverse) | `DDR_ALIGNMENT` is not modelled |
 | `IDELAYE2`, `IDELAYE3`, `ODELAYE2`, `ODELAYE3` | Data path is a wire; tap counter `CNTVALUEOUT` in the control clock (`C` / `CLK`); in `FIXED` mode there is no counter (`CNTVALUEOUT` is constant) | |
 | `IDELAYCTRL` | `RDY` has no clock domain | |
 | `XADC`, `SYSMONE1`, `SYSMONE4` | DRP (`DO`, `DRDY`) and status outputs (`ALM`, `OT`, `BUSY`, `CHANNEL`, `EOC`, `EOS`, `MUXADDR`) are registers of `DCLK`; `JTAG*` outputs have no clock domain | |

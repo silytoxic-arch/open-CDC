@@ -1149,6 +1149,28 @@ TEST_CASE("Primitives: DSP48 slices, BSCANE2 JTAG clock, differential I/O buffer
     CHECK(crosses(*run, "top.bs.", "top.sel_q")); // TAP state in the TCK domain
 }
 
+TEST_CASE("Primitives: Spartan-6 ODDR2/IDDR2 in the clock domain of C0", "[primitives][ddr2]") {
+    auto run = analyze(
+        "t.vhd",
+        "library ieee; use ieee.std_logic_1164.all;\nlibrary unisim; use unisim.vcomponents.all;\n"
+        "entity top is port (clk_a, clk_b, d : in std_logic; o : out std_logic; q : out std_logic); end entity;\n"
+        "architecture rtl of top is\n  signal q0, q1, clk_bn, r : std_logic;\nbegin\n"
+        "  clk_bn <= not clk_b;\n"
+        "  i : IDDR2 port map (Q0 => q0, Q1 => q1, C0 => clk_a, C1 => clk_bn, CE => '1', D => d, R => '0', S => '0');\n"
+        "  od : ODDR2 port map (Q => o, C0 => clk_b, C1 => clk_bn, CE => '1', D0 => q0, D1 => q1, R => '0', S => '0');\n"
+        "  process (clk_a) begin if rising_edge(clk_a) then r <= q0; end if; end process;\n"
+        "  q <= r;\nend architecture;\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("IR-UNRESOLVED-INSTANCE") == 0);
+    CHECK(run->count("VHDL-COMPONENT") == 0);
+    // IDDR2 captures in clk_a; the ODDR2 registers in clk_b read it: a crossing
+    CHECK(crosses(*run, "top.i.Q0", "top.od.q0"));
+    // negative: the IDDR2 output read in its own clock is no crossing
+    CHECK_FALSE(crosses(*run, "top.i.Q0", "top.r"));
+}
+
 TEST_CASE("Primitives: STARTUPE2/STARTUPE3 configuration clocks", "[primitives][startup]") {
     auto run = analyze(
         "t.v",

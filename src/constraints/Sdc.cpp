@@ -2023,15 +2023,33 @@ private:
     }
 
     void addClock(ClockDef def, std::uint32_t line) {
-        if (!def.add) {
-            auto it = std::ranges::find(out_.clocks, def.name, &ClockDef::name);
-            if (it != out_.clocks.end()) {
-                diag("CON-DUPLICATE-CLOCK", Severity::Warning,
-                     "clock '" + def.name + "' redefined; the earlier definition (" + toString(it->loc) + ") is replaced",
-                     line);
-                out_.clocks.erase(it);
-            }
+        // Vivado: a clock with the name of an existing clock replaces it, also with
+        // -add (Constraints 18-1056 "completely overrides"); without -add, a clock
+        // on the source of an existing clock replaces that clock too
+        auto it = std::ranges::find(out_.clocks, def.name, &ClockDef::name);
+        if (it != out_.clocks.end()) {
+            diag("CON-DUPLICATE-CLOCK", Severity::Warning,
+                 "clock '" + def.name + "' redefined; the earlier definition (" + toString(it->loc) + ") is replaced" +
+                     (def.add ? " (-add does not keep a clock of the same name)" : ""),
+                 line);
+            out_.clocks.erase(it);
         }
+        if (!def.add && !def.generated && !def.sources.empty())
+            for (auto c = out_.clocks.begin(); c != out_.clocks.end();) {
+                const bool shared = !c->generated && std::ranges::any_of(def.sources, [&](const BitRef& b) {
+                    return std::ranges::find(c->sources, b) != c->sources.end();
+                });
+                if (shared) {
+                    diag("CON-DUPLICATE-CLOCK", Severity::Warning,
+                         "clock '" + def.name + "' replaces clock '" + c->name + "' (" + toString(c->loc) +
+                             ") on the same source; use -add to keep both",
+                         line);
+                    c = out_.clocks.erase(c);
+                }
+                else {
+                    ++c;
+                }
+            }
         out_.clocks.push_back(std::move(def));
     }
 

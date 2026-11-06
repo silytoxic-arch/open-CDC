@@ -401,7 +401,7 @@ class ClockRelationMatrix { ClockRelation get(ClockId, ClockId) const; std::stri
 
 不实现完整 Tcl。实现一个"Tcl 词法 + 命令调用"小解释器：支持 `[]` 命令替换、`{}`/`""` 引用、变量 `set/$var`（仅字面量）、以下命令：
 
-- `create_clock -name -period -waveform [get_ports|get_pins|get_nets ...]`
+- `create_clock -name -period -waveform -add [get_ports|get_pins|get_nets ...]`：与 Vivado 相同，同名的时钟（即使带 `-add`）完全覆盖先前的定义，不带 `-add` 时同一源上的时钟也被覆盖（`CON-DUPLICATE-CLOCK` 警告）
 - `create_generated_clock -name -source -master_clock -divide_by -multiply_by -invert ...`
 - `set_clock_groups -asynchronous|-logically_exclusive|-physically_exclusive -group {...} -group {...}`
 - 选择器：`get_ports/get_pins/get_nets/get_clocks`，支持 `*`/`?` 通配和 `-hierarchical` 的基础形式

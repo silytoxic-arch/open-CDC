@@ -2,7 +2,7 @@
 
 // Vivado block designs (.bd) as Verilog.
 //
-// A .bd (JSON, Vivado 2014+) lists cells (IP, module references and
+// A .bd (JSON since Vivado 2018.3, IP-XACT XML before) lists cells (IP, module references and
 // hierarchies), the nets between their ports and the interface nets between
 // their bus interfaces. Vivado generates a Verilog module from it; OpenCDC
 // does the same: one module named after the design, every cell an instance

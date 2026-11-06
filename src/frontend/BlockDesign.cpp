@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -779,14 +780,233 @@ bool isBlockDesignFile(const std::filesystem::path& file) {
     return lowerStr(file.extension().string()) == ".bd";
 }
 
+namespace {
+
+/// The contents of the elements <tag ...>...</tag> (not nested in each other).
+std::vector<std::string> xmlElements(const std::string& text, const std::string& tag) {
+    std::vector<std::string> out;
+    const std::string open = "<" + tag, close = "</" + tag + ">";
+    for (std::size_t p = text.find(open); p != std::string::npos; p = text.find(open, p)) {
+        const char next = p + open.size() < text.size() ? text[p + open.size()] : '\0';
+        if (next != '>' && next != ' ' && next != '\n' && next != '\t' && next != '\r') {
+            p += open.size();
+            continue;
+        }
+        const auto body = text.find('>', p);
+        if (body == std::string::npos)
+            break;
+        if (text[body - 1] == '/') { // <tag .../>: the attributes are the contents
+            out.push_back(text.substr(p, body - p));
+            p = body + 1;
+            continue;
+        }
+        const auto end = text.find(close, body);
+        if (end == std::string::npos)
+            break;
+        out.push_back(text.substr(p, end + close.size() - p)); // with the start tag (its attributes)
+        p = end + close.size();
+    }
+    return out;
+}
+
+/// The first <spirit:tag>value</spirit:tag>.
+std::string xmlText(const std::string& text, const std::string& tag) {
+    const std::string open = "<" + tag + ">", close = "</" + tag + ">";
+    const auto a = text.find(open);
+    if (a == std::string::npos)
+        return {};
+    const auto b = text.find(close, a);
+    if (b == std::string::npos)
+        return {};
+    std::string v = text.substr(a + open.size(), b - a - open.size());
+    const auto f = v.find_first_not_of(" \t\r\n"), l = v.find_last_not_of(" \t\r\n");
+    return f == std::string::npos ? std::string() : v.substr(f, l - f + 1);
+}
+
+/// The value of attribute `name` in the first tag of `text`.
+std::string xmlAttr(const std::string& text, const std::string& name) {
+    const auto end = text.find('>');
+    const std::string head = text.substr(0, end);
+    const std::string key = name + "=\"";
+    for (std::size_t p = head.find(key); p != std::string::npos; p = head.find(key, p + 1))
+        if (p == 0 || head[p - 1] == ' ' || head[p - 1] == '\n' || head[p - 1] == '\t') {
+            const auto q = head.find('"', p + key.size());
+            return q == std::string::npos ? std::string() : head.substr(p + key.size(), q - p - key.size());
+        }
+    return {};
+}
+
+/// The JSON form of an XML block design (Vivado 2018.2 and earlier write
+/// .bd files as an IP-XACT repository: the components of the design and its
+/// hierarchies, and a spirit:design per hierarchy with its component
+/// instances, ad-hoc connections, interconnections and hier connections).
+std::optional<json> xmlBlockDesign(const std::string& t, std::string& error) {
+    std::map<std::pair<std::string, std::string>, std::string> components; // (library, name) -> element
+    std::map<std::string, std::string> designs;                             // name -> element
+    std::string top;
+    const auto repoHead = t.substr(0, t.find('>', t.find("<bd:repository")));
+    {
+        const auto k = repoHead.find("bd:top=\"");
+        if (k != std::string::npos)
+            top = repoHead.substr(k + 8, repoHead.find('"', k + 8) - k - 8);
+    }
+    for (const auto& c : xmlElements(t, "spirit:component"))
+        components[{xmlText(c, "spirit:library"), xmlText(c, "spirit:name")}] = c;
+    for (const auto& d : xmlElements(t, "spirit:design"))
+        designs[xmlText(d, "spirit:name")] = d;
+    const auto topIt = components.find({"BlockDiagram", top});
+    if (top.empty() || topIt == components.end()) {
+        error = "no top component '" + top + "' in the block design";
+        return std::nullopt;
+    }
+    auto designOf = [&](const std::string& comp) -> const std::string* {
+        for (const auto& v : xmlElements(comp, "spirit:hierarchyRef")) {
+            const auto it = designs.find(xmlAttr(v, "spirit:name"));
+            if (it != designs.end())
+                return &it->second;
+        }
+        return nullptr;
+    };
+    auto portsOf = [](const std::string& comp) {
+        json ports = json::object();
+        for (const auto& p : xmlElements(comp, "spirit:port")) {
+            json e;
+            const std::string d = xmlText(p, "spirit:direction");
+            e["direction"] = d == "out" ? "O" : d == "inout" ? "IO" : "I";
+            const std::string l = xmlText(p, "spirit:left"), r = xmlText(p, "spirit:right");
+            if (!l.empty() && !r.empty()) {
+                e["left"] = l;
+                e["right"] = r;
+            }
+            // <spirit:left spirit:format="long">31</spirit:left> has attributes: read the number after '>'
+            for (const char* side : {"left", "right"}) {
+                const auto v = xmlElements(p, std::string("spirit:") + side);
+                if (!v.empty()) {
+                    const auto gt = v[0].find('>');
+                    const auto lt = v[0].find('<', gt);
+                    if (gt != std::string::npos && lt != std::string::npos)
+                        e[side] = v[0].substr(gt + 1, lt - gt - 1);
+                }
+            }
+            ports[xmlText(p, "spirit:name")] = e;
+        }
+        return ports;
+    };
+    std::function<json(const std::string&, const std::string&, int)> level = [&](const std::string& comp,
+                                                                                   const std::string& design,
+                                                                                   int depth) -> json {
+        json out;
+        out["ports"] = portsOf(comp);
+        json ifs = json::object();
+        for (const auto& b : xmlElements(comp, "spirit:busInterface"))
+            ifs[xmlText(b, "spirit:name")] = json::object();
+        out["interface_ports"] = ifs;
+        json cells = json::object();
+        for (const auto& ci : xmlElements(design, "spirit:componentInstance")) {
+            const std::string name = xmlText(ci, "spirit:instanceName");
+            const auto refs = xmlElements(ci, "spirit:componentRef");
+            if (name.empty() || refs.empty())
+                continue;
+            const std::string lib = xmlAttr(refs[0], "spirit:library"), cname = xmlAttr(refs[0], "spirit:name");
+            std::map<std::string, std::string> values;
+            for (const auto& v : xmlElements(ci, "spirit:configurableElementValue")) {
+                const auto gt = v.find('>');
+                const auto lt = v.find('<', gt);
+                if (gt != std::string::npos && lt != std::string::npos)
+                    values[xmlAttr(v, "spirit:referenceId")] = v.substr(gt + 1, lt - gt - 1);
+            }
+            json cell;
+            if (lib.starts_with("BlockDiagram")) {
+                const auto it = components.find({lib, cname});
+                const std::string* d = it == components.end() ? nullptr : designOf(it->second);
+                if (d == nullptr || depth > 64) {
+                    error = "hierarchy '" + name + "' has no design in the block design";
+                    return json();
+                }
+                cell = level(it->second, *d, depth + 1);
+                if (cell.is_null())
+                    return json();
+            }
+            else {
+                cell["vlnv"] = xmlAttr(refs[0], "spirit:vendor") + ":" + lib + ":" + cname + ":" +
+                               xmlAttr(refs[0], "spirit:version");
+                if (values.contains("bd:xciName"))
+                    cell["xci_name"] = values["bd:xciName"];
+                if (lib == "module_ref")
+                    cell["reference_info"] = {{"ref_name", values.contains("bd:referenceName")
+                                                               ? values["bd:referenceName"]
+                                                               : cname}};
+            }
+            cells[name] = cell;
+        }
+        out["components"] = cells;
+        json nets = json::object();
+        for (const auto& a : xmlElements(design, "spirit:adHocConnection")) {
+            json ports = json::array();
+            for (const auto& r : xmlElements(a, "spirit:internalPortReference"))
+                ports.push_back(xmlAttr(r, "spirit:componentRef") + "/" + xmlAttr(r, "spirit:portRef"));
+            for (const auto& r : xmlElements(a, "spirit:externalPortReference"))
+                ports.push_back(xmlAttr(r, "spirit:portRef"));
+            nets[xmlText(a, "spirit:name")] = {{"ports", ports}};
+        }
+        out["nets"] = nets;
+        json inets = json::object();
+        for (const auto& c : xmlElements(design, "spirit:interconnection")) {
+            json ports = json::array();
+            for (const auto& r : xmlElements(c, "spirit:activeInterface"))
+                ports.push_back(xmlAttr(r, "spirit:componentRef") + "/" + xmlAttr(r, "spirit:busRef"));
+            inets[xmlText(c, "spirit:name")]["interface_ports"] = ports;
+        }
+        for (const auto& h : xmlElements(design, "spirit:hierConnection")) {
+            // spirit:interfaceRef="<interface of the hierarchy>/<net name>"
+            const std::string ref = xmlAttr(h, "spirit:interfaceRef");
+            const auto slash = ref.find('/');
+            const std::string ext = ref.substr(0, slash), net = slash == std::string::npos ? ref : ref.substr(slash + 1);
+            auto& ports = inets[net]["interface_ports"];
+            if (ports.is_null())
+                ports = json::array();
+            ports.push_back(ext);
+            for (const auto& r : xmlElements(h, "spirit:activeInterface"))
+                ports.push_back(xmlAttr(r, "spirit:componentRef") + "/" + xmlAttr(r, "spirit:busRef"));
+        }
+        out["interface_nets"] = inets;
+        return out;
+    };
+    const std::string* topDesign = designOf(topIt->second);
+    if (topDesign == nullptr) {
+        error = "the top component '" + top + "' has no design";
+        return std::nullopt;
+    }
+    json d = level(topIt->second, *topDesign, 0);
+    if (d.is_null())
+        return std::nullopt;
+    d["design_info"] = {{"name", top}};
+    return d;
+}
+
+} // namespace
+
 Result<BlockDesign> blockDesignFromText(std::string_view text, const std::filesystem::path& dir) {
+    const std::string t(text);
+    const auto first = t.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+    if (first != std::string::npos && t[first] == '<') { // Vivado 2018.2 and earlier: IP-XACT XML
+        if (t.find("<bd:repository") == std::string::npos)
+            return Diagnostic{"FE-BD-PARSE", Severity::Error, "not a Vivado block design (no bd:repository)", {}, {}};
+        std::string error;
+        auto d = xmlBlockDesign(t, error);
+        if (!d)
+            return Diagnostic{"FE-BD-PARSE", Severity::Error, "cannot read the block design (XML): " + error, {}, {}};
+        Builder b(dir);
+        return b.run(*d);
+    }
     json root;
     try {
-        root = json::parse(text);
+        root = json::parse(t);
     }
     catch (const std::exception& e) {
         return Diagnostic{"FE-BD-PARSE", Severity::Error,
-                          std::string("cannot read the block design (Vivado writes .bd files as JSON since 2014.1): ") +
+                          std::string("cannot read the block design (Vivado writes .bd files as JSON since 2018.3, "
+                                      "as IP-XACT XML before): ") +
                               e.what(),
                           {}, {}};
     }

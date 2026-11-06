@@ -2152,10 +2152,10 @@ Result<XciModel> memoryInterface(const XciInfo& info, const std::optional<std::s
             add("mmcm_locked", 1, 1, false);
             add("aresetn", 0, 1, false);
         }
+        // the temperature: always an output; an input from the user's XADC with TEMP_MON_CONTROL EXTERNAL
         if (lower(text(m, "TEMP_MON_CONTROL", "INTERNAL")) == "external")
             add("device_temp_i", 0, 12, true);
-        else
-            add("device_temp", 1, 12, true);
+        add("device_temp", 1, 12, true);
         add("init_calib_complete", 1, 1, false);
         add("sys_rst", 0, 1, false);
     }
@@ -2923,6 +2923,54 @@ Result<XciModel> generatedIp(const XciInfo& info, const std::filesystem::path& d
     return out;
 }
 
+/// The ports of an IP's synthesis stub (<instance>_stub.v, the black-box
+/// declaration Vivado writes with the output products: what synthesis of the
+/// design sees, so it is preferred to a component file that may be stale).
+std::optional<std::vector<XciPort>> parseStubPorts(const std::string& text, const std::string& module) {
+    static const std::regex modRe(R"(\bmodule\s+([A-Za-z_][\w$]*)\s*\()");
+    std::smatch m;
+    std::string::const_iterator from = text.begin();
+    std::size_t start = std::string::npos;
+    while (std::regex_search(from, text.end(), m, modRe)) {
+        if (m[1].str() == module) {
+            start = static_cast<std::size_t>(m.position(0) + (from - text.begin()));
+            break;
+        }
+        from = m[0].second;
+    }
+    if (start == std::string::npos)
+        return std::nullopt;
+    const auto end = text.find("endmodule", start);
+    std::string body = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    // drop comments (the stub's /* synthesis ... */ attribute lists the pins too)
+    body = std::regex_replace(body, std::regex(R"(/\*[\s\S]*?\*/)"), " ");
+    body = std::regex_replace(body, std::regex(R"(//[^\n]*)"), " ");
+    static const std::regex declRe(R"(^\s*(input|output|inout)\s*(?:wire\s*)?(?:\[\s*(-?\d+)\s*:\s*(-?\d+)\s*\])?\s*([\s\S]+)$)");
+    std::vector<XciPort> out;
+    std::stringstream statements(body);
+    for (std::string st; std::getline(statements, st, ';');) {
+        std::smatch d;
+        if (!std::regex_match(st, d, declRe))
+            continue;
+        std::stringstream names(d[4].str());
+        for (std::string n; std::getline(names, n, ',');) {
+            n.erase(std::remove_if(n.begin(), n.end(), [](unsigned char c) { return std::isspace(c) != 0; }), n.end());
+            if (n.empty())
+                continue;
+            XciPort p;
+            p.name = n;
+            p.output = d[1].str() == "output";
+            p.inout = d[1].str() == "inout";
+            if (d[2].matched)
+                p.range = std::pair{std::stoll(d[2].str()), std::stoll(d[3].str())};
+            out.push_back(std::move(p));
+        }
+    }
+    if (out.empty())
+        return std::nullopt;
+    return out;
+}
+
 /// The bus interfaces of each clock interface of a component file
 /// (ASSOCIATED_BUSIF "M00_AXI:S00_AXI"): lower-case interface -> clock port.
 std::map<std::string, std::string> clockAssociations(const std::string& text) {
@@ -2956,6 +3004,13 @@ Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const 
                 if (auto ports = parseComponentPorts(t->utf8)) {
                     info.ports = std::move(*ports);
                     info.busClock = clockAssociations(t->utf8);
+                    break;
+                }
+        // the synthesis stub, when Vivado wrote one, has the ports synthesis sees
+        for (const auto& d : where)
+            if (auto t = readSourceText(d / (info.instance + "_stub.v")))
+                if (auto ports = parseStubPorts(t->utf8, info.instance)) {
+                    info.ports = std::move(*ports);
                     break;
                 }
     }
