@@ -87,6 +87,8 @@ struct XciInfo {
     bool json = false;
     /// lower-case bus interface -> its clock port (ASSOCIATED_BUSIF of the clock interfaces)
     std::map<std::string, std::string> busClock;
+    /// lower-case port -> its clock port: the ports of each bus interface associated with a clock
+    std::map<std::string, std::string> portClock;
 };
 
 std::string unescapeXml(std::string s) {
@@ -182,6 +184,17 @@ Result<XciInfo> parseJson(const std::string& text) {
                 for (std::string bus; std::getline(list, bus, ':');)
                     if (!bus.empty())
                         info.busClock[lower(bus)] = clk;
+            }
+        if (ip.contains("boundary") && ip["boundary"].contains("interfaces"))
+            for (const auto& [ifName, itf] : ip["boundary"]["interfaces"].items()) {
+                const auto clk = info.busClock.find(lower(ifName));
+                if (clk == info.busClock.end() || !itf.is_object() || !itf.contains("port_maps"))
+                    continue;
+                for (const auto& [logical, maps] : itf["port_maps"].items()) {
+                    const auto& e = maps.is_array() && !maps.empty() ? maps[0] : maps;
+                    if (e.is_object() && e.contains("physical_name") && e["physical_name"].is_string())
+                        info.portClock[lower(e["physical_name"].get<std::string>())] = clk->second;
+                }
             }
         if (ip.contains("boundary") && ip["boundary"].contains("ports"))
             for (const auto& [name, v] : ip["boundary"]["ports"].items()) {
@@ -2815,6 +2828,9 @@ Result<XciInfo> parseXci(std::string_view text) {
 /// looked up (the memory interface's XML_INPUT_FILE).
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir);
 
+/// An IP known only by the clocks of its interfaces (below).
+Result<XciModel> interfaceModel(const XciInfo& info);
+
 /// A file of an IP's output products that an analysis cannot use: missing,
 /// or encrypted (IEEE 1735 / Xilinx `protect blocks).
 std::optional<std::string> unusableFile(const std::filesystem::path& f) {
@@ -2868,18 +2884,22 @@ Result<XciModel> generatedIp(const XciInfo& info, const std::filesystem::path& d
         }
     }
     // the synthesis view (the IP's own HDL) and the synthesis wrapper view (the instance)
-    std::string synthSet, wrapperSet;
+    // (a view refers to several file sets: the IP's own and those of the IP it uses, in compile order)
+    std::vector<std::string> synthSets, wrapperSets;
+    static const std::regex localRe(R"(<spirit:localName>\s*([^<\s]+)\s*</spirit:localName>)");
     for (const auto& v : elements(c, "spirit:view")) {
         const std::string env = firstTag(v, "envIdentifier");
-        if (env.ends_with(":synthesis.wrapper"))
-            wrapperSet = firstTag(v, "localName");
-        else if (env.ends_with(":synthesis"))
-            synthSet = firstTag(v, "localName");
+        auto& to = env.ends_with(":synthesis.wrapper") ? wrapperSets : synthSets;
+        if (!env.ends_with(":synthesis.wrapper") && !env.ends_with(":synthesis"))
+            continue;
+        for (auto it = std::sregex_iterator(v.begin(), v.end(), localRe); it != std::sregex_iterator(); ++it)
+            to.push_back((*it)[1].str());
     }
+    const std::string wrapperSet = wrapperSets.empty() ? std::string() : wrapperSets.front();
     std::vector<std::pair<std::filesystem::path, std::string>> hdl;
-    for (const auto* setName : {&synthSet, &wrapperSet})
-        if (!setName->empty())
-            for (const auto& f : sets[*setName])
+    for (const auto* list : {&synthSets, &wrapperSets})
+        for (const auto& setName : *list)
+            for (const auto& f : sets[setName])
                 hdl.push_back(f);
     std::string why;
     if (!wrapperSet.empty() && !hdl.empty()) {
@@ -3004,6 +3024,11 @@ Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const 
                 if (auto ports = parseComponentPorts(t->utf8)) {
                     info.ports = std::move(*ports);
                     info.busClock = clockAssociations(t->utf8);
+                    if (const auto ci = cellInterfaceFromText(t->utf8))
+                        for (const auto& bi : ci->interfaces)
+                            if (const auto clk = info.busClock.find(lower(bi.name)); clk != info.busClock.end())
+                                for (const auto& pm : bi.ports)
+                                    info.portClock[lower(pm.physical)] = clk->second;
                     break;
                 }
         // the synthesis stub, when Vivado wrote one, has the ports synthesis sees
@@ -3032,15 +3057,23 @@ Result<XciModel> dispatch(XciInfo info, const std::filesystem::path* dir, const 
                 comp.name == info.name && comp.version == info.version)
                 return userIp(info, comp);
     // or its own output products (generated HDL, simulation netlist)
+    std::string why;
     if (dir && !info.json) {
         auto g = generatedIp(info, *dir);
         if (g)
             return g;
-        auto d = r.error();
-        d.notes.insert(d.notes.begin(), g.error().message);
-        return d;
+        why = g.error().message;
     }
-    return r;
+    // or else by the clocks of its interfaces
+    if (auto im = interfaceModel(info)) {
+        if (!why.empty())
+            im.value().notes.push_back(why);
+        return im;
+    }
+    auto d = r.error();
+    if (!why.empty())
+        d.notes.insert(d.notes.begin(), why);
+    return d;
 }
 
 /// UltraScale / UltraScale+ transceiver wizard (gtwizard_ultrascale): the
@@ -4995,6 +5028,137 @@ Result<XciModel> smartConnect(const XciInfo& info) {
     return r;
 }
 
+/// An IP without a model whose output products cannot be used (encrypted
+/// HDL and netlist, an HLS IP exported without them), known by the clocks of
+/// its interfaces only: the ports of every bus interface associated with a
+/// clock (ASSOCIATED_BUSIF and the port maps of the component file or the JSON
+/// .xci) are in that clock, as Vivado times them; the other ports (resets,
+/// interrupts, ports outside the bus interfaces) have no clock domain and are
+/// not checked. Crossings inside the IP are not analyzed: the IP is assumed
+/// to cross between its clocks itself. Not applicable to an IP with an output
+/// clock (its period and relation are not known).
+Result<XciModel> interfaceModel(const XciInfo& info) {
+    using K = PortClass::Kind;
+    const auto no = [&](const std::string& why) {
+        return unsupported("IP '" + info.instance + "' (" + vlnvOf(info) + "): " + why, {});
+    };
+    if (info.portClock.empty() || info.ports.empty())
+        return no("the clocks of its interfaces are not known");
+    std::set<std::string> clocks;
+    for (const auto& [port, clk] : info.portClock)
+        clocks.insert(lower(clk));
+    for (const auto& p : info.ports)
+        if (clocks.contains(lower(p.name)) && (p.output || p.inout))
+            return no("its interface clock " + p.name + " is an output");
+    std::size_t sync = 0;
+    std::string unchecked;
+    for (const auto& p : info.ports) {
+        const auto n = lower(p.name);
+        if (clocks.contains(n))
+            continue;
+        if (info.portClock.contains(n))
+            ++sync;
+        else if (!p.inout)
+            unchecked += (unchecked.empty() ? "" : ", ") + p.name;
+    }
+    if (sync == 0)
+        return no("none of its ports is in a bus interface associated with a clock");
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        if (clocks.contains(n))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (const auto it = info.portClock.find(n); it != info.portClock.end())
+            return PortClass{K::Sync, lower(it->second), 0, {}, 0};
+        return PortClass{K::Async, {}, 0, {}, 0};
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {});
+    if (!r)
+        return r;
+    std::string clockList;
+    for (const auto& p : info.ports)
+        if (clocks.contains(lower(p.name)))
+            clockList += (clockList.empty() ? "" : ", ") + p.name;
+    r.value().interfaceOnly = true;
+    r.value().summary = std::to_string(sync) + " port(s) of its bus interfaces in " + std::to_string(clocks.size()) +
+                        " clock(s) (" + clockList + ")";
+    r.value().notes.push_back("only the clocks of the IP's interfaces are known (ASSOCIATED_BUSIF): crossings inside "
+                              "the IP are not analyzed; add the IP's HDL, or a waiver once the IP is known to be safe");
+    if (!unchecked.empty())
+        r.value().notes.push_back("ports without a clock domain, not checked: " + unchecked);
+    return r;
+}
+
+/// Zynq UltraScale+ MPSoC Processing System (zynq_ultra_ps_e 3.x, PG201):
+/// the PL clocks pl_clk0..3 are clocks of their own (period from
+/// PSU__CRL_APB__PLn_REF_CTRL__ACT_FREQMHZ, Vivado's names clk_pl_n); every
+/// AXI port in the clock its interface is associated with (maxihpm0_fpd_aclk
+/// for maxigp0_*, saxihp0_fpd_aclk for saxigp2_*, ...: the component file's
+/// ASSOCIATED_BUSIF and port maps); the EMIO GPIO outputs are registers of the
+/// LPD peripheral clock (LPD_LSBUS); pl_resetn, interrupts and the other EMIO
+/// signals have no fabric clock domain; inputs to the PS are synchronized there.
+Result<XciModel> zynqUltraPs(const XciInfo& info) {
+    using K = PortClass::Kind;
+    if (info.portClock.empty())
+        return unsupported("IP '" + info.instance + "' (" + vlnvOf(info) + "): the clock of each AXI port is not known "
+                           "(no ASSOCIATED_BUSIF and port maps in the component file or the JSON .xci)",
+                           {"add the IP's generated HDL to the sources instead, or set the project option "
+                            "unknownModules to blackbox"});
+    double mhz[4] = {0, 0, 0, 0};
+    std::map<std::string, std::string> aliases;
+    for (int n = 0; n < 4; ++n) {
+        const std::string key = "PSU__CRL_APB__PL" + std::to_string(n) + "_REF_CTRL__ACT_FREQMHZ";
+        try {
+            mhz[n] = std::stod(text(info.user, key, text(info.model, key, "0")));
+        }
+        catch (...) {
+        }
+        aliases["pl_clk" + std::to_string(n)] = "clk_pl_" + std::to_string(n);
+    }
+    double lsbus = 0;
+    try {
+        lsbus = std::stod(text(info.user, "PSU__CRL_APB__LPD_LSBUS_CTRL__ACT_FREQMHZ",
+                               text(info.model, "PSU__CRL_APB__LPD_LSBUS_CTRL__ACT_FREQMHZ", "0")));
+    }
+    catch (...) {
+    }
+    std::set<std::string> clocks;
+    for (const auto& [port, clk] : info.portClock)
+        clocks.insert(lower(clk));
+    PortClassifier classify = [&](const std::string& n, bool out) -> std::optional<PortClass> {
+        std::smatch m;
+        if (std::regex_match(n, m, std::regex(R"(^pl_clk([0-3])$)")))
+            return out ? std::optional<PortClass>(PortClass{K::ClockOut, {}, mhz[std::stoi(m[1].str())], {}, 0})
+                       : std::nullopt;
+        if (clocks.contains(n) || (n.ends_with("_aclk") && !out))
+            return out ? std::nullopt : std::optional<PortClass>(PortClass{K::ClockIn, {}, 0, {}, 0});
+        if (const auto it = info.portClock.find(n); it != info.portClock.end())
+            return PortClass{K::Sync, lower(it->second), 0, {}, 0};
+        if (out && (n == "emio_gpio_o" || n == "emio_gpio_t"))
+            return PortClass{K::Sync, "lpd_lsbus", 0, {}, 0};
+        // PL resets, interrupts, other EMIO peripherals, trace, events: PS clocks
+        return PortClass{K::Async, {}, 0, {}, 0};
+    };
+    auto r = portDomainModel(info, vlnvOf(info), classify, {{"lpd_lsbus", lsbus}}, aliases);
+    if (!r)
+        return r;
+    std::string plclk;
+    for (const auto& p : info.ports) {
+        std::smatch m;
+        const std::string n = lower(p.name);
+        if (std::regex_match(n, m, std::regex(R"(^pl_clk([0-3])$)"))) {
+            const int k = std::stoi(m[1].str());
+            plclk += (plclk.empty() ? "" : ", ") + p.name + " " +
+                     (mhz[k] > 0 ? fmtReal(mhz[k]) + " MHz" : std::string("(no frequency)")) + " (clk_pl_" +
+                     std::to_string(k) + ")";
+        }
+    }
+    r.value().summary = "PL clocks " + (plclk.empty() ? std::string("none") : plclk) + "; AXI ports in " +
+                        std::to_string(clocks.size()) + " interface clock(s)";
+    r.value().notes.push_back("the PL clocks are clocks of their own (PS PLLs, Vivado's names clk_pl_n); the EMIO GPIO "
+                              "outputs are registers of the PS clock LPD_LSBUS; pl_resetn, the interrupts and the other "
+                              "EMIO signals have no fabric clock domain; inputs to the PS are synchronized there");
+    return r;
+}
+
 Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::path* dir) {
     if (info.name == "fifo_generator")
         return fifoGenerator(info);
@@ -5067,6 +5231,8 @@ Result<XciModel> dispatchModelled(const XciInfo& info, const std::filesystem::pa
         return processingSystem7(info);
     if (info.name == "smartconnect")
         return smartConnect(info);
+    if (info.name == "zynq_ultra_ps_e")
+        return zynqUltraPs(info);
     if (info.name == "util_vector_logic")
         return utilVectorLogic(info);
     if (info.name == "axi_protocol_converter")

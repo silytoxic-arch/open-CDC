@@ -78,6 +78,7 @@ same name are not used. The model's note names the declaration it used.
 | AXI Ethernet Lite (`xilinx.com:ip:axi_ethernetlite`), MII | PG135: the registers, `ip2intc_irpt`, `phy_rst_n` and MDIO (`phy_mdc`, `phy_mdio_o/_t`) in `s_axi_aclk`; `phy_rx_data`, `phy_dv`, `phy_rx_er` in `phy_rx_clk`; `phy_tx_data`, `phy_tx_en` in `phy_tx_clk`; `phy_crs`, `phy_col`, `phy_mdio_i` are synchronized inside the IP. |
 | System ILA (`xilinx.com:ip:system_ila`) | Inputs only. |
 | Zynq-7000 Processing System (`xilinx.com:ip:processing_system7`) | Ports from the instance. PG082/UG585: `FCLK_CLK0..3` are clocks of their own (the PS PLLs; period from `PCW_ACT_FPGAn_PERIPHERAL_FREQMHZ`) carrying Vivado's names `clk_fpga_0..3`, so `get_clocks clk_fpga_0` works in the user's constraints; the AXI ports in their interface clocks (`M_AXI_GPn_ACLK`, `S_AXI_GPn_ACLK`, `S_AXI_HPn_ACLK`, `S_AXI_ACP_ACLK`), the DMA request interfaces in `DMAn_ACLK`, EMIO GMII in `ENETn_GMII_TX_CLK`/`RX_CLK`; the EMIO GPIO outputs are registers of the PS clock `cpu_1x` (the CPU clock / 6 or / 4, a clock of its own), so fabric logic using them without a synchronizer is reported; `FCLK_RESETn_N`, the interrupts to the fabric and the other EMIO signals have no fabric clock domain; `IRQ_F2P` and the EMIO inputs are synchronized in the PS; MIO, DDR and PS pins are not read. |
+| Zynq UltraScale+ MPSoC Processing System (`xilinx.com:ip:zynq_ultra_ps_e`) | Ports from the instance. PG201: `pl_clk0..3` are clocks of their own (period from `PSU__CRL_APB__PLn_REF_CTRL__ACT_FREQMHZ`) with Vivado's names `clk_pl_0..3`; every AXI port in the clock its interface is associated with (`maxihpm0_fpd_aclk` for `maxigp0_*`, `saxihp0_fpd_aclk` for `saxigp2_*`, ...: `ASSOCIATED_BUSIF` and the port maps of the component file or the JSON `.xci`; without them the PS is not modelled); the EMIO GPIO outputs are registers of the LPD peripheral clock `lpd_lsbus` (period from `PSU__CRL_APB__LPD_LSBUS_CTRL__ACT_FREQMHZ`); `pl_resetn`, the interrupts and the other EMIO signals have no fabric clock domain; inputs to the PS are synchronized there. |
 | SmartConnect (`xilinx.com:ip:smartconnect`) | PG247: each AXI interface in the clock its clock interface associates with it (`ASSOCIATED_BUSIF` of `aclk`, `aclk1`, ... in the component file or the JSON `.xci`), `aresetn` in `aclk`; the IP crosses between the clocks. Without the associations the IP is not modelled. |
 | ILA (`xilinx.com:ip:ila`) | Inputs only (`clk`, `probe<i>`); `trig_out` and `trig_in_ack` are in the `clk` domain. Constraints that refer to the inside of debug cores (`*ila_core_inst/*`, `dbg_hub`) are noted (`CON-UNMATCHED` info), not warned. |
 | VIO (`xilinx.com:ip:vio`) | `probe_out<i>` are registers in the `clk` domain with their initial value: VIO synchronizes the values set over JTAG to `clk`. `probe_in<i>` are inputs only. |
@@ -162,6 +163,27 @@ warning. The `FE-XCI-MODEL` info says "analyzed from its output products".
 The models above take precedence: they are smaller and carry the IP's clock
 names and periods.
 
+In a simulation netlist, Vivado writes cell paths with a backslash into
+attribute strings (`"\AXI_LITE_REG_INTERFACE_I/..."`); these escapes are not
+reported for files named `*_sim_netlist.v`.
+
+## IP known only by the clocks of its interfaces
+
+When neither the HDL nor the netlist can be used (both encrypted, as in the
+video demosaic IP, or an HLS IP exported without output products), but the
+component file (or the JSON `.xci`) associates the IP's bus interfaces with its
+clock inputs (`ASSOCIATED_BUSIF`), the IP is modelled from these associations,
+as Vivado times it:
+- every port of an interface associated with a clock is in that clock (inputs
+  are captured, outputs are registers of the clock);
+- the other ports (resets, interrupts, block-level control such as `ap_start`)
+  have no clock domain and are not checked; they are listed in a note.
+
+Crossings inside the IP are not analyzed: the IP is assumed to cross between its
+clocks itself. This is reported as the `FE-XCI-INTERFACE-MODEL` warning, with the
+reason the output products could not be used. An IP with an output clock is not
+modelled this way (its period and relation are not known).
+
 ## IP from an IP repository
 
 IP that OpenCDC does not model, for example your own IP or a board vendor's
@@ -196,10 +218,10 @@ The following IP gets an `FE-XCI-UNSUPPORTED` warning:
 - ILA in AXI monitor mode from an XML file;
 - the one-clock datapath IP and AXI peripherals above (except CORDIC) from an XML file without its component file;
 - the memory interface with another memory type (QDR II+, RLDRAM, LPDDR2), with ECC or with several controllers;
-- any other IP that is not in a listed IP repository, for example the UltraScale memory interface (`ddr4`), AXI DMA with scatter gather, and the AXI TFT controller (`axi_tft`).
+- any other IP that is not in a listed IP repository, for example the UltraScale memory interface (`ddr4`) and AXI DMA with scatter gather.
 
-The IP then stays an unknown module, unless its output products can be used
-(see below). Add its generated HDL, or set the project option `unknownModules`
+The IP then stays an unknown module, unless its output products or the clocks of
+its interfaces can be used (see above). Add its generated HDL, or set the project option `unknownModules`
 to `blackbox`.
 
 A VHDL component declaration of such an IP still helps. With the IP as a

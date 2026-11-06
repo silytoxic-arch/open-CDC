@@ -27,6 +27,7 @@ Sources:
 | Primitive | Model | Notes |
 |---|---|---|
 | `FDRE`, `FDSE`, `FDCE`, `FDPE`, `FD`, `FDE`, `FDR`, `FDS`, `FDC`, `FDP`, `FDCPE` | Flip-flop with its clock enable, synchronous or asynchronous set/reset; `IS_*_INVERTED` honored | `CE`/`R`/`S` tied to their inactive level are no controls, so an `FDRE` chain is a flop chain |
+| `FDRE_1`, `FDSE_1`, `FDCE_1`, `FDPE_1`, `FD_1`, `FDE_1`, `FDR_1`, `FDS_1`, `FDC_1`, `FDP_1` | The same flip-flops on the falling edge of `C` | In the clock domain of `C` (the falling edge of the same clock) |
 | `LDCE`, `LDPE` | Latch with clear / preset | |
 | `BUFG`, `BUFGCE`, `BUFGCE_1`, `BUFGMUX`, `BUFGMUX_CTRL`, `BUFGCTRL`, `BUFH`, `BUFHCE`, `BUFIO` | Clock buffers: wires, gates and clock multiplexers | A `BUFGMUX` output carries both input clocks |
 | `BUFG_GT` | Clock buffer that divides by `DIV` + 1: the clock analysis reads the constant on the `DIV` port of the instance; `DIV` = 0 is the input clock itself, otherwise a divided clock (period = input period × (`DIV` + 1)). The model has one divider register | A `DIV` that is not a constant gives a divided clock without a period (`CLK-DIVIDE-UNKNOWN`) |
@@ -37,6 +38,8 @@ Sources:
 | `SRL16E`, `SRLC32E` | Shift register in the clock domain of `CLK` | |
 | `LUT1`, `LUT2`, `LUT3`, `LUT4`, `LUT5`, `LUT6`, `LUT6_2`, `MUXF7`, `MUXF8`, `VCC`, `GND` | Combinational | |
 | `CARRY4`, `CARRY8` | Combinational carry chain | |
+| `MUXCY`, `MUXCY_L`, `XORCY`, `MULT_AND`, `AND2B1L`, `OR2L` | Combinational slice gates (netlists of older IP, MicroBlaze) | |
+| `SRLC16E` | Shift register in `CLK` (as `SRL16E`, with the cascade output `Q15`) | |
 | `RAM16X1D`, `RAM32X1D`, `RAM64X1D`, `RAM128X1D`, `RAM32X1S`, `RAM64X1S`, `RAM32M`, `RAM64M` | Distributed RAM: written on `WCLK`, read without a clock (data written in one clock and read by a register of another is a crossing) | `IS_WCLK_INVERTED` is not applied |
 | `BIBUF` | A processing-system pad: no logic | |
 | `IDDR`, `IDDRE1` | Falling-edge capture, rising-edge outputs `Q1`/`Q2` | |
@@ -52,7 +55,7 @@ Sources:
 | `DSP48E1`, `DSP48E2` | `P` and the cascade outputs depend on all data and control inputs; registered on `CLK` (`CEP` enable, `RSTP` reset) when any pipeline register (`AREG`, `BREG`, `CREG`, `DREG`, `ADREG`, `MREG`, `PREG`) is on, otherwise combinational | The individual pipeline stages are not modelled |
 | `BSCANE2` | `TCK` is a clock source of its own (relation unknown until constrained); `DRCK` = `TCK`; `SEL`, `SHIFT`, `CAPTURE`, `UPDATE`, `RESET`, `RUNTEST`, `TDI`, `TMS` change in the `TCK` domain | The TAP controller is not modelled |
 | `STARTUPE2`, `STARTUPE3` | `CFGCLK` and `CFGMCLK` are clock sources of their own (the configuration oscillator); `EOS`, `PREQ` (and `DI` of `STARTUPE3`) have no clock domain; `USRCCLKO`, `USRDONEO` and the other inputs go to device pins | The configuration logic is not modelled |
-| `MMCME2/3/4_BASE`, `MMCME2/3/4_ADV`, `PLLE2/3/4_BASE`, `PLLE2/3/4_ADV` | Every `CLKOUT*`/`CLKFBOUT` is a clock derived from `CLKIN1` (`CLKIN` for PLLE3/4), named after the pin; `LOCKED` has no clock domain | Period = input period × `DIVCLK_DIVIDE` × `CLKOUTn_DIVIDE[_F]` / `CLKFBOUT_MULT[_F]`. The input period comes from the input clock, or from `CLKIN1_PERIOD` when the input clock has none. Phase shift, duty cycle and DRP are not modelled. |
+| `MMCME2/3/4_BASE`, `MMCME2/3/4_ADV`, `MMCM_BASE`, `MMCM_ADV` (Virtex-6, retargeted by Vivado), `PLLE2/3/4_BASE`, `PLLE2/3/4_ADV` | Every `CLKOUT*`/`CLKFBOUT` is a clock derived from `CLKIN1` (`CLKIN` for PLLE3/4), named after the pin; `LOCKED` has no clock domain | Period = input period × `DIVCLK_DIVIDE` × `CLKOUTn_DIVIDE[_F]` / `CLKFBOUT_MULT[_F]`. The input period comes from the input clock, or from `CLKIN1_PERIOD` when the input clock has none. Phase shift, duty cycle and DRP are not modelled. |
 | `GTXE2_CHANNEL`, `GTHE2_CHANNEL`, `GTPE2_CHANNEL`, `GTHE3_CHANNEL`, `GTHE4_CHANNEL`, `GTYE3_CHANNEL`, `GTYE4_CHANNEL` | `RXOUTCLK`, `TXOUTCLK`, `RXOUTCLKPCS`, `TXOUTCLKPCS` are clock sources of their own (named `inst.RXOUTCLK` …); `TXDATA` captured on `TXUSRCLK2`, `RXDATA` registered on `RXUSRCLK2`; reset-done and lock outputs have no clock domain; DRP is combinational | The relation of a GT clock to fabric clocks is unknown until constrained (CDC-010). Vivado-style `create_clock … [get_pins ch/RXOUTCLK]` works. About 70 of the most used pins are modelled; the rest are ignored. |
 | `GTXE2_COMMON`, `GTHE2_COMMON`, `GTPE2_COMMON`, `GTHE3_COMMON`, `GTHE4_COMMON`, `GTYE3_COMMON`, `GTYE4_COMMON` | PLL output clocks derived from the first reference clock input; reference outputs pass it through; lock outputs have no clock domain | |
 

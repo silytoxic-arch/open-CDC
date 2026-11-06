@@ -1414,3 +1414,77 @@ TEST_CASE("Primitives: xpm_fifo_sync from VHDL is a one-clock FIFO", "[primitive
     CHECK(other->path("top.u.dout_ff", "top.q") != nullptr);
     CHECK(other->r->cdc->stats.unsynchronized >= 1);
 }
+
+TEST_CASE("Primitives: negative-edge flip-flops and the Virtex-6 MMCM_ADV from VHDL", "[primitives][negedge]") {
+    auto run = analyze(
+        "t.vhd",
+        "library ieee; use ieee.std_logic_1164.all;\nlibrary unisim; use unisim.vcomponents.all;\n"
+        "entity top is port (clk_a, clk_b, d : in std_logic; q1, q2, q3 : out std_logic); end entity;\n"
+        "architecture rtl of top is\n  signal fb, c0, rb, ra : std_logic;\nbegin\n"
+        "  m : MMCM_ADV generic map (CLKIN1_PERIOD => 10.0, CLKFBOUT_MULT_F => 10.0, CLKOUT0_DIVIDE_F => 20.0)\n"
+        "    port map (CLKIN1 => clk_a, CLKFBIN => fb, CLKFBOUT => fb, CLKOUT0 => c0, CLKIN2 => '0', CLKINSEL => '1',\n"
+        "              DADDR => (others => '0'), DCLK => '0', DEN => '0', DI => (others => '0'), DWE => '0',\n"
+        "              PSCLK => '0', PSEN => '0', PSINCDEC => '0', PWRDWN => '0', RST => '0');\n"
+        "  process (clk_b) begin if rising_edge(clk_b) then rb <= d; end if; end process;\n"
+        "  process (clk_a) begin if rising_edge(clk_a) then ra <= d; end if; end process;\n"
+        // rb (clk_b) captured on the falling edge of the MMCM output: a crossing
+        "  f1 : FDRE_1 port map (Q => q1, C => c0, CE => '1', D => rb, R => '0');\n"
+        // ra (clk_a) captured on the falling edge of clk_a: the same clock
+        "  f2 : FDC_1 port map (Q => q2, C => clk_a, CLR => '0', D => ra);\n"
+        "  f3 : FDP_1 port map (Q => q3, C => clk_b, PRE => '0', D => rb);\n"
+        "end architecture;\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("IR-UNRESOLVED-INSTANCE") == 0);
+    CHECK(run->count("VHDL-COMPONENT") == 0);
+    bool c0 = false;
+    for (const auto& c : run->r->clocks->clocks)
+        c0 = c0 || (c.name == "top.m.CLKOUT0" && c.periodNs && *c.periodNs == 20.0);
+    CHECK(c0);
+    CHECK(crosses(*run, "top.rb", "top.f1.Q"));
+    // negative: the falling edge of the same clock is not a crossing
+    CHECK_FALSE(crosses(*run, "top.ra", "top.f2.Q"));
+    CHECK_FALSE(crosses(*run, "top.rb", "top.f3.Q"));
+}
+
+TEST_CASE("Primitives: slice gates and SRLC16E of simulation netlists", "[primitives][netlist]") {
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input d, input e, output reg q, output reg r);\n"
+                       "  reg a, b; always @(posedge clk_a) a <= d; always @(posedge clk_b) b <= e;\n"
+                       "  wire s, s15, m, l, x, y, g, o;\n"
+                       "  SRLC16E #(.INIT(16'h0)) sr (.Q(s), .Q15(s15), .A0(1'b1), .A1(1'b0), .A2(1'b0), .A3(1'b0),\n"
+                       "                            .CE(1'b1), .CLK(clk_b), .D(a));\n"
+                       "  MUXCY mc (.O(m), .CI(s), .DI(1'b0), .S(b));\n"
+                       "  MUXCY_L ml (.LO(l), .CI(m), .DI(1'b0), .S(1'b1));\n"
+                       "  XORCY xc (.O(x), .CI(l), .LI(1'b0));\n"
+                       "  MULT_AND ma (.LO(y), .I0(x), .I1(1'b1));\n"
+                       "  AND2B1L an (.O(g), .DI(y), .SRI(1'b0));\n"
+                       "  OR2L orl (.O(o), .DI(g), .SRI(1'b0));\n"
+                       "  always @(posedge clk_b) q <= o;\n"
+                       "  always @(posedge clk_a) r <= s15;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    // a (clk_a) shifted into the SRL in clk_b: a crossing; the SRL output through the carry
+    // and slice gates to q in clk_b is not
+    CHECK(crosses(*run, "top.a", "top.sr."));
+    CHECK_FALSE(crosses(*run, "top.sr.", "top.q"));
+    // the SRL (clk_b) read in clk_a: a crossing
+    CHECK(crosses(*run, "top.sr.", "top.r"));
+}
+
+TEST_CASE("Simulation netlists: Vivado's escaped cell paths in attribute strings are not reported",
+          "[primitives][netlist]") {
+    const char* text = "module top(input clk_a, input d, output reg q);\n"
+                       "  (* x_path = \"\\AXI_LITE_REG_INTERFACE_I/reg\" *) reg a;\n"
+                       "  always @(posedge clk_a) begin a <= d; q <= a; end\n"
+                       "endmodule\n";
+    auto netlist = analyze("ip_sim_netlist.v", text, "top");
+    CHECK(netlist->count("FE-SLANG-UnknownEscapeCode") == 0);
+    // negative: in any other source the escape is reported
+    auto other = analyze("ip.v", text, "top");
+    CHECK(other->count("FE-SLANG-UnknownEscapeCode") >= 1);
+}

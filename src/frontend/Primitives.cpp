@@ -91,6 +91,8 @@ PrimitiveLibrary::PrimitiveLibrary() {
     P pllUsAdvIn = pllUsBaseIn;
     pllUsAdvIn.insert(pllUsAdvIn.end(), {{"DADDR", 7}, {"DCLK", 1}, {"DEN", 1}, {"DI", 16}, {"DWE", 1}});
     generators_ = {
+        // Virtex-6 MMCM (Vivado retargets it to MMCME2 on 7-series): the same ports and dividers
+        {"MMCM_BASE", "CLKIN1", mmcmBaseIn, mmcmBaseOut},    {"MMCM_ADV", "CLKIN1", mmcmAdvIn, mmcmAdvOut},
         {"MMCME2_BASE", "CLKIN1", mmcmBaseIn, mmcmBaseOut},  {"MMCME2_ADV", "CLKIN1", mmcmAdvIn, mmcmAdvOut},
         {"MMCME3_BASE", "CLKIN1", mmcmBaseIn, mmcmBaseOut},  {"MMCME3_ADV", "CLKIN1", mmcmUsAdvIn, mmcmUsAdvOut},
         {"MMCME4_BASE", "CLKIN1", mmcmBaseIn, mmcmBaseOut},  {"MMCME4_ADV", "CLKIN1", mmcmUsAdvIn, mmcmUsAdvOut},

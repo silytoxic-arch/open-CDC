@@ -16,6 +16,7 @@
 #include <slang/diagnostics/DeclarationsDiags.h>
 #include <slang/diagnostics/Diagnostics.h>
 #include <slang/diagnostics/ExpressionsDiags.h>
+#include <slang/diagnostics/LexerDiags.h>
 #include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Preprocessor.h>
 #include <slang/syntax/SyntaxTree.h>
@@ -102,6 +103,10 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
         out.severity = convertSeverity(sev);
         out.message = engine.formatMessage(diag);
         out.location = convertLocation(sm, diag.location);
+        // Vivado's simulation netlists write cell paths with '\' into attribute strings
+        // ("\AXI_LITE_REG_INTERFACE_I/..."): not a problem of the design
+        if (diag.code == slang::diag::UnknownEscapeCode && out.location.file.ends_with("_sim_netlist.v"))
+            continue;
         if (lenientModules && diag.code == slang::diag::PortDoesNotExist) {
             // port 'X' does not exist in 'FDRE'
             const auto q = out.message.rfind(" in '");

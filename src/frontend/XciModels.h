@@ -40,6 +40,9 @@ struct XciModel {
     /// synthesis file set; may contain further .xci), with their VHDL library.
     std::vector<std::filesystem::path> extraSources;
     std::vector<std::string> extraLibraries;
+    /// Only the clocks of the IP's interfaces are known (no model, output
+    /// products unusable): crossings inside the IP are not analyzed.
+    bool interfaceOnly = false;
 };
 
 /// A port of an IP instance.

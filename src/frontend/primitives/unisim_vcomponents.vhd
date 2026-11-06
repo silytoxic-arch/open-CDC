@@ -39,6 +39,36 @@ package vcomponents is
   component FDP generic (INIT : bit := '1');
     port (Q : out std_ulogic; C : in std_ulogic; D : in std_ulogic; PRE : in std_ulogic);
   end component;
+  component FDRE_1 generic (INIT : bit := '0');
+    port (Q : out std_ulogic; C : in std_ulogic; CE : in std_ulogic; D : in std_ulogic; R : in std_ulogic);
+  end component;
+  component FDSE_1 generic (INIT : bit := '1');
+    port (Q : out std_ulogic; C : in std_ulogic; CE : in std_ulogic; D : in std_ulogic; S : in std_ulogic);
+  end component;
+  component FDCE_1 generic (INIT : bit := '0');
+    port (Q : out std_ulogic; C : in std_ulogic; CE : in std_ulogic; CLR : in std_ulogic; D : in std_ulogic);
+  end component;
+  component FDPE_1 generic (INIT : bit := '1');
+    port (Q : out std_ulogic; C : in std_ulogic; CE : in std_ulogic; D : in std_ulogic; PRE : in std_ulogic);
+  end component;
+  component FD_1 generic (INIT : bit := '0');
+    port (Q : out std_ulogic; C : in std_ulogic; D : in std_ulogic);
+  end component;
+  component FDE_1 generic (INIT : bit := '0');
+    port (Q : out std_ulogic; C : in std_ulogic; CE : in std_ulogic; D : in std_ulogic);
+  end component;
+  component FDR_1 generic (INIT : bit := '0');
+    port (Q : out std_ulogic; C : in std_ulogic; D : in std_ulogic; R : in std_ulogic);
+  end component;
+  component FDS_1 generic (INIT : bit := '1');
+    port (Q : out std_ulogic; C : in std_ulogic; D : in std_ulogic; S : in std_ulogic);
+  end component;
+  component FDC_1 generic (INIT : bit := '0');
+    port (Q : out std_ulogic; C : in std_ulogic; CLR : in std_ulogic; D : in std_ulogic);
+  end component;
+  component FDP_1 generic (INIT : bit := '1');
+    port (Q : out std_ulogic; C : in std_ulogic; D : in std_ulogic; PRE : in std_ulogic);
+  end component;
   component FDCPE generic (INIT : bit := '0');
     port (Q : out std_ulogic; C : in std_ulogic; CE : in std_ulogic; CLR : in std_ulogic; D : in std_ulogic;
           PRE : in std_ulogic);
@@ -141,6 +171,10 @@ package vcomponents is
   end component;
   component VCC port (P : out std_ulogic); end component;
   component GND port (G : out std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCM_BASE port (CLKIN1 : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component MMCM_ADV port (CLKIN1 : in std_ulogic); end component;
   -- clock generator: generics and ports are taken from the instance (bound to a generated model)
   component MMCME2_BASE port (CLKIN1 : in std_ulogic); end component;
   -- clock generator: generics and ports are taken from the instance (bound to a generated model)
@@ -288,4 +322,18 @@ package vcomponents is
     port (Q0 : out std_ulogic; Q1 : out std_ulogic; C0 : in std_ulogic; C1 : in std_ulogic; CE : in std_ulogic;
           D : in std_ulogic; R : in std_ulogic; S : in std_ulogic);
   end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component SRLC16E port (D : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component AND2B1L port (DI : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component OR2L port (DI : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component MUXCY port (CI : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component MUXCY_L port (CI : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component XORCY port (CI : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component MULT_AND port (I0 : in std_ulogic); end component;
 end package;

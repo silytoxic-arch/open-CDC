@@ -938,10 +938,12 @@ public:
                 for (std::size_t k = 0; k < mv.extraSources.size(); ++k)
                     queue.insert(queue.begin() + static_cast<std::ptrdiff_t>(q + 1 + k),
                                  {mv.extraSources[k], k < mv.extraLibraries.size() ? mv.extraLibraries[k] : std::string()});
-                Diagnostic d{"FE-XCI-MODEL", Severity::Info,
+                Diagnostic d{mv.interfaceOnly ? "FE-XCI-INTERFACE-MODEL" : "FE-XCI-MODEL",
+                             mv.interfaceOnly ? Severity::Warning : Severity::Info,
                              "IP '" + mv.module + "' (" + mv.ip + ") " +
-                                 (mv.verilog.empty() ? "analyzed from its output products: "
-                                                     : "modelled from its configuration: ") +
+                                 (mv.interfaceOnly        ? "known only by the clocks of its interfaces: "
+                                  : mv.verilog.empty() ? "analyzed from its output products: "
+                                                       : "modelled from its configuration: ") +
                                  mv.summary,
                              SourceLocation{toUtf8(f), 0, 0}, mv.notes};
                 sink.report(std::move(d));

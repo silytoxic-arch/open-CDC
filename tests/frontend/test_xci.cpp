@@ -3029,3 +3029,171 @@ TEST_CASE("XCI: the ports of the synthesis stub take precedence over a stale com
     REQUIRE(old);
     CHECK_FALSE(has(old.value().verilog, "peripheral_aresetn"));
 }
+
+namespace {
+
+// an HLS-style IP: ap_clk associated with the AXI4-Stream interfaces s_axis and m_axis
+std::string hlsComponent(bool assoc, bool clockOut) {
+    auto bus = [](const std::string& name, const std::string& type,
+                  const std::vector<std::pair<std::string, std::string>>& maps, const std::string& params) {
+        std::string s = "<spirit:busInterface><spirit:name>" + name +
+                        "</spirit:name><spirit:busType spirit:vendor=\"xilinx.com\" spirit:library=\"interface\" "
+                        "spirit:name=\"" + type + "\" spirit:version=\"1.0\"/><spirit:portMaps>";
+        for (const auto& [l, p] : maps)
+            s += "<spirit:portMap><spirit:logicalPort><spirit:name>" + l +
+                 "</spirit:name></spirit:logicalPort><spirit:physicalPort><spirit:name>" + p +
+                 "</spirit:name></spirit:physicalPort></spirit:portMap>";
+        return s + "</spirit:portMaps>" + params + "</spirit:busInterface>\n";
+    };
+    const std::string assocParam =
+        assoc ? "<spirit:parameters><spirit:parameter><spirit:name>ASSOCIATED_BUSIF</spirit:name><spirit:value "
+                "spirit:id=\"BUSIFPARAM_VALUE.AP_CLK.ASSOCIATED_BUSIF\">s_axis:m_axis</spirit:value></spirit:parameter>"
+                "</spirit:parameters>"
+              : "";
+    std::string s = "<spirit:component xmlns:spirit=\"x\">\n<spirit:busInterfaces>\n" +
+                    bus("ap_clk", "clock", {{"CLK", "ap_clk"}}, assocParam) +
+                    bus("s_axis", "axis", {{"TDATA", "s_axis_TDATA"}, {"TVALID", "s_axis_TVALID"}}, "") +
+                    bus("m_axis", "axis", {{"TDATA", "m_axis_TDATA"}, {"TVALID", "m_axis_TVALID"}}, "") +
+                    "</spirit:busInterfaces>\n<spirit:model>\n<spirit:ports>\n";
+    for (const auto& [n, d] : std::vector<std::pair<std::string, std::string>>{
+             {"ap_clk", clockOut ? "out" : "in"}, {"ap_rst_n", "in"}, {"s_axis_TDATA", "in"}, {"s_axis_TVALID", "in"},
+             {"m_axis_TDATA", "out"}, {"m_axis_TVALID", "out"}, {"interrupt", "out"}})
+        s += "<spirit:port><spirit:name>" + n + "</spirit:name><spirit:wire><spirit:direction>" + d +
+             "</spirit:direction></spirit:wire></spirit:port>\n";
+    return s + "</spirit:ports>\n</spirit:model>\n</spirit:component>\n";
+}
+
+} // namespace
+
+TEST_CASE("XCI: an IP known only by the clocks of its interfaces", "[frontend][xci][generated]") {
+    test::TempDir dir;
+    const auto xci = dir.write("bd/ip/hls_ip/hls_ip.xci", spirit("hls_ip", "image_filter", "1.0", {}));
+    dir.write("bd/ip/hls_ip/hls_ip.xml", hlsComponent(true, false));
+    // no output products (an HLS IP exported without them)
+    auto m = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE(m);
+    const auto& v = m.value().verilog;
+    INFO(v);
+    CHECK(m.value().interfaceOnly);
+    CHECK(has(v, "always @(posedge ap_clk[0]) oc_m_axis_TDATA_q"));
+    CHECK(has(v, "oc_dom_ap_clk <= ^{s_axis_TDATA, s_axis_TVALID}"));
+    CHECK(m.value().summary == "4 port(s) of its bus interfaces in 1 clock(s) (ap_clk)");
+    CHECK(std::ranges::any_of(m.value().notes, [](const auto& n) { return has(n, "not checked: ap_rst_n, interrupt"); }));
+    // negative: the reset and the interrupt are in no clock domain
+    CHECK_FALSE(has(v, "oc_interrupt_q"));
+    CHECK_FALSE(has(v, "^{s_axis_TDATA, s_axis_TVALID, ap_rst_n}"));
+    // in a design: data from another clock into the IP's stream is an unsynchronized crossing
+    const auto r = run(project(dir,
+                               "module top(input clk_a, input clk_b, input d, output [7:0] q);\n"
+                               "  reg [7:0] r; reg v; always @(posedge clk_b) begin r <= {8{d}}; v <= d; end\n"
+                               "  hls_ip u (.ap_clk(clk_a), .ap_rst_n(1'b1), .s_axis_TDATA(r), .s_axis_TVALID(v),\n"
+                               "            .m_axis_TDATA(q), .m_axis_TVALID(), .interrupt());\n"
+                               "endmodule\n",
+                               {xci}));
+    const auto* d = find(*r, "FE-XCI-INTERFACE-MODEL");
+    REQUIRE(d);
+    CHECK(d->severity == Severity::Warning);
+    CHECK(has(d->message, "known only by the clocks of its interfaces"));
+    CHECK_FALSE(find(*r, "FE-XCI-UNSUPPORTED"));
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.unsynchronized >= 1);
+}
+
+TEST_CASE("XCI negative: no interface model without clock associations or with an output clock",
+          "[frontend][xci][generated]") {
+    test::TempDir dir;
+    const auto xci = dir.write("ip/hls_ip/hls_ip.xci", spirit("hls_ip", "image_filter", "1.0", {}));
+    dir.write("ip/hls_ip/hls_ip.xml", hlsComponent(false, false));
+    auto none = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE_FALSE(none);
+    CHECK(none.error().code == "FE-XCI-UNSUPPORTED");
+    dir.write("ip/hls_ip/hls_ip.xml", hlsComponent(true, true));
+    auto out = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE_FALSE(out);
+    CHECK(out.error().code == "FE-XCI-UNSUPPORTED");
+}
+
+TEST_CASE("XCI: Zynq UltraScale+ MPSoC, PL clocks and AXI ports in their interface clocks",
+          "[frontend][xci][bd][zynqmp]") {
+    test::TempDir dir;
+    auto ps = [](bool assoc) {
+        const std::string a = assoc ? R"(, "parameters": { "ASSOCIATED_BUSIF": [ { "value": "M_AXI_HPM0_FPD" } ] })" : "";
+        return std::string(R"({ "ip_inst": { "xci_name": "mpsoc", "component_reference": "xilinx.com:ip:zynq_ultra_ps_e:3.3",
+          "parameters": { "component_parameters": {
+            "PSU__CRL_APB__PL0_REF_CTRL__ACT_FREQMHZ": [ { "value": "99.999001" } ],
+            "PSU__CRL_APB__PL1_REF_CTRL__ACT_FREQMHZ": [ { "value": "250.000000" } ],
+            "PSU__CRL_APB__LPD_LSBUS_CTRL__ACT_FREQMHZ": [ { "value": "100.000000" } ] } },
+          "boundary": {
+            "ports": { "maxihpm0_fpd_aclk": [ { "direction": "in" } ],
+                       "maxigp0_awaddr": [ { "direction": "out", "size_left": "39", "size_right": "0" } ],
+                       "maxigp0_awready": [ { "direction": "in" } ],
+                       "emio_gpio_i": [ { "direction": "in", "size_left": "0", "size_right": "0" } ],
+                       "emio_gpio_o": [ { "direction": "out", "size_left": "0", "size_right": "0" } ],
+                       "pl_ps_irq0": [ { "direction": "in", "size_left": "0", "size_right": "0" } ],
+                       "pl_resetn0": [ { "direction": "out" } ],
+                       "pl_clk0": [ { "direction": "out" } ], "pl_clk1": [ { "direction": "out" } ] },
+            "interfaces": {
+              "M_AXI_HPM0_FPD": { "vlnv": "xilinx.com:interface:aximm:1.0", "port_maps": {
+                 "AWADDR": [ { "physical_name": "maxigp0_awaddr" } ], "AWREADY": [ { "physical_name": "maxigp0_awready" } ] } },
+              "M_AXI_HPM0_FPD_ACLK": { "vlnv": "xilinx.com:signal:clock:1.0",
+                 "port_maps": { "CLK": [ { "physical_name": "maxihpm0_fpd_aclk" } ] })") + a + R"( } } } } })";
+    };
+    const auto m = modelOf(dir, "mpsoc", ps(true));
+    const auto& v = m.verilog;
+    INFO(v);
+    CHECK(has(v, "OPENCDC_CLOCK_PIN = \"pl_clk0\", OPENCDC_CLOCK_ALIAS = \"clk_pl_0\", OPENCDC_CLOCK_PERIOD = 10"));
+    CHECK(has(v, "OPENCDC_CLOCK_PIN = \"pl_clk1\", OPENCDC_CLOCK_ALIAS = \"clk_pl_1\", OPENCDC_CLOCK_PERIOD = 4"));
+    CHECK(has(v, "always @(posedge maxihpm0_fpd_aclk[0]) oc_maxigp0_awaddr_q"));
+    CHECK(has(v, "oc_dom_maxihpm0_fpd_aclk <= ^{maxigp0_awready}"));
+    CHECK(has(v, "OPENCDC_CLOCK_PIN = \"lpd_lsbus\""));
+    CHECK(has(v, "oc_emio_gpio_o_q"));
+    CHECK(has(v, "opencdc_async_source u_oc_pl_resetn0"));
+    CHECK(has(m.summary, "pl_clk0 99.999001 MHz (clk_pl_0), pl_clk1 250.0 MHz (clk_pl_1)"));
+    // negative: interrupts and EMIO inputs are not read; without the associations the PS is not modelled
+    CHECK_FALSE(has(v, "pl_ps_irq0}"));
+    CHECK_FALSE(has(v, "emio_gpio_i}"));
+    auto none = frontend::modelFromXci(dir.write("mpsoc2.xci", ps(false)), frontend::XciContext{});
+    REQUIRE_FALSE(none);
+    CHECK(has(none.error().message, "ASSOCIATED_BUSIF"));
+}
+
+TEST_CASE("XCI: the synthesis view of a generated IP with the file sets of the IP it uses",
+          "[frontend][xci][generated]") {
+    test::TempDir dir;
+    const auto xci = dir.write("bd/ip/gen_ip/gen_ip.xci", spirit("gen_ip", "my_core", "1.0", {}));
+    // the view refers to the IP's library file set first, then its own (as Vivado writes it)
+    std::string comp = instanceComponent("gen_ip", true);
+    const std::string ownRef = "<spirit:fileSetRef><spirit:localName>synth_fs</spirit:localName></spirit:fileSetRef>";
+    comp.replace(comp.find(ownRef), ownRef.size(),
+                 "<spirit:fileSetRef><spirit:localName>lib_fs</spirit:localName></spirit:fileSetRef>" + ownRef);
+    const std::string sets = "<spirit:fileSets>\n";
+    comp.replace(comp.find(sets), sets.size(),
+                 sets + "<spirit:fileSet><spirit:name>lib_fs</spirit:name><spirit:file><spirit:name>"
+                        "../../ipshared/cd34/hdl/sync_lib.v</spirit:name><spirit:fileType>verilogSource"
+                        "</spirit:fileType></spirit:file></spirit:fileSet>\n");
+    dir.write("bd/ip/gen_ip/gen_ip.xml", comp);
+    dir.write("bd/ipshared/cd34/hdl/sync_lib.v", "module sync_lib(input clk, input d, output reg q);\n"
+                                                 "  (* ASYNC_REG = \"TRUE\" *) reg m;\n"
+                                                 "  always @(posedge clk) begin m <= d; q <= m; end\nendmodule\n");
+    dir.write("bd/ipshared/ab12/hdl/core.v", "module core(input clk_a, input clk_b, input d, output q);\n"
+                                             "  reg a; always @(posedge clk_a) a <= d;\n"
+                                             "  sync_lib s (.clk(clk_b), .d(a), .q(q));\nendmodule\n");
+    dir.write("bd/ip/gen_ip/synth/gen_ip.v", "module gen_ip(input clk_a, input clk_b, input d, output q);\n"
+                                             "  core c (.clk_a(clk_a), .clk_b(clk_b), .d(d), .q(q));\nendmodule\n");
+    auto m = frontend::modelFromXci(xci, frontend::XciContext{});
+    REQUIRE(m);
+    REQUIRE(m.value().extraSources.size() == 3);
+    CHECK(m.value().extraSources[0].filename() == "sync_lib.v");
+    CHECK(m.value().extraSources[1].filename() == "core.v");
+    CHECK(m.value().extraSources[2].filename() == "gen_ip.v");
+    const auto r = run(project(dir, kIpTop, {xci}));
+    CHECK(r->count(Severity::Error) == 0);
+    REQUIRE(r->cdc);
+    // the crossing goes through the library's synchronizer
+    CHECK(r->cdc->stats.synchronized >= 1);
+    CHECK(r->cdc->stats.unsynchronized == 0);
+    // negative: without the library file set, sync_lib is unknown
+    dir.write("bd/ip/gen_ip/gen_ip.xml", instanceComponent("gen_ip", true));
+    const auto r2 = run(project(dir, kIpTop, {xci}));
+    CHECK(r2->count(Severity::Error) >= 1);
+}

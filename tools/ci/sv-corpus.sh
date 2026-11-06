@@ -66,7 +66,10 @@ fetch_sparse() { # name url commit dir...
     git -C "$name" config filter.lfs.process ""
     git -C "$name" config filter.lfs.smudge cat
     git -C "$name" config filter.lfs.clean cat
-    git -C "$name" sparse-checkout set "$@"
+    # directories (cone mode), or patterns with exclusions ("/dir/" "!*.dcp": non-cone mode)
+    local mode=
+    case " $* " in *" !"*) mode=--no-cone ;; esac
+    git -C "$name" sparse-checkout set $mode "$@"
     if [ "$(git -C "$name" rev-parse -q --verify HEAD 2>/dev/null)" = "$commit" ] &&
        [ -z "$(git -C "$name" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
         return 0
@@ -108,6 +111,14 @@ fetch_sparse $cq https://github.com/cteqeu/SoC 8aeef06a58fd1986c3f65ef4078604445
     MiniZED/Vitis_Custom_AXI_IP2021/Vitis_Custom_AXI_IP.srcs/sources_1/bd \
     Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel.srcs \
     Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel.gen/sources_1/bd
+# ATaylorCEngFIET/Hackster (Hackster.io projects without a license, only fetched for this check): block designs
+# with the Zynq UltraScale+ MPSoC (Ultra96), MicroBlaze on Spartan-7 with a MIPI camera, a Sobel filter (HLS IP
+# exported without its output products) on the Zybo Z7; design checkpoints and VHDL netlists are not fetched
+hk=Hackster
+fetch_sparse $hk https://github.com/ATaylorCEngFIET/Hackster 430230fc0cfca0c2108baed7470be8551cf9165c \
+    /u96_linux_hackster/u96_linux_hackster.srcs/sources_1/bd/ /s7_tdm114/s7_tdm114.srcs/sources_1/bd/ \
+    /Sobel_zybo_z7/block_compile.srcs/sources_1/bd/ /Sobel_zybo_z7/block_compile.srcs/constrs_1/ \
+    '!*.dcp' '!*.vhdl' '!*.h'
 
 cat > axi_cdc_top.sv <<'SV'
 module top (input logic src_clk, input logic src_rst_n, input logic dst_clk, input logic dst_rst_n);
@@ -184,6 +195,14 @@ proj("zynq_math_ip", ma + "design_1.bd", ma + "hdl/design_1_wrapper.vhd")
 np = q + "Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel."
 proj("zynq_axi_neopixel", np + "srcs/sources_1/bd/design_1/design_1.bd",
      np + "gen/sources_1/bd/design_1/hdl/design_1_wrapper.vhd", np + "srcs/constrs_1/new/SoC_AXI_NeoPixel.xdc")
+h = "Hackster/"
+u9 = h + "u96_linux_hackster/u96_linux_hackster.srcs/sources_1/bd/design_1/"
+proj("u96_mpsoc", u9 + "design_1.bd", u9 + "hdl/design_1_wrapper.vhd")
+s7 = h + "s7_tdm114/s7_tdm114.srcs/sources_1/bd/design_1/"
+proj("s7_mipi_microblaze", s7 + "design_1.bd", s7 + "hdl/design_1_wrapper.vhd")
+sb = h + "Sobel_zybo_z7/block_compile.srcs/"
+proj("zybo_sobel", sb + "sources_1/bd/design_1/design_1.bd", sb + "sources_1/bd/design_1/hdl/design_1_wrapper.vhd",
+     sb + "constrs_1/new/cosnt.xdc")
 PY
 
 cat > rgmii.sdc <<'SDC'
@@ -418,7 +437,7 @@ check soc_axi_func.ocdc.json "Clocks  : 3 \(991/991 registers resolved\).*CLKOUT
 check chiplab_soc.ocdc.json "0 unsupported construct.*Clocks  : 6 \(1293/1293 registers resolved\).*ui_clk  \[divider\] alias=c1_clk0 alias=clk_pll_i.*CLKOUT1  \[divider\] alias=clk_out2_clk_pll_33 .*period=30.303ns.*axi_clock_converter:2.1.*axi_interconnect:1.7.*mig_7series:4.2.*AXI4 interface.*data_bank_sram.xcix.*FE-OUTPUT-PORT-CONSTANT.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 132 crossing path\(s\), 72 synchronized.*Rules   : 36 error violation\(s\), 24 warning violation"
 # Fuxi: the block design (45 cells, 22 hierarchical cells as modules) with all IP but the TFT controller modelled; every
 # crossing between the clocks happens inside the IP (clock converters, Quad SPI FIFOs, MIG reset synchronizer)
-check fuxi_soc.ocdc.json "Clocks  : 8 \(1095/1095 registers resolved\).*ui_clk  \[divider\] alias=ddr_controller_ui_clk alias=clk_pll_i.*CLKOUT0  \[divider\] alias=clk_cpu_soc_clk_wiz_0_0 .*period=20ns.*FE-BD-MODULE.*45 cell\(s\), 22 hierarchical cell\(s\), 41 IP configuration\(s\).*axi_quad_spi:3.2.*AXI4 memory interface on s_axi4_aclk.*axi_intc:4.1.*4 interrupt input\(s\) \(1 asynchronous\).*proc_sys_reset:5.0.*axi_tft:2.0.*not modelled.*Summary : 0 error\(s\), 9 warning\(s\).*CDC     : 1 crossing path\(s\), 1 synchronized, 0 unsynchronized"
+check fuxi_soc.ocdc.json "Clocks  : 9 \(1134/1134 registers resolved\).*ui_clk  \[divider\] alias=ddr_controller_ui_clk alias=clk_pll_i.*CLKOUT0  \[divider\] alias=clk_cpu_soc_clk_wiz_0_0 .*period=20ns.*FE-BD-MODULE.*45 cell\(s\), 22 hierarchical cell\(s\), 41 IP configuration\(s\).*axi_quad_spi:3.2.*AXI4 memory interface on s_axi4_aclk.*axi_intc:4.1.*4 interrupt input\(s\) \(1 asynchronous\).*proc_sys_reset:5.0.*axi_tft:2.0\) known only by the clocks of its interfaces: 54 port\(s\) of its bus interfaces in 3 clock\(s\).*Summary : 0 error\(s\), 7 warning\(s\).*CDC     : 1 crossing path\(s\), 1 synchronized, 0 unsynchronized"
 # Zynq-7000 block designs: one fabric clock (clk_fpga_0, Vivado's name, period from the PS configuration); the AXI
 # peripherals behind the PS's M_AXI_GP0 in it; the EMIO GPIO outputs in the PS clock cpu_1x
 check zynq_timers_gic.ocdc.json "Clocks  : 1 \(99/99 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=10ns.*FE-BD-MODULE.*7 cell\(s\), 4 hierarchical cell\(s\), 7 IP configuration\(s\).*processing_system7:5.5.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
@@ -437,4 +456,12 @@ check artys7_rpu_soc.ocdc.json "Clocks  : 6 \(369/369 registers resolved\).*sys_
 check arty_xadc.ocdc.json "Clocks  : 1 \(14/14 registers resolved\).*IP 'xadc_wiz_0' \(xilinx.com:ip:xadc_wiz:3.3\) modelled.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check basys3_xadc.ocdc.json "Clocks  : 2 \(24/24 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 0 crossing path"
+# Zynq UltraScale+ MPSoC: pl_clk0 with Vivado's name clk_pl_0, the AXI ports in their interface clocks
+check u96_mpsoc.ocdc.json "Clocks  : 1 \(93/93 registers resolved\).*zynq_ultra_ps_e_0.pl_clk0  \[black-box\] alias=clk_pl_0 .*period=10ns.*zynq_ultra_ps_e:3.2\) modelled from its configuration: PL clocks pl_clk0.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+# MicroBlaze (simulation netlist: slice gates, SRLC16E), its debug module (FDC_1/FDRE_1), MMCM_ADV, an encrypted IP known by
+# its interface clocks; the camera interface drives pclk_out twice (an assignment and a BUFG): a real error
+check s7_mipi_microblaze.ocdc.json "v_demosaic:1.0\) known only by the clocks of its interfaces: 35 port\(s\).*error\[IR-MULTIDRIVER\]: 'pclk_out' bit \[0\] in module 'CAM_interface' has multiple drivers.*Summary : 1 error\(s\), 1 warning\(s\).*CDC analysis: not run"
+# the Sobel filter (an HLS IP exported without output products) known by its interface clock; the video DMA and
+# timing controllers from their simulation netlists (their HDL is encrypted)
+check zybo_sobel.ocdc.json "Clocks  : 7 \(11735/11735 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=5ns.*axi_vdma:6.3\) analyzed from its output products: its simulation netlist.*image_filter:1.0\) known only by the clocks of its interfaces: 18 port\(s\) of its bus interfaces in 1 clock\(s\) \(ap_clk\).*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 295 crossing path\(s\), 238 synchronized, 57 unsynchronized.*294 path\(s\) need review"
 exit $fail

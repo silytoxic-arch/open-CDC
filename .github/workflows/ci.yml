@@ -1,7 +1,7 @@
 name: CI
 
 # macOS builds and tests run on the developer's machine (tools/macos/build-macos.sh).
-# The Windows job runs on every push to main; the Linux jobs only when started by hand.
+# The Windows and Linux jobs run on every push to main, or when started by hand.
 on:
   push:
     branches: [main]

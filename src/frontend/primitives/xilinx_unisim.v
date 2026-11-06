@@ -75,6 +75,57 @@ module FDP #(parameter [0:0] INIT = 1'b1) (output reg Q, input C, input D, input
     always @(posedge C or posedge PRE) if (PRE) Q <= 1'b1; else Q <= D;
 endmodule
 
+// negative-edge flip-flops (the _1 variants: the clock is used inverted)
+module FDRE_1 #(parameter [0:0] INIT = 1'b0) (output reg Q, input C, input CE, input D, input R);
+    initial Q = INIT;
+    always @(negedge C) if (R) Q <= 1'b0; else if (CE) Q <= D;
+endmodule
+
+module FDSE_1 #(parameter [0:0] INIT = 1'b1) (output reg Q, input C, input CE, input D, input S);
+    initial Q = INIT;
+    always @(negedge C) if (S) Q <= 1'b1; else if (CE) Q <= D;
+endmodule
+
+module FDCE_1 #(parameter [0:0] INIT = 1'b0) (output reg Q, input C, input CE, input CLR, input D);
+    initial Q = INIT;
+    always @(negedge C or posedge CLR) if (CLR) Q <= 1'b0; else if (CE) Q <= D;
+endmodule
+
+module FDPE_1 #(parameter [0:0] INIT = 1'b1) (output reg Q, input C, input CE, input D, input PRE);
+    initial Q = INIT;
+    always @(negedge C or posedge PRE) if (PRE) Q <= 1'b1; else if (CE) Q <= D;
+endmodule
+
+module FD_1 #(parameter [0:0] INIT = 1'b0) (output reg Q, input C, input D);
+    initial Q = INIT;
+    always @(negedge C) Q <= D;
+endmodule
+
+module FDE_1 #(parameter [0:0] INIT = 1'b0) (output reg Q, input C, input CE, input D);
+    initial Q = INIT;
+    always @(negedge C) if (CE) Q <= D;
+endmodule
+
+module FDR_1 #(parameter [0:0] INIT = 1'b0) (output reg Q, input C, input D, input R);
+    initial Q = INIT;
+    always @(negedge C) if (R) Q <= 1'b0; else Q <= D;
+endmodule
+
+module FDS_1 #(parameter [0:0] INIT = 1'b1) (output reg Q, input C, input D, input S);
+    initial Q = INIT;
+    always @(negedge C) if (S) Q <= 1'b1; else Q <= D;
+endmodule
+
+module FDC_1 #(parameter [0:0] INIT = 1'b0) (output reg Q, input C, input CLR, input D);
+    initial Q = INIT;
+    always @(negedge C or posedge CLR) if (CLR) Q <= 1'b0; else Q <= D;
+endmodule
+
+module FDP_1 #(parameter [0:0] INIT = 1'b1) (output reg Q, input C, input D, input PRE);
+    initial Q = INIT;
+    always @(negedge C or posedge PRE) if (PRE) Q <= 1'b1; else Q <= D;
+endmodule
+
 module FDCPE #(parameter [0:0] INIT = 1'b0) (output reg Q, input C, input CE, input CLR, input D, input PRE);
     initial Q = INIT;
     always @(posedge C or posedge CLR or posedge PRE)
@@ -260,6 +311,40 @@ module SRLC32E #(parameter [31:0] INIT = 32'h00000000, parameter [0:0] IS_CLK_IN
     always @(posedge clk) if (CE) sr <= {sr[30:0], D};
     assign Q = sr[A];
     assign Q31 = sr[31];
+endmodule
+
+module SRLC16E #(parameter [15:0] INIT = 16'h0000, parameter [0:0] IS_CLK_INVERTED = 1'b0)
+               (output Q, output Q15, input A0, input A1, input A2, input A3, input CE, input CLK, input D);
+    reg [15:0] sr = INIT;
+    wire clk = CLK ^ IS_CLK_INVERTED;
+    always @(posedge clk) if (CE) sr <= {sr[14:0], D};
+    assign Q = sr[{A3, A2, A1, A0}];
+    assign Q15 = sr[15];
+endmodule
+
+// Gates of the slice (simulation netlists of older IP, MicroBlaze)
+module AND2B1L #(parameter [0:0] IS_SRI_INVERTED = 1'b0) (output O, input DI, input SRI);
+    assign O = DI & ~(SRI ^ IS_SRI_INVERTED);
+endmodule
+
+module OR2L #(parameter [0:0] IS_SRI_INVERTED = 1'b0) (output O, input DI, input SRI);
+    assign O = DI | (SRI ^ IS_SRI_INVERTED);
+endmodule
+
+module MUXCY (output O, input CI, input DI, input S);
+    assign O = S ? CI : DI;
+endmodule
+
+module MUXCY_L (output LO, input CI, input DI, input S);
+    assign LO = S ? CI : DI;
+endmodule
+
+module XORCY (output O, input CI, input LI);
+    assign O = CI ^ LI;
+endmodule
+
+module MULT_AND (output LO, input I0, input I1);
+    assign LO = I0 & I1;
 endmodule
 
 // ----------------------------------------------------------------------- LUTs
