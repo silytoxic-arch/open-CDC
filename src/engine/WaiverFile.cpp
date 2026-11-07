@@ -295,7 +295,8 @@ AddedWaiver addProjectWaiver(ProjectConfig& cfg, cdc::WaiverRecord w, std::files
         w.id = nextWaiverId(taken);
     if (file.empty())
         file = !cfg.waivers.empty() ? cfg.waivers.front()
-               : cfg.projectFile.empty() ? std::filesystem::absolute("waivers.json")
+               : !cfg.importedFrom.empty() ? cfg.importedFrom.parent_path() / "waivers.json"
+               : cfg.projectFile.empty()   ? std::filesystem::absolute("waivers.json")
                                          : cfg.projectFile.parent_path() / "waivers.json";
     if (!file.is_absolute()) {
         std::error_code ec;

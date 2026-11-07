@@ -416,7 +416,10 @@ bool MainWindow::openProject(const QString& path) {
         return false;
     }
     setProject(std::move(loaded).value());
-    statusLabel_->setText(tr("Project '%1' loaded").arg(qs(project_->name)));
+    statusLabel_->setText(project_->importedFrom.empty()
+                              ? tr("Project '%1' loaded").arg(qs(project_->name))
+                              : tr("Vivado project '%1' imported (Save As writes it as an OpenCDC project)")
+                                    .arg(qs(project_->name)));
     return true;
 }
 
@@ -447,6 +450,9 @@ bool MainWindow::saveProjectAs(const QString& path) {
         return false;
     }
     project_->projectFile = file;
+    // an imported project is now an OpenCDC project of its own
+    project_->importedFrom.clear();
+    project_->importNotes.clear();
     showProjectInfo();
     statusLabel_->setText(tr("Project saved to %1").arg(qs(file)));
     return true;
@@ -456,6 +462,8 @@ namespace {
 QString projectDir(const std::optional<engine::ProjectConfig>& p) {
     if (p && !p->projectFile.empty())
         return QString::fromStdString(toUtf8(p->projectFile.parent_path()));
+    if (p && !p->importedFrom.empty())
+        return QString::fromStdString(toUtf8(p->importedFrom.parent_path()));
     return QString();
 }
 } // namespace
@@ -632,7 +640,10 @@ void MainWindow::showProjectInfo() {
     projectTree_->clear();
     if (!project_)
         return;
-    auto* root = new QTreeWidgetItem(projectTree_, {qs(project_->name), qs(project_->projectFile)});
+    auto* root = new QTreeWidgetItem(
+        projectTree_, {qs(project_->name), project_->projectFile.empty() && !project_->importedFrom.empty()
+                                               ? tr("imported from %1").arg(qs(project_->importedFrom))
+                                               : qs(project_->projectFile)});
     root->setExpanded(true);
 
     new QTreeWidgetItem(root, {tr("Language"), qs(project_->languageSummary())});
@@ -678,8 +689,10 @@ void MainWindow::runAnalysis() {
 }
 
 void MainWindow::onOpenProject() {
-    const QString path = QFileDialog::getOpenFileName(this, tr("Open OpenCDC Project"), QString(),
-                                                      tr("OpenCDC projects (*.ocdc.json *.json)"));
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open Project"), QString(),
+        tr("OpenCDC and Vivado projects (*.ocdc.json *.json *.xpr);;OpenCDC projects (*.ocdc.json *.json);;"
+           "Vivado projects (*.xpr)"));
     if (!path.isEmpty() && openProject(path))
         runAnalysis();
 }

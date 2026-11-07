@@ -429,7 +429,8 @@ void writeJson(const AnalysisResult& r, std::ostream& os, int indent) {
     small["formatVersion"] = kResultFormatVersion;
     small["tool"] = {{"name", "OpenCDC Analyzer"}, {"version", kVersionString}};
     small["project"] = {{"name", r.project.name},
-                        {"file", toUtf8(r.project.projectFile)},
+                        {"file", toUtf8(r.project.projectFile.empty() ? r.project.importedFrom
+                                                                      : r.project.projectFile)},
                         {"top", r.project.top},
                         {"language", frontend::toString(r.project.language)},
                         {"hdl", r.project.languageSummary()}};

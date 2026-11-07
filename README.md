@@ -2,15 +2,16 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 20, source-synchronous inputs, Intel SDC idioms, primitive model fixes**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 59, Vivado projects (`.xpr`) analyzed directly or imported**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–20)
+## What works today (stages 1–59)
 
 | Feature | Status |
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
+| Vivado projects (`.xpr`): analyzed directly (CLI, GUI) or imported into an OpenCDC project (`opencdc import`): the sources, IP and block designs, VHDL libraries, Verilog headers, defines, generics, top and constraints (with their module scopes) of the current synthesis run; disabled, simulation-only, missing and unreadable files reported. Verified with the Vivado projects of ArtyS7-RPU-SoC, the Loongson chiplab SoC, the Fuxi SoC and five Zynq-7000 block design projects (same results as their hand-written projects) | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
 | SystemVerilog interfaces: interface instances (with their own logic), modport/generic interface ports, interface arrays, ports passed down the hierarchy; verified on PULP `axi_cdc_intf` | ✅ |
 | VHDL-93/2008 (own frontend): libraries and packages (`std`, `ieee` incl. `numeric_std`, `std_logic_arith`, `math_real`), generics, records, arrays and memories, functions/procedures, generate/block, component and entity instantiation, clocked processes in all common styles. Verified on open-logic, neorv32, PoC, OSVVM, surf and the microwatt POWER SoC (ECP5 and Arty A7 builds, the latter with the LiteX-generated LiteDRAM/LiteEth/LiteSDCard cores) | ✅ |
@@ -141,6 +142,8 @@ opencdc analyze examples/cdc_advanced/cdc_advanced.ocdc.json -q --html report.ht
 opencdc analyze examples/primitives/primitives.ocdc.json      # MMCM (derived clocks with periods), XPM, block RAM
 opencdc analyze my.ocdc.json -q --suggest-sdc suggested.sdc    # constraints for missing clocks and unknown relations
 opencdc analyze examples/primitives/primitives.ocdc.json --vivado-clocks examples/primitives/vivado_clocks.rpt   # compare periods with Vivado
+opencdc analyze examples/vivado_project/demo.xpr             # a Vivado project, as it is
+opencdc import examples/vivado_project/demo.xpr -o demo.ocdc.json   # ... or as an OpenCDC project to edit and keep
 python3 tools/bench/gen_bench.py soc --domains 8 --blocks 1250 --out bench/soc_100k   # benchmark design
 opencdc-gui examples/smoke/smoke.ocdc.json
 ```
@@ -185,6 +188,20 @@ $ opencdc analyze examples/primitives/primitives.ocdc.json -q
 ...
 Rules   : 1 error violation(s), 1 warning violation(s), 0 path(s) at potential risk, 0 path(s) need review
 (exit code 3)
+```
+
+A Vivado project is analyzed as it is: the files of its current synthesis run, and what was left out is said:
+
+```console
+$ opencdc analyze examples/vivado_project/demo.xpr -q
+...
+...demo.xpr: info[PRJ-XPR-DISABLED]: 1 disabled source(s) of the project not read, as in Vivado
+...demo.xpr: info[PRJ-XPR-SKIPPED]: 1 file(s) of the project are not read by OpenCDC (memory initialization, IP-internal and simulation files)
+    note: $PPRDIR/mem/init.coe
+...demo.xpr: info[PRJ-XPR-IMPORT]: Vivado project imported: 2 source(s), 2 constraint file(s), top 'demo_top' (source set 'sources_1', constraint set 'constrs_1')
+...
+CDC     : 2 crossing path(s), 1 synchronized, 1 unsynchronized, 2 synchronizer structure(s)
+...
 ```
 
 The CLI exit codes are:
@@ -245,6 +262,17 @@ Output ports are checked when `set_output_delay -clock <clk>` names the clock th
 Input ports take part in CDC analysis only when `set_input_delay -clock <clk>` assigns them a clock domain. Otherwise they are listed as `CDC-NO-DOMAIN`. Asynchronous resets are the exception: an input without a clock domain that drives asynchronous reset pins is asynchronous to every clock, and its release is checked by CDC-006. Declare a reset that is synchronized outside the design with `set_input_delay -clock`.
 
 Paths are relative to the project file. All sources form one compilation unit, in the order listed, as in FPGA vendor tools. `language` is one of `verilog-2001`, `verilog-2005` or `systemverilog-2017`; without it, a project that has `.sv`/`.svh` sources uses `systemverilog-2017`, otherwise `verilog-2001`. In Verilog modes, SystemVerilog keywords such as `logic` and `bit` are accepted as identifiers.
+
+#### Vivado projects
+
+A Vivado project (`.xpr`) can be given wherever a project is expected (`opencdc analyze`, `opencdc waivers`, the GUI's *Open Project*): it is imported each time from the files of its current synthesis run, so the analysis follows the project as it is edited in Vivado. `opencdc import <project.xpr> [-o <project.ocdc.json>] [--force]` writes it as an OpenCDC project instead, to add waivers, options or files Vivado adds by script; in the GUI, *Save As* does the same. A Vivado project itself is never written. The import takes:
+* the sources of the current synthesis run's source set that are used in synthesis and not disabled (HDL, `.xci`/`.xcix`, `.bd`), in the project's order, with each VHDL file's library (the project's default library `xil_defaultlib` when none is set); IP in a file set of its own, unless a listed block design or core container brings it;
+* Verilog headers (`.vh`, `.svh`, `.h`, files marked as global includes) as include directories, not sources: Vivado finds them by name;
+* the top module, Verilog defines, include directories (`VerilogDir`) and generics of the source set;
+* the run's constraint files (XDC, SDC, Tcl) used in synthesis or implementation, scoped to their module when Vivado scopes them (`SCOPED_TO_REF`); a file scoped to a cell only is not read (`PRJ-XPR-SCOPED`);
+* the project's IP repositories.
+
+What is left out is reported: missing files (`PRJ-XPR-MISSING`, warning), netlists (`PRJ-XPR-NETLIST`, warning: OpenCDC reads HDL), disabled sources (`PRJ-XPR-DISABLED`), and memory initialization, simulation-only and other files (`PRJ-XPR-SKIPPED`). Paths use Vivado's variables (`$PPRDIR`, `$PSRCDIR`, `$PGENDIR`, `$PIPUSERFILESDIR`, ...), resolved against the `.xpr`'s directory. Files that a build script adds to the project after it is opened (as in Loongson's chiplab, which adds the CPU) are not in the `.xpr`: import the project and add them to the OpenCDC project.
 
 #### VHDL and mixed designs
 

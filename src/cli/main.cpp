@@ -4,6 +4,8 @@
 //   opencdc analyze <project.ocdc.json> [--json <out.json>] [--dump-ir <out.txt>]
 //                   [--schematic-dir <dir>] [--html <report.html>] [--csv <dir>] [--suggest-sdc <file>]
 //                   [--vivado-clocks <report_clocks.txt>]... [--quiet]
+//   opencdc analyze <project.xpr> ...            (a Vivado project, imported)
+//   opencdc import <project.xpr> [-o <project.ocdc.json>] [--force]
 //
 // Exit codes: 0 = ran, no errors and no error-severity CDC violations;
 //             1 = ran, errors reported (HDL/constraint errors);
@@ -19,6 +21,7 @@
 #include "engine/ProjectConfig.h"
 #include "engine/Report.h"
 #include "engine/SdcSuggest.h"
+#include "engine/VivadoProject.h"
 #include "engine/ResultJson.h"
 #include "engine/WaiverFile.h"
 #include "rules/Waiver.h"
@@ -361,6 +364,12 @@ int runWaive(WaiveArgs args) {
         return kExitUsage;
     }
     auto& cfg = project.value();
+    if (!cfg.importedFrom.empty()) {
+        std::cerr << "error: " << args.project
+                  << " is a Vivado project: waivers belong to an OpenCDC project; create one with 'opencdc import "
+                  << args.project << "'\n";
+        return kExitUsage;
+    }
     if (!args.remove.empty()) {
         for (const auto& f : cfg.waivers) {
             std::vector<cdc::WaiverRecord> records;
@@ -395,6 +404,49 @@ int runWaive(WaiveArgs args) {
         }
         std::cout << "waiver file added to project " << toUtf8(cfg.projectFile) << '\n';
     }
+    return kExitOk;
+}
+
+struct ImportArgs {
+    std::string project;
+    std::string output;
+    bool force = false;
+};
+
+/// opencdc import: writes the OpenCDC project of a Vivado project.
+int runImport(const ImportArgs& args) {
+    const auto in = fromUtf8(args.project);
+    if (!engine::isVivadoProjectFile(in)) {
+        std::cerr << "error: " << args.project << ": not a Vivado project (.xpr)\n";
+        return kExitUsage;
+    }
+    auto project = engine::projectFromXprFile(in);
+    if (!project) {
+        std::cerr << format(project.error()) << '\n';
+        return kExitUsage;
+    }
+    auto& cfg = project.value();
+    for (const auto& d : cfg.importNotes) {
+        std::cout << format(d) << '\n';
+        for (const auto& n : d.notes)
+            std::cout << "  note: " << n << '\n';
+    }
+    std::filesystem::path out = args.output.empty() ? cfg.importedFrom.parent_path() / (cfg.name + ".ocdc.json")
+                                                    : std::filesystem::absolute(fromUtf8(args.output));
+    std::error_code ec;
+    if (std::filesystem::exists(out, ec) && !args.force) {
+        std::cerr << "error: " << toUtf8(out) << " exists (--force replaces it)\n";
+        return kExitUsage;
+    }
+    if (engine::isVivadoProjectFile(out)) {
+        std::cerr << "error: the output must be an OpenCDC project (.ocdc.json), not " << toUtf8(out) << '\n';
+        return kExitUsage;
+    }
+    if (auto err = engine::saveProjectFile(cfg, out)) {
+        std::cerr << format(*err) << '\n';
+        return kExitAnalysisErrors;
+    }
+    std::cout << "OpenCDC project written: " << toUtf8(out) << '\n';
     return kExitOk;
 }
 
@@ -514,7 +566,7 @@ int main(int argc, char** argv) {
     std::string projectPath;
     Outputs outs;
     bool quiet = false;
-    auto* analyze = app.add_subcommand("analyze", "Analyze a project (*.ocdc.json)");
+    auto* analyze = app.add_subcommand("analyze", "Analyze a project (*.ocdc.json, or a Vivado project *.xpr)");
     analyze->add_option("project", projectPath, "Project file")->required();
     analyze->add_option("--json", outs.json, "Write the result as JSON to this file");
     analyze->add_option("--dump-ir", outs.ir, "Write a text dump of the extracted Design IR to this file");
@@ -559,6 +611,15 @@ int main(int argc, char** argv) {
     waiveCmd->add_option("--file", waive.file, "Waiver file to write (default: the project's first waiver file)");
     waiveCmd->add_option("--remove", waive.remove, "Remove the waiver with this id (from whichever project waiver file has it)");
 
+    ImportArgs importArgs;
+    auto* importCmd = app.add_subcommand(
+        "import", "Write the OpenCDC project of a Vivado project (*.xpr): the sources, IP and constraints of its "
+                  "current synthesis run");
+    importCmd->add_option("project", importArgs.project, "Vivado project (*.xpr)")->required();
+    importCmd->add_option("-o,--output", importArgs.output,
+                          "OpenCDC project to write (default: <name>.ocdc.json next to the .xpr)");
+    importCmd->add_flag("--force", importArgs.force, "Replace the output file when it exists");
+
     try {
         app.parse(argc, argv);
     }
@@ -573,5 +634,7 @@ int main(int argc, char** argv) {
         return runWaive(std::move(waive));
     if (auditCmd->parsed())
         return runWaiverAudit(audit);
+    if (importCmd->parsed())
+        return runImport(importArgs);
     return kExitUsage;
 }

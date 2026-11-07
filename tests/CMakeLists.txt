@@ -24,6 +24,7 @@ add_executable(opencdc_tests
     engine/test_sdc_suggest.cpp
     engine/test_vivado_clocks.cpp
     engine/test_clock_pairs.cpp
+    engine/test_vivado_project.cpp
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_sv_interfaces.cpp
@@ -100,6 +101,9 @@ opencdc_cli_test(suggest_sdc 3
     "Suggested SDC: .*suggested.sdc \\(0 clock\\(s\\), 0 clock group\\(s\\), 0 TODO period\\(s\\); resolves 0 unknown"
     analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json -q
     --suggest-sdc ${CMAKE_CURRENT_BINARY_DIR}/suggested.sdc)
+opencdc_cli_test(analyze_vivado_project 0
+    "Language: verilog-2001 \\+ vhdl.*Hierarchy:.*u_sync \\(demo_lib_sync\\).*PRJ-XPR-DISABLED.*PRJ-XPR-SKIPPED.*init.coe.*Vivado project imported: 2 source\\(s\\), 2 constraint file\\(s\\), top 'demo_top'.*CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized"
+    analyze ${PROJECT_SOURCE_DIR}/examples/vivado_project/demo.xpr)
 opencdc_cli_test(clock_pairs 0
     "clk_a -> clk_b \\(asynchronous\\): 6 path\\(s\\), 6 synchronized, 4 need review"
     analyze ${PROJECT_SOURCE_DIR}/examples/smoke/smoke.ocdc.json -q)
@@ -109,6 +113,12 @@ add_test(NAME cli.waive
         "-DEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/cdc_advanced"
         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/waive_work"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunWaive.cmake")
+add_test(NAME cli.import_vivado
+    COMMAND ${CMAKE_COMMAND}
+        "-DEXE=$<TARGET_FILE:opencdc>"
+        "-DEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/vivado_project"
+        "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/import_work"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunImport.cmake")
 add_test(NAME cli.waiver_audit
     COMMAND ${CMAKE_COMMAND}
         "-DEXE=$<TARGET_FILE:opencdc>"
@@ -189,6 +199,9 @@ if(TARGET opencdc-gui)
     add_test(NAME gui.vhdl_mixed
         COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/mixed/cdc_advanced/cdc_advanced_mixed.ocdc.json)
     set_tests_properties(gui.vhdl_mixed PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME gui.vivado_project
+        COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/vivado_project/demo.xpr)
+    set_tests_properties(gui.vivado_project PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_test(NAME gui.primitives
         COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json)
     set_tests_properties(gui.primitives PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

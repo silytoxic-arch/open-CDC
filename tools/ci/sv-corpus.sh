@@ -157,44 +157,14 @@ JSON
 
 python3 - <<'PY'
 import json
-P = "ArtyS7-RPU-SoC/"
-S = P + "ArtyS7_RPU_SoC.srcs/sources_1/"
-src = [S + "bd/%s/%s.bd" % (b, b) for b in ["clk_video", "BRAM_64KB", "clk_main", "BRAM_trace", "BRAM_cache"]]
-src += [P + "hdl/BRAM_64KB_wrapper.vhd", S + "imports/hdl/BRAM_trace_wrapper.vhd", S + "imports/hdl/clk_main_wrapper.vhd",
-        S + "imports/hdl/clk_video_wrapper.vhd", S + "bd/BRAM_cache/hdl/BRAM_cache_wrapper.vhd"]
-src += [P + "hdl/soc/gfx/" + f for f in ["TDMS_encoder.vhd", "char_generator.vhd", "dvid.vhd", "test_font_ram.vhd",
-                                        "vga_gen.vhd"]]
-src += [P + "RPU/vhdl/" + f for f in ["constants.vhd", "control_unit.vhd", "core.vhd", "csr_unit.vhd", "lint_unit.vhd",
-                                     "mem_controller.vhd", "pc_unit.vhd", "register_set.vhd", "unit_alu_RV32_I.vhd",
-                                     "unit_decoder_RV32I.vhd", "alu_int32_div.vhd"]]
-src += [P + "hdl/soc/spi_master.vhd", P + "hdl/xilinx/uart_rx6.vhd", P + "hdl/rpu_top.vhd", P + "hdl/soc/clocking.vhd",
-        P + "hdl/cache.vhd", S + "ip/mig_7series_0/mig_7series_0.xci"]
-json.dump({"format": "opencdc-project", "version": 1, "name": "artys7_rpu_soc", "top": "rpu_top", "sources": src,
-           "constraints": [P + "ArtyS7_RPU_SoC.srcs/constrs_1/imports/Arty-S7-50-Rev-B-Master.xdc"]},
-          open("artys7_rpu_soc.ocdc.json", "w"), indent=1)
-PY
-
-python3 - <<'PY'
-import json
 def proj(name, bd, wrapper, xdc=None):
     json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": "design_1_wrapper",
                "sources": [bd, wrapper], "constraints": [xdc] if xdc else []}, open(name + ".ocdc.json", "w"), indent=1)
+# the other cteqeu projects and ArtyS7-RPU-SoC are analyzed from their Vivado projects (.xpr)
 q = "cteqeu-SoC/"
-t7 = q + "Pynq-Z2/SoC_7_Timers_GIC/SoC_7_Timers_GIC."
-proj("zynq_timers_gic", t7 + "srcs/sources_1/bd/design_1/design_1.bd", t7 + "gen/sources_1/bd/design_1/hdl/design_1_wrapper.vhd")
-ir = q + "MiniZED/SoC_Multiple_IRQ_F2P/SoC_Multiple_IRQ_F2P."
-proj("zynq_irq_f2p", ir + "srcs/sources_1/bd/design_1/design_1.bd", ir + "gen/sources_1/bd/design_1/hdl/design_1_wrapper.vhd",
-     ir + "srcs/constrs_1/new/SoC_Multiple_IRQ_F2P.xdc")
-xa = q + "MiniZED/eFPGA_XADC/Minized_XADC.srcs/sources_1/bd/design_1/"
-proj("zynq_xadc", xa + "design_1.bd", xa + "hdl/design_1_wrapper.vhd")
-br = q + "MiniZED/eFPGA_BRAM/eFPGA_BRAM.srcs/sources_1/bd/design_1/"
-proj("zynq_bram", br + "design_1.bd", br + "hdl/design_1_wrapper.vhd")
 # user IP whose repository is not in the project: from their generated HDL (synth/ wrapper + ipshared/)
 ma = q + "MiniZED/Vitis_Custom_AXI_IP2021/Vitis_Custom_AXI_IP.srcs/sources_1/bd/design_1/"
 proj("zynq_math_ip", ma + "design_1.bd", ma + "hdl/design_1_wrapper.vhd")
-np = q + "Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel."
-proj("zynq_axi_neopixel", np + "srcs/sources_1/bd/design_1/design_1.bd",
-     np + "gen/sources_1/bd/design_1/hdl/design_1_wrapper.vhd", np + "srcs/constrs_1/new/SoC_AXI_NeoPixel.xdc")
 h = "Hackster/"
 u9 = h + "u96_linux_hackster/u96_linux_hackster.srcs/sources_1/bd/design_1/"
 proj("u96_mpsoc", u9 + "design_1.bd", u9 + "hdl/design_1_wrapper.vhd")
@@ -440,19 +410,20 @@ check chiplab_soc.ocdc.json "0 unsupported construct.*Clocks  : 6 \(1293/1293 re
 check fuxi_soc.ocdc.json "Clocks  : 9 \(1134/1134 registers resolved\).*ui_clk  \[divider\] alias=ddr_controller_ui_clk alias=clk_pll_i.*CLKOUT0  \[divider\] alias=clk_cpu_soc_clk_wiz_0_0 .*period=20ns.*FE-BD-MODULE.*45 cell\(s\), 22 hierarchical cell\(s\), 41 IP configuration\(s\).*axi_quad_spi:3.2.*AXI4 memory interface on s_axi4_aclk.*axi_intc:4.1.*4 interrupt input\(s\) \(1 asynchronous\).*proc_sys_reset:5.0.*axi_tft:2.0\) known only by the clocks of its interfaces: 54 port\(s\) of its bus interfaces in 3 clock\(s\).*Summary : 0 error\(s\), 7 warning\(s\).*CDC     : 1 crossing path\(s\), 1 synchronized, 0 unsynchronized"
 # Zynq-7000 block designs: one fabric clock (clk_fpga_0, Vivado's name, period from the PS configuration); the AXI
 # peripherals behind the PS's M_AXI_GP0 in it; the EMIO GPIO outputs in the PS clock cpu_1x
-check zynq_timers_gic.ocdc.json "Clocks  : 1 \(99/99 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=10ns.*FE-BD-MODULE.*7 cell\(s\), 4 hierarchical cell\(s\), 7 IP configuration\(s\).*processing_system7:5.5.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
-check zynq_irq_f2p.ocdc.json "Clocks  : 2 \(98/98 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=20ns.*cpu_1x  \[black-box\].*FE-BD-MODULE.*7 cell\(s\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
-check zynq_xadc.ocdc.json "Clocks  : 2 \(82/82 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=20ns.*FE-BD-MODULE.*4 cell\(s\).*xadc_wiz:3.3.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
-check zynq_bram.ocdc.json "Clocks  : 2 \(118/118 registers resolved\).*FE-BD-MODULE.*6 cell\(s\), 6 IP configuration\(s\).*smartconnect:1.0.*1 clock\(s\): aclk: M00_AXI, M01_AXI, S00_AXI.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check $cq/Pynq-Z2/SoC_7_Timers_GIC/SoC_7_Timers_GIC.xpr "Clocks  : 1 \(99/99 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=10ns.*FE-BD-MODULE.*7 cell\(s\), 4 hierarchical cell\(s\), 7 IP configuration\(s\).*processing_system7:5.5.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check $cq/MiniZED/SoC_Multiple_IRQ_F2P/SoC_Multiple_IRQ_F2P.xpr "Clocks  : 2 \(98/98 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=20ns.*cpu_1x  \[black-box\].*FE-BD-MODULE.*7 cell\(s\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check $cq/MiniZED/eFPGA_XADC/Minized_XADC.xpr "Clocks  : 2 \(82/82 registers resolved\).*FCLK_CLK0  \[black-box\] alias=clk_fpga_0 .*period=20ns.*FE-BD-MODULE.*4 cell\(s\).*xadc_wiz:3.3.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check $cq/MiniZED/eFPGA_BRAM/eFPGA_BRAM.xpr "Clocks  : 2 \(118/118 registers resolved\).*FE-BD-MODULE.*6 cell\(s\), 6 IP configuration\(s\).*smartconnect:1.0.*1 clock\(s\): aclk: M00_AXI, M01_AXI, S00_AXI.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zynq_math_ip.ocdc.json "Clocks  : 2 \(74/74 registers resolved\).*FE-BD-MODULE.*Math_IP:1.0\) analyzed from its output products: its generated HDL \(synthesis view, 4 file\(s\)\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 # AXI_NeoPixel (generated HDL): the AXI registers (clk_fpga_0, 100 MHz) read straight by the LED logic in clk_fpga_1
 # (50 MHz): 64 registers x 24 bits without synchronization (the relation of the two PS clocks is not constrained)
-check zynq_axi_neopixel.ocdc.json "Clocks  : 2 \(179/179 registers resolved\).*FCLK_CLK1  \[black-box\] alias=clk_fpga_1 .*period=20ns.*AXI_NeoPixel:1.0\) analyzed from its output products.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 64 crossing path\(s\), 0 synchronized, 64 unsynchronized.*64 path\(s\) need review"
+check $cq/Pynq-Z2/SoC_AXI_Neopixel/SoC_AXI_NeoPixel/SoC_AXI_NeoPixel.xpr "Clocks  : 2 \(179/179 registers resolved\).*FCLK_CLK1  \[black-box\] alias=clk_fpga_1 .*period=20ns.*PRJ-XPR-MISSING\]: IP repository not found: .*ip_repo/AXI_NeoPixel_1.0.*Vivado project imported: 2 source\(s\), 1 constraint file\(s\), top .design_1_wrapper.*AXI_NeoPixel:1.0\) analyzed from its output products.*Summary : 0 error\(s\), 2 warning\(s\).*CDC     : 64 crossing path\(s\), 0 synchronized, 64 unsynchronized.*64 path\(s\) need review"
 # ArtyS7-RPU-SoC: the XML block designs; the board XDC names both oscillators sys_clk_pin (the 100 MHz one twice), so
 # as in Vivado the 12 MHz clock is overridden and CLK12MHZ is an unconstrained clock; the CPU (clk_core, from the
 # 100 MHz MMCM) and the trace logic in CLK12MHZ exchange trace_dump_enabled / memory address and write enable without
 # synchronization; the MIG with the ports of its stub (128-bit user data, device_temp and device_temp_i)
-check artys7_rpu_soc.ocdc.json "Clocks  : 6 \(369/369 registers resolved\).*sys_clk_pin  \[constraint\] source=rpu_top.CLK100MHZ period=10ns.*CLK12MHZ  \[primary\].*alias=clk_core_clk_main_clk_wiz_0_0.*alias=clk_pixel_clk_video_clk_wiz_0_0 .*period=13.468ns.*FE-BD-MODULE.*block design 'clk_video'.*mig_7series:4.1.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 10 crossing path\(s\), 0 synchronized, 10 unsynchronized.*10 path\(s\) need review"
+# analyzed from its Vivado project (.xpr), as the cteqeu projects above
+check ArtyS7-RPU-SoC/ArtyS7_RPU_SoC.xpr "Clocks  : 6 \(369/369 registers resolved\).*sys_clk_pin  \[constraint\] source=rpu_top.CLK100MHZ period=10ns.*CLK12MHZ  \[primary\].*alias=clk_core_clk_main_clk_wiz_0_0.*alias=clk_pixel_clk_video_clk_wiz_0_0 .*period=13.468ns.*FE-BD-MODULE.*block design 'clk_video'.*mig_7series:4.1.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 10 crossing path\(s\), 0 synchronized, 10 unsynchronized.*10 path\(s\) need review"
 check arty_xadc.ocdc.json "Clocks  : 1 \(14/14 registers resolved\).*IP 'xadc_wiz_0' \(xilinx.com:ip:xadc_wiz:3.3\) modelled.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check basys3_xadc.ocdc.json "Clocks  : 2 \(24/24 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wiz_0'.*DRP interface.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 0 crossing path"

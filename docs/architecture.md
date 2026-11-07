@@ -643,7 +643,8 @@ OpenCDC/
 │   ├── engine/
 │   │   ├── CMakeLists.txt
 │   │   ├── AnalysisSession.h/.cpp  # 阶段 1: 加载工程 + 调用前端冒烟; 其余阶段返回 "NOT_IMPLEMENTED" 诊断
-│   │   └── ProjectConfig.h/.cpp    # .ocdc.json 读取
+│   │   ├── ProjectConfig.h/.cpp    # .ocdc.json 读取
+│   │   └── VivadoProject.h/.cpp    # Vivado 工程（.xpr）导入：当前综合运行的源文件集与约束集
 │   ├── cli/main.cpp                # opencdc --version | opencdc analyze <proj.ocdc.json> [--json out]
 │   └── gui/
 │       ├── CMakeLists.txt
@@ -761,6 +762,7 @@ public:
 | 路径图只画一条路径 | 画出该路径、进入同一目标引脚的全部路径（汇合逻辑完整）、同步器各级、限定信号、重汇聚点，以及所属同步结构的全部成员路径（最多 24 条） | 只画一条路径时，OR 门的另一个输入、FIFO 的反向指针都看不到 |
 | `SeqGraph::consumersOf` 每个读者位一条记录 | 连续且读取方式相同（非直连、源位区间和标志相同）的读者位合并为一条（`Consumer::bitEnd`） | 4000 位全相关加法器读 4000 个同步器输出时，逐位记录需要 1600 万条 |
 | 同步链：只检查连接关系 | 链的下一级带使能（Enable 引脚）时不算同步级；首级带使能时不算两级同步器，而是作为受限定数据去找限定信号 | verilog-ethernet 中被使能控制的捕获寄存器曾被误认作同步级 |
+| 厂商工程是工程配置的来源 | Vivado 工程（`.xpr`）在 `loadProjectFile` 中转换为 `ProjectConfig`（`importedFrom` 记录来源，`projectFile` 为空），导入时的发现作为 `PRJ-XPR-*` 诊断随分析报告；保存时写成新的 `.ocdc.json`，从不写回 `.xpr` | CLI、GUI 和豁免审计无需各自处理厂商格式；Vivado 中的修改在下次分析时自动生效 |
 | 豁免是报告层的过滤 | 豁免（`rules/Waiver`）在规则检查之后作为独立阶段应用：命中保留，标记 `waiver`；路径状态由未被豁免的命中重新计算；过期和未命中的豁免给出警告。文件格式和校验在 `engine/WaiverFile` | 所有输出（CLI、JSON、HTML、CSV、GUI）看到同一份结果，被豁免的问题不会消失，只是不再计为违规 |
 | 报告模块输出 HTML/CSV/JSON | `engine/Report` 生成自包含 HTML（内联 CSS 和 SVG，不需要脚本）与 CSV（RFC 4180，带 BOM）；JSON 改为流式写出（`writeJson`），输出与原 DOM 方式逐字节相同 | 10⁶ 寄存器时 JSON 达 760 MB，用 DOM 会使峰值内存翻三倍 |
 | HTML 报告列出全部路径 | 超过 `maxPaths`（默认 5000）时只列有规则命中或状态不是 safe 的路径；超过 `maxSchematics`（400）时不嵌入原理图 | 17 万条路径的 HTML 有 390 MB，浏览器打不开；完整数据在 CSV 和 JSON 中 |

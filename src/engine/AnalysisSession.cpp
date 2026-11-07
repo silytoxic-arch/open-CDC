@@ -119,6 +119,8 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
     };
 
     CollectingDiagnosticSink sink;
+    for (const auto& d : config.importNotes)
+        sink.report(d);
 
     // ---- Stage: frontend (parse + elaborate) ----
     const std::string frontendStage = "Parse & elaborate (frontend)";

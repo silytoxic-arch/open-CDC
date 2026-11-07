@@ -110,6 +110,8 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
       << (r.elapsedSeconds < 1.0 ? fmt(r.elapsedSeconds * 1000.0, "%.0f") + " ms" : fmt(r.elapsedSeconds, "%.2f") + " s");
     if (!r.project.projectFile.empty())
         o << " &middot; <span class=\"mono\">" << esc(toUtf8(r.project.projectFile)) << "</span>";
+    else if (!r.project.importedFrom.empty())
+        o << " &middot; imported from <span class=\"mono\">" << esc(toUtf8(r.project.importedFrom)) << "</span>";
     o << "</p>\n";
     if (r.elaboration && !r.elaboration->topInstances.empty())
         o << "<p>Top: <b>" << esc(r.elaboration->topInstances.front().definition) << "</b>, "

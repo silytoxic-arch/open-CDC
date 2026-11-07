@@ -65,7 +65,12 @@ struct AnalysisOptions {
 ///                                                        expire this soon, 0 = never)
 /// }
 struct ProjectConfig {
-    std::filesystem::path projectFile; ///< absolute path of the .ocdc.json, empty if built in memory
+    std::filesystem::path projectFile; ///< absolute path of the .ocdc.json, empty if built in memory or imported
+    /// The vendor project this configuration was imported from (a Vivado .xpr), absolute; empty otherwise.
+    /// An imported project has no projectFile: it is saved as a new .ocdc.json, never over the vendor project.
+    std::filesystem::path importedFrom;
+    /// What the import found (PRJ-XPR-*), reported with the analysis' diagnostics.
+    std::vector<Diagnostic> importNotes;
     std::string name;
     std::string top;
     frontend::LanguageStd language = frontend::LanguageStd::Verilog2001;
@@ -99,7 +104,8 @@ struct ProjectConfig {
 inline constexpr const char* kProjectFormatName = "opencdc-project";
 inline constexpr int kProjectFormatVersion = 1;
 
-/// Reads and validates a project file. Errors carry codes PRJ-*.
+/// Reads and validates a project file. Errors carry codes PRJ-*. A Vivado
+/// project (.xpr) is imported (engine/VivadoProject.h).
 [[nodiscard]] Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file);
 
 /// Parses project JSON text; `baseDir` resolves relative paths.

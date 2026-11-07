@@ -1,6 +1,7 @@
 #include "engine/ProjectConfig.h"
 
 #include "core/PathUtil.h"
+#include "engine/VivadoProject.h"
 
 #include <nlohmann/json.hpp>
 
@@ -271,6 +272,8 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
 }
 
 Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file) {
+    if (isVivadoProjectFile(file))
+        return projectFromXprFile(file);
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return projectError("PRJ-OPEN", "cannot open project file", file);
