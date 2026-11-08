@@ -106,7 +106,9 @@ NES_MiSTer 剩下的 4 个锁存器：
   - 现在该测试改为检查静态声明下的异步复位能被识别，反例改用 `automatic` 变量（每次执行，仍然无法识别）。
 - SV 语料 24 个项目全部匹配（两个 MiSTer 工程的期望值已更新），VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- GitHub Actions Windows x64 / VS2022（提交 3a6da83，运行 42455397010）：
+  - Release：592/592 通过，生成 `OpenCDC-0.63.0-windows-x64.zip` 与 `.exe`；
+  - Debug：592/592 通过。
 
 ## 5. 已知限制
 
