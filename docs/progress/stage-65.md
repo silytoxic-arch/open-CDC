@@ -83,7 +83,9 @@ set_false_path -from {WIDTH[*] HFP[*] HS[*] HBP[*] HEIGHT[*] VFP[*] VS[*] VBP[*]
 - 本地 Linux GCC Debug：596 个测试全部通过。
 - SV 语料 24 个项目全部匹配，VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- GitHub Actions Windows x64 / VS2022（提交 98cd56d，运行 42459541932）：
+  - Release：596/596 通过，生成 `OpenCDC-0.65.0-windows-x64.zip` 与 `.exe`；
+  - Debug：596/596 通过。
 
 ## 5. 已知限制
 
