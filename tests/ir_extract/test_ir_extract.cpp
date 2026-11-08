@@ -888,14 +888,27 @@ TEST_CASE("Asynchronous reset in a named block with a local declaration", "[extr
     REQUIRE(e.design);
     CHECK(e.countCode("IR-AMBIGUOUS-CLOCK") == 0);
     CHECK(e.contains("@(posedge clk) arst(!reset_n -> 8'b00000000)"));
-    // negative: a declaration with an initializer is a statement, the block stays ambiguous
-    auto init = extract("module t(input clk, input reset_n, input [7:0] d, output reg [7:0] q);\n"
+    // a static declaration with an initializer applies once, at time 0 (stage 63):
+    // the block is still 'if (reset) ... else ...'
+    auto stat = extract("module t(input clk, input reset_n, input [7:0] d, output reg [7:0] q);\n"
                         "  always @(posedge clk or negedge reset_n)\n"
                         "    begin: b\n"
                         "      reg [7:0] t = 8'h0;\n"
                         "      if (!reset_n) q <= 8'h0; else q <= d;\n"
                         "    end\n"
                         "endmodule\n");
+    CHECK(stat.countCode("IR-AMBIGUOUS-CLOCK") == 0);
+    CHECK(stat.contains("@(posedge clk) arst(!reset_n -> 8'b00000000)"));
+    // negative: an automatic declaration with an initializer is executed every time,
+    // a statement before the reset test: the block stays ambiguous
+    auto init = extract("module t(input clk, input reset_n, input [7:0] d, output reg [7:0] q);\n"
+                        "  always @(posedge clk or negedge reset_n)\n"
+                        "    begin: b\n"
+                        "      automatic logic [7:0] t = 8'h0;\n"
+                        "      if (!reset_n) q <= 8'h0; else q <= d;\n"
+                        "    end\n"
+                        "endmodule\n",
+                        LanguageStd::SystemVerilog2017);
     CHECK(init.countCode("IR-AMBIGUOUS-CLOCK") == 1);
 }
 
@@ -1017,4 +1030,54 @@ TEST_CASE("IR: a case listing every value of its selector with integer labels is
     CHECK(e.contains("latch n2 "));
     CHECK(e.contains("latch n3 "));
     CHECK(e.countCode("IR-LATCH-INFERRED") == 3);
+}
+
+TEST_CASE("IR: a for loop whose condition also tests a flag set in its body", "[ir][loop]") {
+    // Intel's altera_pll_reconfig_core: for (i = 0; (i < N) & !break_loop; i = i + 1)
+    auto e = extract("module t(input clk, input [3:0] req, output reg [1:0] sel, output reg any);\n"
+                     "  integer i; reg found;\n"
+                     "  always @(posedge clk) begin\n"
+                     "    found = 1'b0; sel <= 2'd0;\n"
+                     "    for (i = 0; (i < 4) & !found; i = i + 1)\n"
+                     "      if (req[i]) begin sel <= i[1:0]; found = 1'b1; end\n"
+                     "    any <= found;\n"
+                     "  end\nendmodule\n");
+    CHECK(e.countCode("IR-UNSUPPORTED-LOOP") == 0);
+    // the lowest request wins: request 2 is only taken when 0 and 1 are not set
+    CHECK(e.has("cell $and$7 [1] = and(A=$logic_not$1, B=$logic_not$6)"));
+    CHECK(e.has("cell $mux$11 [2] = mux(A={1'b0, $mux$5[0]}, B=$mux$9, S=$and$7)"));
+    CHECK(e.has("reg sel <= $mux$17 @(posedge clk)"));
+}
+
+TEST_CASE("IR negative: a for loop without a constant bound stays unsupported", "[ir][loop]") {
+    auto e = extract("module t(input clk, input [3:0] req, output reg [1:0] sel);\n"
+                     "  integer i; reg found;\n"
+                     "  always @(posedge clk) begin\n"
+                     "    found = 1'b0; sel <= 2'd0;\n"
+                     "    for (i = 0; !found; i = i + 1) if (req[i]) begin sel <= i[1:0]; found = 1'b1; end\n"
+                     "  end\nendmodule\n");
+    CHECK(e.countCode("IR-UNSUPPORTED-LOOP") == 1);
+}
+
+TEST_CASE("IR: static variables declared in a block keep their value; automatic ones are re-initialized",
+          "[ir][process]") {
+    // MiSTer audio_out.sv: always @(posedge clk, posedge reset) begin reg [1:0] dly1 = 0; if (reset) ...
+    auto e = extract("module t(input clk, input reset, input ce, output reg en, output reg [1:0] o);\n"
+                     "  always @(posedge clk, posedge reset) begin\n"
+                     "    reg [1:0] dly = 0;\n"
+                     "    if (reset) begin dly <= 0; en <= 0; end\n"
+                     "    else if (ce) begin if (~&dly) dly <= dly + 1'd1; else en <= 1; end\n"
+                     "  end\n"
+                     "  always @(posedge clk) begin\n"
+                     "    automatic logic [1:0] t = 2'd1;\n"
+                     "    t = t + 1'd1;\n"
+                     "    o <= t;\n"
+                     "  end\nendmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(e.countCode("IR-AMBIGUOUS-CLOCK") == 0);
+    CHECK(e.countCode("FE-IMPLICIT-STATIC") == 1); // 'reg dly = 0' without 'static': information
+    CHECK_FALSE(e.hasErrors());
+    CHECK(e.contains("reg dly <= $mux$"));
+    CHECK(e.contains("arst(reset -> 2'b00) en(ce)"));
+    CHECK(e.has("reg o <= 2'b10 @(posedge clk)"));
 }

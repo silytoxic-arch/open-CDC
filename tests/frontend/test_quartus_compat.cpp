@@ -143,11 +143,12 @@ TEST_CASE("Verilog files in a SystemVerilog project: initialized procedural decl
                             {"top.sv", "module top (input clk, output [3:0] x, output [3:0] y);\n"
                                        "  a ua (.clk(clk), .q(x)); b ub (.clk(clk), .q(y));\nendmodule\n"}},
                            "top");
-    // Verilog-2001 semantics in the .v file; the .sv file is still told
-    CHECK(a.count("FE-SLANG-StaticInitializerMustBeExplicit") == 1);
-    CHECK(a.has("FE-SLANG-StaticInitializerMustBeExplicit", ""));
+    // Verilog-2001 semantics in the .v file; the .sv file is told (as information:
+    // read as synthesis tools do, the initializer is the power-up value)
+    CHECK(a.count("FE-SLANG-StaticInitializerMustBeExplicit") == 0);
+    CHECK(a.count("FE-IMPLICIT-STATIC") == 1);
     CHECK(std::ranges::all_of(a.r->diagnostics, [](const Diagnostic& d) {
-        return d.code != "FE-SLANG-StaticInitializerMustBeExplicit" || d.location.file.ends_with("b.sv");
+        return d.code != "FE-IMPLICIT-STATIC" || (d.location.file.ends_with("b.sv") && d.severity == Severity::Info);
     }));
 }
 

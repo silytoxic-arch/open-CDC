@@ -29,6 +29,7 @@
 #include <slang/ast/types/Type.h>
 
 #include <algorithm>
+#include <functional>
 
 namespace opencdc::frontend::detail {
 
@@ -70,8 +71,10 @@ const sast::Statement& unwrap(const sast::Statement& s) {
         for (const auto* st : s.as<sast::StatementList>().list) {
             if (st->kind == sast::StatementKind::Empty)
                 continue;
+            // static ones with an initializer neither: it applies once, at time 0
             if (st->kind == sast::StatementKind::VariableDeclaration &&
-                !st->as<sast::VariableDeclStatement>().symbol.getInitializer())
+                (!st->as<sast::VariableDeclStatement>().symbol.getInitializer() ||
+                 st->as<sast::VariableDeclStatement>().symbol.lifetime == sast::VariableLifetime::Static))
                 continue;
             only = st;
             ++n;
@@ -246,6 +249,12 @@ void BodyBuilder::exec(const sast::Statement& s, ProcState& st) {
         case SK::ExpressionStatement: execExpressionStatement(s.as<sast::ExpressionStatement>().expr, st); return;
         case SK::VariableDeclaration: {
             const auto& v = s.as<sast::VariableDeclStatement>().symbol;
+            if (v.lifetime == sast::VariableLifetime::Static) {
+                // initialized once, at time 0: a power-up value, not an assignment on
+                // every execution (always @(posedge clk) begin reg [1:0] dly = 0; ...)
+                lowerNetInitializer(v);
+                return;
+            }
             if (const auto* init = v.getInitializer())
                 assignTargets({wholeTarget(&v, widthOf(v))}, lower(*init), false, l);
             return;
@@ -508,20 +517,54 @@ void BodyBuilder::execFor(const sast::Statement& s, ProcState& st) {
         unsupported("IR-UNSUPPORTED-LOOP", "for loop without a stop condition", l);
         return;
     }
+    // The condition may AND a constant bound with a value computed in the body
+    // ((i < N) & !found: a break written as a flag): the bound unrolls the loop,
+    // the rest guards each iteration; once it is false, the later iterations do
+    // not run either (the guard accumulates).
+    SigSpec active; // empty: every iteration so far ran
     for (int iter = 0;; ++iter) {
-        const SigSpec cond = toBool(lower(*f.stopExpr), l);
-        auto k = cond.asConst();
-        if (!k || !k->isFullyDefined()) {
+        std::optional<bool> bound;
+        SigSpec guardNow;
+        std::function<bool(const sast::Expression&)> split = [&](const sast::Expression& c) -> bool {
+            const SigSpec v = toBool(lower(c), l);
+            if (auto k = v.asConst(); k && k->isFullyDefined()) {
+                bound = bound.value_or(true) && !k->isZero();
+                return true;
+            }
+            if (c.kind == sast::ExpressionKind::BinaryOp) {
+                const auto& b = c.as<sast::BinaryExpression>();
+                if (b.op == sast::BinaryOperator::LogicalAnd ||
+                    (b.op == sast::BinaryOperator::BinaryAnd && c.type->isIntegral() && c.type->getBitWidth() == 1))
+                    return split(b.left()) && split(b.right());
+            }
+            if (c.kind == sast::ExpressionKind::Conversion)
+                return split(c.as<sast::ConversionExpression>().operand());
+            guardNow = guardNow.empty() ? v : cell(CellKind::And, {guardNow, v}, 1, l);
+            return true;
+        };
+        if (!split(*f.stopExpr) || !bound) {
             unsupported("IR-UNSUPPORTED-LOOP", "for loop whose condition is not constant after unrolling", l);
             return;
         }
-        if (k->isZero())
+        if (!*bound)
             return;
         if (iter >= kMaxLoopIterations) {
             unsupported("IR-UNSUPPORTED-LOOP", "for loop exceeds " + std::to_string(kMaxLoopIterations) + " iterations", l);
             return;
         }
-        exec(f.body, st);
+        if (!guardNow.empty())
+            active = active.empty() ? guardNow : cell(CellKind::And, {active, guardNow}, 1, l);
+        if (active.empty()) {
+            exec(f.body, st);
+        }
+        else {
+            ProcState t = st;
+            exec(f.body, t);
+            ProcState merged;
+            merge(active, t, st, merged, l);
+            st = std::move(merged);
+        }
+        // the loop variable steps on in every iteration: it stays a constant
         for (const auto* step : f.steps)
             execExpressionStatement(*step, st);
     }

@@ -113,10 +113,18 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
             continue;
         // a Verilog file (.v) compiled as SystemVerilog: its procedural declarations with
         // initializers are static, as Verilog-2001 defines them (Quartus and Vivado read them so)
-        if (diag.code == slang::diag::StaticInitializerMustBeExplicit &&
-            (out.location.file.ends_with(".v") || out.location.file.ends_with(".vh") ||
-             out.location.file.ends_with(".V")))
-            continue;
+        if (diag.code == slang::diag::StaticInitializerMustBeExplicit) {
+            if (out.location.file.ends_with(".v") || out.location.file.ends_with(".vh") ||
+                out.location.file.ends_with(".V"))
+                continue;
+            // in SystemVerilog the 'static' keyword is required; Quartus and Vivado
+            // accept the declaration without it and read it as OpenCDC does: the
+            // initializer is the power-up value, applied once
+            out.code = "FE-IMPLICIT-STATIC";
+            out.severity = Severity::Info;
+            out.message = "static variable with an initializer declared in a procedural block without 'static': "
+                          "the initializer is its power-up value, applied once (as synthesis tools read it)";
+        }
         if (lenientModules && diag.code == slang::diag::PortDoesNotExist) {
             // port 'X' does not exist in 'FDRE'
             const auto q = out.message.rfind(" in '");

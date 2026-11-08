@@ -1042,6 +1042,39 @@ TEST_CASE("VHDL: 'x <= v when rising_edge(clk);' is a register", "[vhdl][elab]")
     CHECK(r.count("IR-LATCH-INFERRED") == 1); // only 'l'
 }
 
+TEST_CASE("VHDL: 'x <= r when rst else v when rising_edge(clk);' is a register with asynchronous reset",
+          "[vhdl][elab]") {
+    // MiSTer ascal.vhd: i_reset_na <= '0' WHEN reset_na = '0' ELSE '1' WHEN rising_edge(i_clk);
+    auto r = elaborate(lib("entity t is port (clk, rst_n, set, d : in std_logic; q, q2, c : out std_logic); end;\n"
+                           "architecture rtl of t is\n"
+                           "  signal s, s2 : std_logic;\n"
+                           "begin\n"
+                           "  s <= '0' when rst_n = '0' else '1' when rising_edge(clk);\n"
+                           "  s2 <= '0' when rst_n = '0' else '1' when set = '1' else d when rising_edge(clk)\n"
+                           "        else unaffected;\n"
+                           "  q <= s; q2 <= s2;\n"
+                           "  c <= '0' when rst_n = '0' else d;\n" // negative: no edge, combinational
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-EDGE") == 0);
+    CHECK(r.count("IR-LATCH-INFERRED") == 0);
+    CHECK(r.has("reg s <= 1'b1 @(posedge clk) arst(!rst_n -> 1'b0)"));
+    CHECK(r.has("reg s2 <= d @(posedge clk) arst("));
+    CHECK_FALSE(r.has("reg c "));
+}
+
+TEST_CASE("VHDL negative: a clock edge that is not the last condition stays unsupported", "[vhdl][elab]") {
+    auto r = elaborate(lib("entity t is port (clk, rst_n, d : in std_logic; q : out std_logic); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  q <= d when rising_edge(clk) else '0' when rst_n = '0';\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.count("IR-UNSUPPORTED-EDGE") == 1);
+}
+
 // ===========================================================================
 // Constructs found in SURF's Ethernet MAC (stage 44)
 // ===========================================================================
