@@ -294,6 +294,11 @@ struct SdcOptions {
     /// of the file that runs `source` (e.g. the directory Quartus or Vivado
     /// runs the scripts from).
     std::vector<std::filesystem::path> sourceDirs;
+    /// The constraints of a Quartus project: a plain name where an object is
+    /// expected (set_false_path -to {cfg[*]}) is a collection of keepers, as
+    /// Quartus reads it. Plain names with '|' (Quartus hierarchy) are read so in
+    /// any project.
+    bool quartus = false;
 };
 
 /// Reads the constraint files of one analysis into one ConstraintSet. All

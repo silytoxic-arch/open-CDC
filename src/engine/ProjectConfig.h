@@ -107,6 +107,9 @@ inline constexpr int kProjectFormatVersion = 1;
 
 /// A Vivado (.xpr) or Quartus (.qpf, .qsf) project, which loadProjectFile imports.
 [[nodiscard]] bool isVendorProjectFile(const std::filesystem::path& file);
+/// A project read from (or imported from) a Quartus project: its constraints are
+/// Quartus SDC.
+[[nodiscard]] bool isQuartusProject(const ProjectConfig& config);
 
 /// Reads and validates a project file. Errors carry codes PRJ-*. A Vivado
 /// project (.xpr) or Quartus project (.qpf, .qsf) is imported

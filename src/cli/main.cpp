@@ -205,6 +205,14 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
         if (!c.waivers.empty())
             os << ", " << result->waivedHits() << " hit(s) waived";
         os << "\n";
+        // crossings the designer excluded from timing (set_false_path): still reported
+        const auto excepted = std::ranges::count_if(c.paths, [](const cdc::CdcPath& p) {
+            return !p.timingException.empty() && p.syncStatus != cdc::SyncStatus::NecessaryConditionsVerified &&
+                   p.syncStatus != cdc::SyncStatus::ProtocolUnverified;
+        });
+        if (excepted > 0)
+            os << "          " << excepted << " unsynchronized path(s) covered by a timing exception of the "
+               << "constraints (set_false_path / set_max_delay: declared quasi-static by the designer)\n";
         // where the crossings are: one line per clock pair (the busiest first)
         const auto pairs = engine::summarizeClockPairs(*result);
         for (std::size_t k = 0; k < pairs.size() && k < 12; ++k) {

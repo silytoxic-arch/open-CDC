@@ -283,6 +283,7 @@ json pathJson(const cdc::CdcResult& c, const cdc::CdcPath& p) {
                      {"conditions", std::move(conds)},
                      {"unverifiedConditions", p.unverified},
                      {"notes", p.notes},
+                     {"timingException", p.timingException},
                      {"hierarchicalPath", std::move(steps)},
                      {"sourceLocation", locationJson(p.srcLoc)},
                      {"destinationLocation", locationJson(p.dstLoc)},

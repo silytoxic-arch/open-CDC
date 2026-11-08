@@ -132,6 +132,12 @@ struct CdcPath {
     std::vector<Condition> conditions;
     std::vector<std::string> unverified;   ///< protocol conditions that cannot be proven statically
     std::vector<std::string> notes;
+    /// A timing exception of the constraints (set_false_path, set_max_delay
+    /// -datapath_only) that covers this crossing although its clock relation is
+    /// known: "set_false_path (sys_top.sdc:33)". The designer excludes the path
+    /// from timing (typically a quasi-static value); the crossing is still
+    /// analyzed and reported.
+    std::string timingException;
     std::vector<std::string> syncRegisters;///< chain stages / qualifier, by name
 
     std::vector<PathStep> steps;

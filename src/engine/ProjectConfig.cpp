@@ -276,6 +276,10 @@ bool isVendorProjectFile(const std::filesystem::path& file) {
     return isVivadoProjectFile(file) || isQuartusProjectFile(file);
 }
 
+bool isQuartusProject(const ProjectConfig& config) {
+    return !config.importedFrom.empty() && isQuartusProjectFile(config.importedFrom);
+}
+
 Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file) {
     if (isVivadoProjectFile(file))
         return projectFromXprFile(file);

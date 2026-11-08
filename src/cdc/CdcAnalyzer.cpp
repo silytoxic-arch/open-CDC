@@ -568,12 +568,21 @@ private:
         p.srcClock = ci.src;
         p.dstClock = ci.dst;
         p.relation = ci.relation;
-        if (p.relation == ClockRelation::Unknown)
+        if (p.relation == ClockRelation::Unknown) {
             if (const auto* why = pathExceptionFor(a.node, g, pin, ci, unclockedSource)) {
                 p.relation = ClockRelation::Asynchronous;
                 p.notes.push_back("the clock relation is unknown, but " + *why +
                                   " constrains this crossing: it is analyzed as asynchronous");
             }
+        }
+        else if (const auto* why = pathExceptionFor(a.node, g, pin, ci, unclockedSource)) {
+            // the designer excludes the path from timing (a quasi-static value, as a
+            // rule): shown, the crossing is still checked as it is
+            p.timingException = *why;
+            p.notes.push_back(*why + " covers this crossing: the designer excludes it from timing analysis "
+                                     "(typically a value that is static while it is used); a CDC structure is "
+                                     "still required unless the value cannot change while the destination samples it");
+        }
         p.srcUnclocked = unclockedSource;
         p.srcClockName = unclockedSource ? std::string("(asynchronous input)") : st_.edgeName(ci.src);
         p.dstClockName = st_.edgeName(ci.dst);

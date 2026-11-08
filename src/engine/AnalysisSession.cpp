@@ -174,7 +174,9 @@ std::shared_ptr<const AnalysisResult> AnalysisSession::run(const ProjectConfig& 
         if (!config.constraints.empty()) {
             constraints::DesignObjectResolver resolver(*view);
             // one interpreter for all files: procedures and variables carry over
-            constraints::SdcReader reader(resolver, *cons, sink, {config.tclSourceDirs});
+            constraints::SdcOptions sdcOptions{config.tclSourceDirs};
+            sdcOptions.quartus = engine::isQuartusProject(config);
+            constraints::SdcReader reader(resolver, *cons, sink, sdcOptions);
             for (std::size_t i = 0; i < config.constraints.size(); ++i) {
                 const std::string ref = i < config.constraintScopes.size() ? config.constraintScopes[i] : std::string();
                 if (reader.readFile(config.constraints[i], ref))

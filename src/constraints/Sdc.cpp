@@ -2248,6 +2248,10 @@ private:
             else if (v.starts_with("get_cell") || v.starts_with("get_pin") || v.starts_with("get_port") ||
                      v.starts_with("get_registers") || v.starts_with("get_keepers") || v.starts_with("get_nodes"))
                 side = Side::Cells;
+            else if (implicitKeepers(cmd.words[i + 1])) {
+                side = Side::Cells; // Quartus: a plain name is a collection of keepers
+                quartusQuery = true;
+            }
             else
                 return false;
             (w == "-from" ? from : to) = side;
@@ -2334,6 +2338,13 @@ private:
             });
         };
         const bool hasFrom = given("-from"), hasTo = given("-to");
+        // Quartus: plain names ({cfg[*]}, {*_osd|rot*}) are collections of keepers
+        for (const char* opt : {"-from", "-to"})
+            for (std::size_t i = 1; i + 1 < cmd.words.size(); ++i)
+                if (cmd.words[i].raw == opt && implicitKeepers(cmd.words[i + 1]))
+                    for (auto& v : a.opts[opt])
+                        if (!v.hasObjects && v.text != "*")
+                            v = keeperCollection(v.text, cmd.line);
         for (const auto& v : a.opts["-from"])
             for (const auto& o : v.objects) {
                 if (o.kind == ObjectKind::Clock) {
@@ -3591,6 +3602,33 @@ private:
     // Quartus collections
     // ------------------------------------------------------------------
 
+    /// A -from/-to value that Quartus reads as a collection of keepers: a plain
+    /// (or braced) name, not a command, variable or "*", in Quartus constraints
+    /// (or with a Quartus hierarchy separator '|').
+    bool implicitKeepers(const Word& w) const {
+        if (w.kind == Word::Kind::Bare && (w.raw.starts_with('[') || w.raw.starts_with('$') || w.raw.starts_with('-')))
+            return false;
+        if (w.raw == "*" || w.raw.empty())
+            return false;
+        if (w.kind == Word::Kind::Quoted && (w.raw.find('[') != std::string::npos || w.raw.find('$') != std::string::npos))
+            return false;
+        return options_.quartus || quartusSeen_ || w.raw.find('|') != std::string::npos;
+    }
+
+    /// The keepers (registers, ports, pins) matching the plain names of `text`.
+    Value keeperCollection(const std::string& text, std::uint32_t line) {
+        std::vector<Object> result;
+        for (const auto& pat : splitList(text)) {
+            auto r = resolver_->quartus(pat, QuartusKind::Keepers, false);
+            if (r.empty())
+                unmatched("set_false_path", pat, line);
+            for (auto& o : r)
+                if (std::ranges::find(result, o.name, &Object::name) == result.end())
+                    result.push_back(std::move(o));
+        }
+        return objectsValue(std::move(result));
+    }
+
     /// get_cells / get_pins written with Quartus names: a pattern containing
     /// '|' (never part of a Vivado name; -regexp patterns and filters excluded)
     static bool quartusNames(const Command& cmd) {
@@ -3745,6 +3783,9 @@ private:
     Value exec(const Command& cmd) {
         const Value head = subst(cmd.words[0], cmd.line);
         const std::string& name = head.text;
+        if (name == "derive_pll_clocks" || name == "derive_clock_uncertainty" || name == "get_registers" ||
+            name == "get_keepers" || name == "get_nodes")
+            quartusSeen_ = true; // Quartus SDC: its plain names are keeper collections
         // Vivado completes unique command abbreviations: open-logic's scoped
         // constraints write `get_cell`
         static const std::map<std::string, std::string, std::less<>> kAbbreviations = {
@@ -3894,6 +3935,7 @@ private:
     std::size_t sourceDepth_ = 0;
     SdcOptions options_;
     bool quiet_ = false; ///< evaluating a command given -quiet
+    bool quartusSeen_ = false; ///< a Quartus-only command was seen: Quartus SDC
     std::unordered_map<std::string, std::regex> regexCache_; ///< -regexp filters
 };
 

@@ -1090,6 +1090,8 @@ slang 对相同参数、相同接口连接定义的实例共享规范模块体�
 - 求值的写法：`set_false_path` 或 `set_max_delay -datapath_only`，不带 `-through`、`-hold`、`-rise_*`/`-fall_*`；`-from`、`-to` 至少一侧是寄存器、引脚或端口（查询或保存查询结果的变量），另一侧可以是时钟，也可以省略。两侧都是时钟时，仍是第 24 节的时钟级例外。
 - 端点：`-from` 中的触发器（单元或其任一引脚）记为其 Q，端口记为输入；`-to` 中的单元是整个寄存器，引脚带角色，`D/CE/R/S` 为数据，`CLR/PRE` 为异步复位。实例端口（例如建模为原语的 FDPE 的 PRE）记为实例内部由该端口驱动的触发器，而不是驱动这个端口的源头。
 - CDC 分析：路径的源节点（或源时钟）在 `-from` 中，目的寄存器在 `-to` 中且引脚角色相符（数据路径对应数据角色，异步复位路径对应复位角色），或目的时钟在 `-to` 中，就视为被覆盖。省略的一侧匹配一切。只有时钟关系为未知的路径才使用例外：改判为异步，并在说明中写明命令和位置。已知关系的路径不受影响。
+- 时钟关系已知的路径（阶段 65）：例外不改变判断，但记在路径上（`CdcPath::timingException`，JSON 的 `timingException`，并加一条说明），CLI 汇总"由时序例外覆盖的未同步路径"的数量。设计者用 `set_false_path` 声明的通常是准静态值；是否需要同步结构仍由 CDC 规则判断。
+- Quartus 的裸名称（阶段 65）：`-from`/`-to` 的值不是查询、变量或 `*`，而是名称（`{cfg[*]}`、`{*_osd|rot*}`）时，Quartus 把它读作 keeper（寄存器、端口、引脚）集合。以下情况按此求值：工程来自 Quartus（`SdcOptions::quartus`），或者前面出现过 Quartus 专有命令（`derive_pll_clocks`、`derive_clock_uncertainty`、`get_registers`、`get_keepers`、`get_nodes`），或者名称含 Quartus 的层次分隔符 `|`。其他情况仍记为"已记录、未使用"。
 - 未求值的例外仍记为"已记录、未使用"，参数不求值，因此不会产生查询告警。
 - `-quiet`：带 `-quiet` 的例外在求值时产生的告警降为提示，并注明"command given -quiet"，与 Vivado 忽略该命令错误的语义一致。
 

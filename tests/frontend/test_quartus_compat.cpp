@@ -311,3 +311,53 @@ TEST_CASE("Top-level tristate pads: the logic reading them sees the pin", "[fron
     // what the design drives out of the pad is still checked against its output delay
     CHECK(a.has("CDC-OUTPUT-CLOCK", "output 'top.io[0]'"));
 }
+
+TEST_CASE("Quartus SDC: plain names are keeper collections; a false path on a crossing is shown",
+          "[frontend][quartus][sdc]") {
+    // MiSTer sys_top.sdc: set_false_path -from {cfg[*]}, set_false_path -from {*_osd|rot*}
+    const char* const rtl = "module osd (input clk_a, input clk_b, input [1:0] d, output reg [1:0] q);\n"
+                            "  reg [1:0] rot; always @(posedge clk_a) rot <= d;\n"
+                            "  always @(posedge clk_b) q <= rot;\n"
+                            "endmodule\n"
+                            "module top (input clk_a, input clk_b, input [3:0] d, output reg [3:0] q, output [1:0] o,\n"
+                            "            output reg [3:0] q2);\n"
+                            "  reg [3:0] cfg; reg [3:0] other;\n"
+                            "  always @(posedge clk_a) begin cfg <= d; other <= ~d; end\n"
+                            "  always @(posedge clk_b) begin q <= cfg; q2 <= other; end\n"
+                            "  osd hdmi_osd (.clk_a(clk_a), .clk_b(clk_b), .d(d[1:0]), .q(o));\n"
+                            "endmodule\n";
+    const std::string clocks = "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                               "create_clock -name clk_b -period 7 [get_ports clk_b]\n"
+                               "set_clock_groups -asynchronous -group clk_a -group clk_b\n";
+    auto exceptionOf = [](const Analysis& a, std::string_view src) {
+        for (const auto& p : a.r->cdc->paths)
+            if (p.srcName.starts_with(src))
+                return p.timingException;
+        return std::string("<no path>");
+    };
+    SECTION("Quartus constraints (derive_pll_clocks): {cfg[*]} names the register") {
+        test::TempDir dir;
+        const auto a = analyze(dir, {{"top.sv", rtl}}, "top",
+                               "derive_pll_clocks\n" + clocks + "set_false_path -from {cfg[*]}\n");
+        REQUIRE(a.r->cdc);
+        CHECK(a.count("CON-UNMATCHED") == 0);
+        CHECK(exceptionOf(a, "top.cfg").starts_with("set_false_path ("));
+        CHECK(exceptionOf(a, "top.other").empty()); // not covered
+        // still a crossing without synchronizer: the exception is shown, not applied
+        CHECK(a.crosses("top.cfg", "top.q"));
+    }
+    SECTION("a Quartus hierarchical name ('|') is read so in any constraints") {
+        test::TempDir dir;
+        const auto a = analyze(dir, {{"top.sv", rtl}}, "top", clocks + "set_false_path -from {*_osd|rot*}\n");
+        REQUIRE(a.r->cdc);
+        CHECK(exceptionOf(a, "top.hdmi_osd.rot").starts_with("set_false_path ("));
+        CHECK(exceptionOf(a, "top.cfg").empty());
+    }
+    SECTION("negative: a plain name in other constraints is not evaluated") {
+        test::TempDir dir;
+        const auto a = analyze(dir, {{"top.sv", rtl}}, "top", clocks + "set_false_path -from {cfg[*]}\n");
+        REQUIRE(a.r->cdc);
+        CHECK(a.has("CON-IGNORED", "set_false_path x1"));
+        CHECK(exceptionOf(a, "top.cfg").empty());
+    }
+}
