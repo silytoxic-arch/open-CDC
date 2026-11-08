@@ -211,6 +211,9 @@ private:
     std::string prefix_; ///< hierarchical path prefix of symbols in this body ("top.u_rx.")
     std::unordered_map<const sast::Symbol*, ir::NetId> netOf_;
     ir::BodyEditor ed_{body_}; ///< cell creation, control extraction, cleanup (shared with the VHDL frontend)
+    /// conditions of the enclosing 'if ... else if' chain (lowering an else branch)
+    std::vector<ir::SigSpec> elseChain_;
+    bool elseChainUnique_ = false; ///< the chain is unique / priority if
     std::unordered_set<const sast::ValueSymbol*> loopVars_;     ///< variables used as for-loop indices
     /// Combinational block: variables assigned both ways, whose non-blocking
     /// assignments are lowered as blocking ones (synthesis semantics)

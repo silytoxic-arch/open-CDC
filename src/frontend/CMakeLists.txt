@@ -11,6 +11,7 @@ set(_prim_files
     ${_prim_dir}/unisim_vcomponents.vhd
     ${_prim_dir}/xpm_vcomponents.vhd
     ${_prim_dir}/altera_mf_components.vhd
+    ${_prim_dir}/lpm_components.vhd
     ${_prim_dir}/lattice_components.vhd
     ${_prim_dir}/gowin_components.vhd)
 set(_prim_cpp ${CMAKE_CURRENT_BINARY_DIR}/PrimitiveSources.cpp)

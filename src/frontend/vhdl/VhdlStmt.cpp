@@ -683,6 +683,19 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
             // three-literal enumeration, do not occur)
             if (!conds.empty())
                 conds.back() = one();
+            // a final 'when others' after choices that already cover every two-state
+            // value (all 8 codes of a 3-bit selector, then 'when others => null'):
+            // it only stands for the non-binary values ('X', 'Z' ...), which hardware
+            // does not have; the last explicit alternative takes the rest
+            if (conds.size() > 1 && isOthers.back() && s.caseAlts.back().choices.size() == 1 && body && body->ed) {
+                SigSpec any = conds.front();
+                for (std::size_t k = 1; k + 1 < conds.size(); ++k)
+                    any = ops.orB(any, conds[k]);
+                if (body->ed->alwaysTrue(any)) {
+                    conds[conds.size() - 2] = one();
+                    conds.back() = zero();
+                }
+            }
             std::function<void(std::size_t, ProcState&)> run = [&](std::size_t k, ProcState& state) {
                 if (k >= s.caseAlts.size())
                     return;

@@ -92,6 +92,8 @@ Sources:
 | `dcfifo` | Asynchronous FIFO with Gray pointers synchronized in both directions (`rdsync_delaypipe` − 2 stages, at least 2) |
 | `altsyncram`, `altera_syncram` | Port A on `clock0`; port B on `clock1` when `address_reg_b` or `outdata_reg_b` is `"CLOCK1"`, otherwise on `clock0`; per-port write arrays as for block RAM |
 | `altdpram` | Dual-port (MLAB) RAM: written on `inclock`; the read address registered on `inclock` or `outclock` (`rdaddress_reg`), or not; the output registered on `outclock` or `inclock` (`outdata_reg`), or read asynchronously |
+| `scfifo` | Single-clock FIFO on `clock`: written on `clock`; `q` combinational from the memory when `lpm_showahead` is `"ON"`, otherwise registered on `clock` |
+| `lpm_mult`, `lpm_divide` | Combinational multiplier / divider; with `lpm_pipeline` > 0 the result passes through that many stages on `clock` (held while `clken` is `0`). VHDL declarations in `lpm.lpm_components` |
 | `altddio_in`, `altddio_out` | DDR input (falling-edge capture) and output registers |
 | `altpll` | `clk[n]` are clocks derived from `inclk[0]`, period = input period × `clkN_divide_by` / `clkN_multiply_by`; the input period comes from the input clock or from `inclk0_input_frequency` (ps); `locked` has no clock domain. Each clock also has Quartus' name `<instance path>|auto_generated|pll1|clk[n]` |
 | `altera_pll` | `outclk[n]` derived from `refclk`; period ratio = `reference_clock_frequency` / `output_clock_frequencyN` (strings such as `"125.000000 MHz"`); `locked` has no clock domain. Each clock also has Quartus' name (`derive_pll_clocks`) `<instance path>|general[n].gpll~PLL_OUTPUT_COUNTER|divclk`, the path below the top with `|`, so SDC such as `get_clocks {*|pll|pll_inst|altera_pll_i|*[*].*|divclk}` matches |

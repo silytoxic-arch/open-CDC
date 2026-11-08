@@ -29,6 +29,7 @@
 #include <slang/ast/types/Type.h>
 
 #include <algorithm>
+#include <utility>
 #include <functional>
 
 namespace opencdc::frontend::detail {
@@ -273,11 +274,49 @@ void BodyBuilder::exec(const sast::Statement& s, ProcState& st) {
                     exec(*c.ifFalse, st);
                 return;
             }
+            // the last 'if' of an 'if ... else if ...' chain without 'else': complete
+            // when the chain's conditions together cover every two-state value, or
+            // for unique / priority if (an alternative always applies; synthesis
+            // reads it so): its body then runs unconditionally (no latch)
+            const bool chainUnique = c.check == sast::UniquePriorityCheck::Unique ||
+                                     c.check == sast::UniquePriorityCheck::Priority || elseChainUnique_;
+            if (!c.ifFalse && (!elseChain_.empty() || chainUnique)) {
+                SigSpec any = cond;
+                for (const auto& o : elseChain_)
+                    any = cell(CellKind::Or, {any, o}, 1, l);
+                if (chainUnique || ed_.alwaysTrue(any)) {
+                    auto saved = std::exchange(elseChain_, {});
+                    const bool savedUnique = std::exchange(elseChainUnique_, false);
+                    exec(c.ifTrue, st);
+                    elseChain_ = std::move(saved);
+                    elseChainUnique_ = savedUnique;
+                    return;
+                }
+            }
             ProcState t = st;
-            exec(c.ifTrue, t);
+            {
+                auto saved = std::exchange(elseChain_, {});
+                const bool savedUnique = std::exchange(elseChainUnique_, false);
+                exec(c.ifTrue, t);
+                elseChain_ = std::move(saved);
+                elseChainUnique_ = savedUnique;
+            }
             ProcState f = st;
-            if (c.ifFalse)
+            if (c.ifFalse) {
+                auto saved = elseChain_;
+                const bool savedUnique = elseChainUnique_;
+                if (c.ifFalse->kind == sast::StatementKind::Conditional) { // else if
+                    elseChain_.push_back(cond);
+                    elseChainUnique_ = chainUnique;
+                }
+                else {
+                    elseChain_.clear();
+                    elseChainUnique_ = false;
+                }
                 exec(*c.ifFalse, f);
+                elseChain_ = std::move(saved);
+                elseChainUnique_ = savedUnique;
+            }
             ProcState merged;
             merge(cond, t, f, merged, l);
             st = std::move(merged);

@@ -83,7 +83,8 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
                           "IDELAYE3", "ODELAYE3", "IDELAYCTRL", "RAMB18E1", "RAMB36E1", "RAMB18E2", "RAMB36E2",
                           "xpm_memory_sdpram", "xpm_memory_tdpram", "xpm_memory_spram", "xpm_memory_dpdistram",
                           "altsyncram", "altddio_in", "altddio_out", "BUFGCE_DIV", "ISERDESE2", "OSERDESE2",
-                          "ISERDESE3", "OSERDESE3", "URAM288", "altera_syncram", "altdpram"})
+                          "ISERDESE3", "OSERDESE3", "URAM288", "altera_syncram", "altdpram", "scfifo",
+                          "lpm_mult", "lpm_divide"})
         CHECK(lib.find(n).has_value());
     CHECK(lib.find("fdre") == std::optional<std::string>("FDRE")); // VHDL spelling
     CHECK(lib.find("MMCME2_ADV").has_value()); // clock generators are generated on demand
@@ -585,6 +586,42 @@ TEST_CASE("Primitives: Intel altdpram (MLAB) from VHDL", "[primitives][vhdl]") {
     // output register on outclock (clk_b)
     CHECK(crosses(*run, "top.m.mem", "top.rq"));
     CHECK(crosses(*run, "top.r.mem", "top.r.g_q_out.r"));
+}
+
+TEST_CASE("Primitives: Intel LPM arithmetic and scfifo from VHDL", "[primitives][vhdl]") {
+    // SNES_MiSTer SA1MULT / SPC7110_MULDIV / SPC7110_FIFO
+    auto run = analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "library lpm; use lpm.lpm_components.all;\n"
+                       "library altera_mf; use altera_mf.altera_mf_components.all;\n"
+                       "entity top is port (clk_a, clk_b : in std_logic; a, b : in std_logic_vector(7 downto 0);\n"
+                       "  p : out std_logic_vector(15 downto 0); q : out std_logic_vector(7 downto 0);\n"
+                       "  f : out std_logic_vector(7 downto 0)); end;\n"
+                       "architecture rtl of top is\n"
+                       "  signal ar, br : std_logic_vector(7 downto 0); signal pm, pr : std_logic_vector(15 downto 0);\n"
+                       "  signal qd, qr, fq, fr : std_logic_vector(7 downto 0); signal rem8 : std_logic_vector(7 downto 0);\n"
+                       "begin\n"
+                       "  process (clk_a) begin if rising_edge(clk_a) then ar <= a; br <= b; end if; end process;\n"
+                       "  m : lpm_mult generic map (lpm_widtha => 8, lpm_widthb => 8, lpm_widthp => 16)\n"
+                       "    port map (dataa => ar, datab => br, result => pm);\n"
+                       "  d : lpm_divide generic map (lpm_widthn => 8, lpm_widthd => 8, lpm_pipeline => 2)\n"
+                       "    port map (numer => ar, denom => br, clock => clk_b, quotient => qd, remain => rem8);\n"
+                       "  ff : scfifo generic map (lpm_width => 8, lpm_widthu => 4, lpm_numwords => 16, lpm_showahead => \"ON\")\n"
+                       "    port map (clock => clk_b, data => ar, wrreq => '1', rdreq => '1', q => fq);\n"
+                       "  process (clk_b) begin if rising_edge(clk_b) then pr <= pm; qr <= qd; fr <= fq; end if; end process;\n"
+                       "  p <= pr; q <= qr; f <= fr;\n"
+                       "end;\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("IR-UNRESOLVED-INSTANCE") == 0);
+    CHECK(run->count("VHDL-UNDECLARED") == 0);
+    // combinational multiplier: clk_a registers into a clk_b register
+    CHECK(crosses(*run, "top.ar", "top.pr"));
+    // pipelined divider: the first stage is clocked by clk_b
+    CHECK(crosses(*run, "top.ar", "top.d.g_pipe.sq"));
+    // single-clock FIFO written from clk_a data on clk_b
+    CHECK(crosses(*run, "top.ar", "top.ff.mem"));
 }
 
 TEST_CASE("Primitives: VHDL block RAM and XPM memory", "[primitives][vhdl]") {

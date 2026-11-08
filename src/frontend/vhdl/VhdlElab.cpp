@@ -935,14 +935,27 @@ void Elaborator::elaborateInstance(const Stmt& s, Scope& scope) {
         }
         auto k = specIndex(key);
         if (!k) {
-            // formal in a conversion function: f(port) => actual
+            // formal in a conversion: f(port) => actual
             if (a.formal && a.formal->kind == ExprKind::Call && a.formal->args.size() == 1 &&
                 a.formal->args[0].actual && a.formal->args[0].actual->kind == ExprKind::Simple &&
                 specIndex(a.formal->args[0].actual->ident.key)) {
-                unsupported("IR-UNSUPPORTED-PORT", "conversion function in the formal part of a port association",
-                            a.loc);
-                continue;
+                // a type conversion between closely related array types (signed(q_a) =>
+                // x, SNES DSP.vhd) keeps the bits: the whole port
+                const auto conv = a.formal->prefix ? resolveName(*a.formal->prefix, pctx, true)
+                                                   : std::vector<Symbol*>{};
+                if (!conv.empty() && conv.front()->kind == SymKind::Type && conv.front()->type &&
+                    conv.front()->type->isArray()) {
+                    k = specIndex(a.formal->args[0].actual->ident.key);
+                    partial = nullptr;
+                }
+                else {
+                    unsupported("IR-UNSUPPORTED-PORT",
+                                "conversion function in the formal part of a port association", a.loc);
+                    continue;
+                }
             }
+        }
+        if (!k) {
             error("VHDL-PORT-MAP", "entity '" + entity->name.text + "' has no port '" + key + "'", a.loc);
             continue;
         }

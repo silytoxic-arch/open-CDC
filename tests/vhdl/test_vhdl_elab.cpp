@@ -1101,6 +1101,14 @@ TEST_CASE("VHDL: a logical operator on arrays of different lengths is a warning 
     REQUIRE(r.design);
     CHECK(r.errors() == 0);
     CHECK(r.count("VHDL-LENGTH-LOGIC") == 1);
+    // the result is as long as the longer operand, as Quartus reads it (SNES CX4Map:
+    // a 22-bit and a 23-bit operand into a 23-bit port)
+    auto l = elaborate(lib("entity t is port (a : in std_logic_vector(21 downto 0); m : in std_logic_vector(22 downto 0);\n"
+                           "  q : out std_logic_vector(22 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n  q <= a and m;\nend;\n"),
+                       "t");
+    CHECK(l.errors() == 0);
+    CHECK(l.count("VHDL-LENGTH-LOGIC") == 1);
     // negative: an assignment of the wrong length is still an error
     auto n = elaborate(lib("entity t is port (a : in std_logic_vector(8 downto 0); q : out std_logic_vector(3 downto 0));\n"
                            "end;\narchitecture rtl of t is begin\n  q <= a;\nend;\n"),
@@ -1153,6 +1161,51 @@ TEST_CASE("VHDL: conditions that together cover every two-state value need no fi
     CHECK_FALSE(r.has("latch y "));
     CHECK(r.has("latch n "));
     CHECK(r.count("IR-LATCH-INFERRED") == 1);
+}
+
+TEST_CASE("VHDL: 'when others' after choices covering every two-state value is not a latch", "[vhdl][elab]") {
+    // SNES_MiSTer 65C816 ALU: case CTRL.secOp is (all 8 codes) ... when others => null;
+    auto r = elaborate(lib("entity t is port (s : in std_logic_vector(1 downto 0); a, b : in std_logic_vector(3 downto 0);\n"
+                           "  y, n : out std_logic_vector(3 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (all) begin\n"
+                           "    case s is when \"00\" | \"01\" => y <= a; when \"10\" | \"11\" => y <= b;\n"
+                           "      when others => null; end case;\n"
+                           "  end process;\n"
+                           // negative: "11" is missing, others really holds
+                           "  process (all) begin\n"
+                           "    case s is when \"00\" | \"01\" => n <= a; when \"10\" => n <= b;\n"
+                           "      when others => null; end case;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK_FALSE(r.has("latch y "));
+    CHECK(r.has("latch n "));
+}
+
+TEST_CASE("VHDL: a type conversion in the formal part of a port association", "[vhdl][elab]") {
+    // SNES_MiSTer DSP.vhd: signed(q_a) => BRR_BUF_DO
+    auto r = elaborate(lib("entity child is port (clk : in std_logic; d : in std_logic_vector(7 downto 0);\n"
+                           "  q : out std_logic_vector(7 downto 0)); end;\n"
+                           "architecture rtl of child is begin q <= d when rising_edge(clk); end;\n") +
+                           lib("entity t is port (clk : in std_logic; d : in std_logic_vector(7 downto 0);\n"
+                               "  o, o2 : out signed(7 downto 0)); end;\n"
+                               "architecture rtl of t is\n"
+                               "  function inv(x : std_logic_vector) return signed is begin return signed(not x); end;\n"
+                               "  signal s, s2 : signed(7 downto 0);\n"
+                               "begin\n"
+                               "  u : entity work.child port map (clk => clk, d => d, signed(q) => s);\n"
+                               // negative: a conversion function is still reported
+                               "  v : entity work.child port map (clk => clk, d => d, inv(q) => s2);\n"
+                               "  o <= s; o2 <= s2;\n"
+                               "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-PORT") == 1);
+    CHECK(r.has("inst u : child (.clk(clk), .d(d), .q(s))"));
 }
 
 TEST_CASE("VHDL negative: a clock edge that is not the last condition stays unsupported", "[vhdl][elab]") {

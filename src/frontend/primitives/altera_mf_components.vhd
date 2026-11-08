@@ -37,4 +37,17 @@ package altera_mf_components is
   component altera_syncram port (clock0 : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component altpll port (inclk : in std_logic_vector(1 downto 0)); end component;
+  component scfifo
+    generic (add_ram_output_register : string := "OFF"; allow_rwcycle_when_full : string := "OFF";
+             almost_empty_value : natural := 0; almost_full_value : natural := 0; enable_ecc : string := "FALSE";
+             intended_device_family : string := ""; lpm_hint : string := "UNUSED"; lpm_numwords : natural := 16;
+             lpm_showahead : string := "OFF"; lpm_type : string := "scfifo"; lpm_width : natural := 8;
+             lpm_widthu : natural := 4; maximum_depth : natural := 0; overflow_checking : string := "ON";
+             underflow_checking : string := "ON"; use_eab : string := "ON");
+    port (aclr : in std_logic := '0'; almost_empty : out std_logic; almost_full : out std_logic;
+          clock : in std_logic; data : in std_logic_vector(lpm_width-1 downto 0); eccstatus : out std_logic;
+          empty : out std_logic; full : out std_logic; q : out std_logic_vector(lpm_width-1 downto 0);
+          rdreq : in std_logic; sclr : in std_logic := '0'; usedw : out std_logic_vector(lpm_widthu-1 downto 0);
+          wrreq : in std_logic);
+  end component;
 end package;

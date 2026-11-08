@@ -123,6 +123,108 @@ module dcfifo #(parameter add_usedw_msb_bit = "OFF", parameter clocks_are_synchr
     assign eccstatus = 1'b0;
 endmodule
 
+// ---------------------------------------------------------------- scfifo
+// Single-clock FIFO: memory and pointers on one clock (no crossing inside);
+// lpm_showahead = "ON" reads the head combinationally, otherwise q is registered.
+module scfifo #(parameter add_ram_output_register = "OFF", parameter allow_rwcycle_when_full = "OFF",
+                parameter almost_empty_value = 0, parameter almost_full_value = 0,
+                parameter enable_ecc = "FALSE", parameter intended_device_family = "",
+                parameter lpm_hint = "UNUSED", parameter lpm_numwords = 16, parameter lpm_showahead = "OFF",
+                parameter lpm_type = "scfifo", parameter lpm_width = 8, parameter lpm_widthu = 4,
+                parameter maximum_depth = 0, parameter overflow_checking = "ON",
+                parameter underflow_checking = "ON", parameter use_eab = "ON")
+               (input aclr, output almost_empty, output almost_full, input clock, input [lpm_width-1:0] data,
+                output eccstatus, output empty, output full, output [lpm_width-1:0] q, input rdreq, input sclr,
+                output [lpm_widthu-1:0] usedw, input wrreq);
+    localparam integer AW = lpm_widthu;
+    reg [lpm_width-1:0] mem [0:(1 << AW)-1];
+    reg [AW:0] wp, rp;
+    wire empty_i = wp == rp;
+    wire full_i = (wp[AW-1:0] == rp[AW-1:0]) && (wp[AW] != rp[AW]);
+    always @(posedge clock or posedge aclr)
+        if (aclr) begin
+            wp <= {(AW+1){1'b0}};
+            rp <= {(AW+1){1'b0}};
+        end else if (sclr) begin
+            wp <= {(AW+1){1'b0}};
+            rp <= {(AW+1){1'b0}};
+        end else begin
+            if (wrreq && !full_i) wp <= wp + 1'b1;
+            if (rdreq && !empty_i) rp <= rp + 1'b1;
+        end
+    always @(posedge clock)
+        if (wrreq && !full_i) mem[wp[AW-1:0]] <= data;
+    generate
+        if (lpm_showahead == "ON") begin : g_ahead
+            assign q = mem[rp[AW-1:0]];
+        end else begin : g_reg
+            reg [lpm_width-1:0] q_ff;
+            always @(posedge clock)
+                if (rdreq && !empty_i) q_ff <= mem[rp[AW-1:0]];
+            assign q = q_ff;
+        end
+    endgenerate
+    wire [AW:0] used = wp - rp;
+    assign usedw = used[AW-1:0];
+    assign empty = empty_i;
+    assign full = full_i;
+    assign almost_empty = used < almost_empty_value;
+    assign almost_full = used >= almost_full_value;
+    assign eccstatus = 1'b0;
+endmodule
+
+// ---------------------------------------------------------------- LPM arithmetic
+// lpm_mult / lpm_divide: the result combinationally (lpm_pipeline = 0) or after
+// lpm_pipeline registers on clock (enabled by clken).
+module lpm_mult #(parameter lpm_widtha = 1, parameter lpm_widthb = 1, parameter lpm_widthp = 2,
+                  parameter lpm_widths = 1, parameter lpm_representation = "UNSIGNED",
+                  parameter lpm_pipeline = 0, parameter lpm_type = "LPM_MULT", parameter lpm_hint = "UNUSED")
+                 (input [lpm_widtha-1:0] dataa, input [lpm_widthb-1:0] datab, input [lpm_widths-1:0] sum,
+                  input clock, input clken, input aclr, input sclr, output [lpm_widthp-1:0] result);
+    localparam integer W = lpm_widtha + lpm_widthb;
+    wire [W-1:0] p = lpm_representation == "SIGNED" ? $signed(dataa) * $signed(datab) : dataa * datab;
+    wire [lpm_widthp-1:0] r = p;
+    genvar i;
+    generate
+        if (lpm_pipeline == 0) begin : g_comb
+            assign result = r;
+        end else begin : g_pipe
+            reg [lpm_widthp-1:0] stage [0:lpm_pipeline-1];
+            always @(posedge clock) if (clken !== 1'b0) stage[0] <= r;
+            for (i = 1; i < lpm_pipeline; i = i + 1) begin : g_stage
+                always @(posedge clock) if (clken !== 1'b0) stage[i] <= stage[i-1];
+            end
+            assign result = stage[lpm_pipeline-1];
+        end
+    endgenerate
+endmodule
+
+module lpm_divide #(parameter lpm_widthn = 1, parameter lpm_widthd = 1,
+                    parameter lpm_nrepresentation = "UNSIGNED", parameter lpm_drepresentation = "UNSIGNED",
+                    parameter lpm_pipeline = 0, parameter lpm_remainderpositive = "TRUE",
+                    parameter maximize_speed = 5, parameter lpm_type = "LPM_DIVIDE", parameter lpm_hint = "UNUSED")
+                   (input [lpm_widthn-1:0] numer, input [lpm_widthd-1:0] denom, input clock, input clken,
+                    input aclr, output [lpm_widthn-1:0] quotient, output [lpm_widthd-1:0] remain);
+    wire [lpm_widthn-1:0] q = lpm_nrepresentation == "SIGNED" ? $signed(numer) / $signed(denom) : numer / denom;
+    wire [lpm_widthd-1:0] r = lpm_nrepresentation == "SIGNED" ? $signed(numer) % $signed(denom) : numer % denom;
+    genvar i;
+    generate
+        if (lpm_pipeline == 0) begin : g_comb
+            assign quotient = q;
+            assign remain = r;
+        end else begin : g_pipe
+            reg [lpm_widthn-1:0] sq [0:lpm_pipeline-1];
+            reg [lpm_widthd-1:0] sr [0:lpm_pipeline-1];
+            always @(posedge clock) if (clken !== 1'b0) begin sq[0] <= q; sr[0] <= r; end
+            for (i = 1; i < lpm_pipeline; i = i + 1) begin : g_stage
+                always @(posedge clock) if (clken !== 1'b0) begin sq[i] <= sq[i-1]; sr[i] <= sr[i-1]; end
+            end
+            assign quotient = sq[lpm_pipeline-1];
+            assign remain = sr[lpm_pipeline-1];
+        end
+    endgenerate
+endmodule
+
 // ---------------------------------------------------------------- altsyncram
 // Port A on clock0; port B on clock1 when its address/output registers say
 // so (address_reg_b / outdata_reg_b = "CLOCK1"), otherwise on clock0. Each

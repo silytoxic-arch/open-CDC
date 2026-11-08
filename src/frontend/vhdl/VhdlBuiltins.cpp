@@ -757,14 +757,16 @@ SVal Elaborator::callBuiltin(Builtin b, const Symbol& sym, std::vector<SVal>& ar
                 c = c.repeated(w);
             if (a.width() != c.width()) {
                 // the IEEE package body asserts (a failure in simulation, which synthesis
-                // ignores) and returns its uninitialized result of the left operand's
-                // length: Quartus compiles the design (T80: ioq and x"7")
+                // ignores); Quartus compiles such designs with a result as long as the
+                // longer operand (T80: ioq(9) and x"7" into ioq; SNES CX4Map: a 22-bit
+                // and a 23-bit operand into a 23-bit port). Its value is unknown.
                 warn("VHDL-LENGTH-LOGIC",
                      "operands of '" + sym.display + "' have different lengths (" + std::to_string(a.width()) +
                          " and " + std::to_string(c.width()) +
-                         "): a failure in simulation; the result (as long as the left operand) is unknown",
+                         "): a failure in simulation; the result (as long as the longer operand) is unknown",
                      l);
-                return makeBits(args[0].type->isArray() ? args[0].type : rt, ir::SigSpec::allX(a.width()));
+                const Type* longer = a.width() >= c.width() ? args[0].type : args[1].type;
+                return makeBits(longer && longer->isArray() ? longer : rt, ir::SigSpec::allX(w));
             }
             ir::CellKind k = b == Builtin::LogicAnd || b == Builtin::LogicNand   ? ir::CellKind::And
                              : b == Builtin::LogicOr || b == Builtin::LogicNor   ? ir::CellKind::Or

@@ -1146,3 +1146,24 @@ TEST_CASE("IR: unique and priority case are full cases; unique0 and plain case a
     CHECK(e.contains("latch z "));
     CHECK(e.contains("latch n "));
 }
+
+TEST_CASE("IR: an if / else if chain covering every two-state value, or unique if, needs no else", "[ir][case]") {
+    auto e = extract("module t(input h, input e, input [3:0] a, b, c, d, output logic [3:0] y, output logic [3:0] n,\n"
+                     "         output logic [3:0] u, output logic [3:0] p, output logic [3:0] k, output logic [3:0] z);\n"
+                     "  always_comb if (h & !e) y = a; else if (h & e) y = b; else if (!h & !e) y = c;\n"
+                     "              else if (!h & e) y = d;\n"
+                     "  always_comb unique if (h) u = a; else if (e) u = b;\n"
+                     // negatives: a value missing; a plain chain; unique0; the chain does not reach an if nested in a branch
+                     "  always_comb if (h & !e) n = a; else if (h & e) n = b; else if (!h & !e) n = c;\n"
+                     "  always_comb if (h) p = a; else if (e) p = b;\n"
+                     "  always_comb if (h) begin if (e) k = a; end else k = b;\n"
+                     "  always_comb unique0 if (h) z = a; else if (e) z = b;\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK_FALSE(e.contains("latch y "));
+    CHECK_FALSE(e.contains("latch u "));
+    CHECK(e.contains("latch n "));
+    CHECK(e.contains("latch p "));
+    CHECK(e.contains("latch k "));
+    CHECK(e.contains("latch z "));   // unique0 promises no match is fine
+}
