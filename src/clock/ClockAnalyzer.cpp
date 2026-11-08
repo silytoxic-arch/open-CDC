@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cctype>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -449,7 +450,24 @@ private:
                     t.status = ClockStatus::Constant;
                     t.reason = std::string("clock is tied to constant ") + logicText(d.constant);
                     break;
-                case DriverKind::Undriven: t = unresolved("clock net '" + view_.name(d.bit) + "' is undriven"); break;
+                case DriverKind::Undriven: {
+                    // an unconnected clock input of a vendor primitive: that interface of
+                    // the primitive is not used (MiSTer leaves the HPS bridges fpga2hps,
+                    // hps2fpga and f2sdram ports 3..5 without a clock)
+                    const ir::ModuleBody& body = view_.bodyOf(d.bit.inst);
+                    const auto port = std::ranges::find_if(body.ports, [&](const ir::Port& p) {
+                        return p.net == d.bit.net && p.dir == ir::PortDir::In;
+                    });
+                    if (body.vendorModel && port != body.ports.end()) {
+                        t = unresolved("clock input '" + port->name + "' of '" +
+                                       view_.design().instance(d.bit.inst).hierPath + "' (vendor primitive " +
+                                       body.name + ") is not connected: the interface it clocks is not used");
+                        unusedInterface_.insert(t.reason);
+                    }
+                    else
+                        t = unresolved("clock net '" + view_.name(d.bit) + "' is undriven");
+                    break;
+                }
                 case DriverKind::Loop: t = unresolved("alias loop at '" + view_.name(d.bit) + "'"); break;
                 case DriverKind::Latch:
                     t = unresolved("clock is driven by latch output '" + view_.name(d.bit) + "'");
@@ -670,11 +688,18 @@ private:
             }
         }
 
-        for (const auto& [why, e] : unresolvedByReason)
-            sink_.report({"CLK-UNRESOLVED", Severity::Warning,
-                          std::to_string(e.first) + " register(s) with unresolved clock: " + why + " (e.g. '" + e.second +
-                              "'); they are excluded from CDC analysis",
-                          {}, {}});
+        for (const auto& [why, e] : unresolvedByReason) {
+            if (unusedInterface_.contains(why))
+                sink_.report({"CLK-UNUSED-INTERFACE", Severity::Info,
+                              std::to_string(e.first) + " register(s) in a built-in primitive model without a clock: " +
+                                  why + "; they are excluded from CDC analysis",
+                              {}, {}});
+            else
+                sink_.report({"CLK-UNRESOLVED", Severity::Warning,
+                              std::to_string(e.first) + " register(s) with unresolved clock: " + why + " (e.g. '" +
+                                  e.second + "'); they are excluded from CDC analysis",
+                              {}, {}});
+        }
         for (const auto& [why, e] : constantByReg)
             sink_.report({"CLK-CONSTANT", Severity::Warning,
                           std::to_string(e.first) + " register(s) never toggle: " + why, e.second, {}});
@@ -1158,6 +1183,7 @@ private:
     const constraints::ConstraintSet& cons_;
     DiagnosticSink& sink_;
     std::shared_ptr<ClockModel> model_;
+    std::set<std::string> unusedInterface_; ///< unresolved reasons: an unconnected clock input of a vendor model
     std::vector<std::vector<std::vector<ClockId>>> groupObjectClocks_;
     std::vector<std::pair<std::vector<ClockId>, std::vector<ClockId>>> exceptionClocks_; ///< per clock exception ///< constraint -> group -> clocks (-of_objects)
 

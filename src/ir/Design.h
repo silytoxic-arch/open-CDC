@@ -191,6 +191,7 @@ struct ModuleBody {
     std::string name;        ///< definition name
     std::string params;      ///< "#(W=8, DEPTH=16)" or empty
     SourceLocation loc;
+    bool vendorModel = false; ///< OpenCDC's built-in model of a vendor primitive
     std::vector<Net> nets;
     std::vector<Cell> cells;
     std::vector<Register> registers;

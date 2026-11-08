@@ -579,8 +579,9 @@ TEST_CASE("Primitives: single-port and ROM altsyncram have no port B", "[primiti
     REQUIRE(run->r->cdc);
     dumpPaths(*run);
     CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
-    // only the dual-port memory has registers on the unconnected clock1
-    CHECK(run->count("CLK-UNRESOLVED") == 1);
+    // only the dual-port memory has registers on the unconnected clock1 (an unused port B)
+    CHECK(run->count("CLK-UNUSED-INTERFACE") == 1);
+    CHECK(run->count("CLK-UNRESOLVED") == 0);
     CHECK(crosses(*run, "top.sp.qa", "top.qr"));
     CHECK(crosses(*run, "top.rom.qa", "top.rr"));
 }
@@ -615,6 +616,40 @@ TEST_CASE("Primitives: Intel altdpram (MLAB) from VHDL", "[primitives][vhdl]") {
     // output register on outclock (clk_b)
     CHECK(crosses(*run, "top.m.mem", "top.rq"));
     CHECK(crosses(*run, "top.r.mem", "top.r.g_q_out.r"));
+}
+
+TEST_CASE("Primitives: an unconnected clock input of a vendor model is an unused interface", "[primitives]") {
+    // MiSTer sysmem.sv: fpga2hps and hps2fpga without a clock, f2sdram ports 3..5 unused
+    auto run = analyze(
+        "t.v",
+        "module leaf(input clk, input d, output reg q); always @(posedge clk) q <= d; endmodule\n"
+        "module top(input clk_a, input [59:0] d, output r, output s, output t);\n"
+        "  wire ready; wire nc_clk;\n"
+        "  cyclonev_hps_interface_fpga2sdram f2sdram (.cmd_port_clk_0(clk_a), .cmd_data_0(d), .cmd_valid_0(1'b1),\n"
+        "    .cmd_ready_0(ready));\n"
+        "  cyclonev_hps_interface_hps2fpga hps2fpga ();\n"
+        "  reg rr; always @(posedge clk_a) rr <= ready; assign r = rr;\n"
+        // negatives: a user module with an unconnected clock, a vendor model clocked by an undriven wire
+        "  leaf u (.d(d[0]), .q(s));\n"
+        "  cyclonev_hps_interface_fpga2sdram f2 (.cmd_port_clk_0(nc_clk), .cmd_data_0(d), .cmd_valid_0(1'b1),\n"
+        "    .cmd_ready_0(t));\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    // per f2sdram: cmd_port_clk_1..5, rd_clk_0..3, wr_clk_0..3 (13; f2 has the same unused ports),
+    // and hps2fpga's clk
+    CHECK(run->count("CLK-UNUSED-INTERFACE") == 27);
+    // the user module and the undriven wire stay warnings
+    CHECK(run->count("CLK-UNRESOLVED") == 2);
+    bool userLeaf = false, wire = false;
+    for (const auto& d : run->r->diagnostics) {
+        if (d.code != "CLK-UNRESOLVED")
+            continue;
+        userLeaf |= d.message.find("top.u.clk") != std::string::npos;
+        wire |= d.message.find("top.nc_clk") != std::string::npos;
+    }
+    CHECK(userLeaf);
+    CHECK(wire);
 }
 
 TEST_CASE("Primitives: Intel LPM arithmetic and scfifo from VHDL", "[primitives][vhdl]") {

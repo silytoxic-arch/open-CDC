@@ -531,8 +531,11 @@ public:
                 converged = true;
                 const bool errors =
                     std::ranges::any_of(lastDiags, [](const Diagnostic& d) { return d.isError(); });
-                if (!errors)
+                if (!errors) {
                     finalDesign = compact(*design, tops);
+                    for (auto& b : finalDesign->bodies)
+                        b.vendorModel = models_.contains(b.name);
+                }
                 lastDesign = design; // for diagnostics even when the design has errors
             }
         }
