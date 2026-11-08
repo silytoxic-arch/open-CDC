@@ -94,7 +94,10 @@ Verilog 按位置给 VHDL 实体传参数时（`eReg_SavestateV #(IDX, DEF)`）�
 - 撤销 slang 补丁后，新测试的 5 个断言失败（确认测试能发现这个问题）；重新应用后全部通过。
 - SV 语料 24 个项目全部匹配（新增 NES_MiSTer），VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- GitHub Actions Windows x64 / VS2022（提交 2ef5964，运行 42452149059）：
+  - MSVC 构建中补丁正常应用（`Applied slang-0001-...`）；
+  - Release：582/582 通过，生成 `OpenCDC-0.61.0-windows-x64.zip` 与 `.exe`；
+  - Debug：582/582 通过。
 
 ## 5. 已知限制
 
