@@ -174,7 +174,10 @@ Quartus 接受一些在 (System)Verilog 中是错误的写法，MiSTer 的框架
 
 ## 4. 构建与测试结果
 
-见交付说明。
+- 本地（Linux GCC Debug/Release、Clang）：579 个测试全部通过；SV 语料 23 个、VHDL 语料 48 个均通过；Clang 检查无告警。
+- GitHub Actions Windows x64 / VS2022（提交 4d42954，运行 42440183559）：
+  - Release：579/579 通过，生成 `OpenCDC-0.60.0-windows-x64.zip` 与 `.exe`；
+  - Debug：579/579 通过。
 
 ## 5. 已知限制
 
@@ -183,3 +186,7 @@ Quartus 接受一些在 (System)Verilog 中是错误的写法，MiSTer 的框架
 - **Platform Designer 系统**：必须先生成（`qsys-generate`）。
 - **`inout reg` 端口**：读作输出后，外部输入的值不分析。
 - **HPS 原语的端口**：只建模了 MiSTer 使用的端口和 AXI 的标准信号，宽度取最大值，其他端口的连接被忽略（`FE-PRIMITIVE-PORT`）。
+
+## 6. 下一步
+
+阶段 61：链式 defparam。一个参数被 defparam 设置为另一个被 defparam 设置的参数时，求出正确的值；求不出时报告，而不是静默丢失寄存器。用 NES_MiSTer 验证。
