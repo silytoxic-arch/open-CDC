@@ -13,6 +13,7 @@
 #include "gui/SchematicView.h"
 #include "gui/SourceViewer.h"
 #include "gui/WaiverDialog.h"
+#include "rules/Waiver.h"
 #include "engine/WaiverFile.h"
 
 #include <QAction>
@@ -341,6 +342,8 @@ void MainWindow::createDocks() {
     });
     connect(violationView_, &ViolationView::waiveRequested, this,
             [this](std::size_t pathId, std::size_t hit) { execWaiverDialog(waiverDialogForHit(pathId, hit)); });
+    connect(violationView_, &ViolationView::waiveExceptionRequested, this,
+            [this](std::size_t pathId, std::size_t hit) { execWaiverDialog(waiverDialogForException(pathId, hit)); });
     connect(outputView_, &OutputPortView::waiveRequested, this,
             [this](std::size_t index) { execWaiverDialog(waiverDialogForOutput(index)); });
     pathDock_ = pathDock;
@@ -494,6 +497,33 @@ std::unique_ptr<WaiverDialog> MainWindow::waiverDialogForHit(std::size_t pathId,
                                                      .arg(p.id)
                                                      .arg(qs(p.srcName).toHtmlEscaped(), qs(p.dstName).toHtmlEscaped(),
                                                           qs(h.message).toHtmlEscaped()));
+}
+
+std::unique_ptr<WaiverDialog> MainWindow::waiverDialogForException(std::size_t pathId, std::size_t hit) {
+    if (!lastResult_ || !lastResult_->cdc || pathId >= lastResult_->cdc->paths.size())
+        return nullptr;
+    const auto& p = lastResult_->cdc->paths[pathId];
+    if (hit >= p.hits.size() || p.timingException.empty())
+        return nullptr;
+    const auto& h = p.hits[hit];
+    const cdc::WaiverRecord proposal = engine::waiverForException(p, h);
+    // what it would cover now: open hits of this rule on the crossings the exception covers
+    std::size_t hits = 0, paths = 0;
+    for (const auto& q : lastResult_->cdc->paths) {
+        bool any = false;
+        for (const auto& qh : q.hits)
+            if (qh.waiver.empty() && rules::covers(proposal, q, qh)) {
+                ++hits;
+                any = true;
+            }
+        paths += any ? 1U : 0U;
+    }
+    return waiverDialog(proposal,
+                        tr("Waive <b>%1</b> on every crossing that <span style=\"font-family:monospace\">%2</span> "
+                           "covers: now %3 rule hit(s) on %4 path(s)")
+                            .arg(qs(h.ruleId), qs(engine::shortException(p.timingException)).toHtmlEscaped())
+                            .arg(hits)
+                            .arg(paths));
 }
 
 std::unique_ptr<WaiverDialog> MainWindow::waiverDialogForOutput(std::size_t index) {

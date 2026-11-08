@@ -73,6 +73,9 @@ public:
     /// for output crossing `index` of the last result (null if there is none).
     [[nodiscard]] std::unique_ptr<WaiverDialog> waiverDialogForHit(std::size_t pathId, std::size_t hit);
     [[nodiscard]] std::unique_ptr<WaiverDialog> waiverDialogForOutput(std::size_t index);
+    /// Waiver dialog for hit `hit`'s rule on every crossing that the timing
+    /// exception of path `pathId` covers (null when none covers it).
+    [[nodiscard]] std::unique_ptr<WaiverDialog> waiverDialogForException(std::size_t pathId, std::size_t hit);
     /// Adds a waiver to `file` (engine::addProjectWaiver), saves the project
     /// when the file is new to it, and analyzes again. Returns an error
     /// message, empty on success. The project must have been saved to a file.

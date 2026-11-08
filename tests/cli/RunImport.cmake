@@ -52,7 +52,15 @@ if(NOT qj MATCHES "\"ip/pll/demo_pll.v\"" OR NOT qj MATCHES "\"library\": \"demo
    OR NOT qj MATCHES "systemverilog-2017")
     message(FATAL_ERROR "unexpected project:\n${qj}")
 endif()
-run(3 "CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized" analyze "${WORK}/q/demo.ocdc.json" -q)
+run(3 "CDC     : 3 crossing path\\(s\\), 1 synchronized, 2 unsynchronized.*1 unsynchronized path\\(s\\) covered by a timing exception" analyze "${WORK}/q/demo.ocdc.json" -q)
+# the imported project: its set_false_path still reads as Quartus (derive_pll_clocks
+# before it); waive every crossing that this constraint file's exceptions cover
+run(0 "waiver 'W-1' added to .*waivers.json" waive "${WORK}/q/demo.ocdc.json" --timing-exception "*demo.sdc*"
+    --rule "CDC-*" --reason "configuration, static while the counter runs")
+run(3 "1 hit\\(s\\) waived.*'demo_top.mode_ext' \\(clk_ext\\) \\[waived by W-1\\]" analyze "${WORK}/q/demo.ocdc.json")
+# negative: a selector of another constraint file waives nothing
+run(0 "waiver 'W-2' added" waive "${WORK}/q/demo.ocdc.json" --timing-exception "*other.sdc*" --rule "CDC-*" --reason x)
+run(3 "WAIVER-UNUSED[^\n]*W-2" analyze "${WORK}/q/demo.ocdc.json")
 # negative: waivers need an OpenCDC project; a .qsf is not an output
 run(2 "is a Vivado or Quartus project" waive "${WORK}/q/demo.qsf" --fingerprint 0 --rule CDC-003 --reason x)
 run(2 "must be an OpenCDC project" import "${WORK}/q/demo.qpf" -o "${WORK}/q/other.qsf")

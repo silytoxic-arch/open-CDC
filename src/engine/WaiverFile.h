@@ -61,6 +61,10 @@ void readWaiverFile(const std::filesystem::path& file, std::vector<cdc::WaiverRe
 /// and expiry are left to the caller.
 [[nodiscard]] cdc::WaiverRecord waiverFor(const cdc::CdcPath& path, const cdc::RuleHit& hit);
 [[nodiscard]] cdc::WaiverRecord waiverFor(const cdc::OutputCrossing& output);
+/// A waiver for `hit`'s rule on every crossing the same timing exception covers:
+/// "set_false_path (*sys_top.sdc:34)" (the file by name, so that the waiver file
+/// works on other machines). Empty selector when no exception covers the path.
+[[nodiscard]] cdc::WaiverRecord waiverForException(const cdc::CdcPath& path, const cdc::RuleHit& hit);
 
 struct ProjectConfig;
 

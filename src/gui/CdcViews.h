@@ -101,12 +101,18 @@ public:
     [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> currentHit() const;
     /// "Waive...": enabled for a selected hit that no waiver covers.
     [[nodiscard]] QPushButton* waiveButton() const { return waiveButton_; }
+    /// "Waive by timing exception...": enabled for such a hit whose crossing a
+    /// timing exception of the constraints covers.
+    [[nodiscard]] QPushButton* waiveExceptionButton() const { return waiveExceptionButton_; }
 
 signals:
     void locationActivated(const QString& file, int line);
     void pathActivated(std::size_t pathId);
     /// The user asked to waive hit `hit` of path `pathId`.
     void waiveRequested(std::size_t pathId, std::size_t hit);
+    /// The user asked to waive hit `hit`'s rule on every crossing the timing
+    /// exception of path `pathId` covers.
+    void waiveExceptionRequested(std::size_t pathId, std::size_t hit);
 
 private:
     void applyFilter();
@@ -120,6 +126,7 @@ private:
     QComboBox* waiverFilter_;
     QComboBox* exceptionFilter_;
     QPushButton* waiveButton_;
+    QPushButton* waiveExceptionButton_;
     QLabel* countLabel_;
     detail::HitModel* model_;
     detail::HitFilter* filter_;

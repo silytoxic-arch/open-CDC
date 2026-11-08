@@ -277,6 +277,22 @@ cdc::WaiverRecord waiverFor(const cdc::CdcPath& path, const cdc::RuleHit& hit) {
     return w;
 }
 
+cdc::WaiverRecord waiverForException(const cdc::CdcPath& path, const cdc::RuleHit& hit) {
+    cdc::WaiverRecord w;
+    w.rule = hit.ruleId;
+    const std::string& e = path.timingException; // "set_false_path (/dir/sys_top.sdc:34)"
+    const auto open = e.find(" (");
+    if (open == std::string::npos || e.empty() || e.back() != ')') {
+        w.timingException = e;
+        return w;
+    }
+    std::string where = e.substr(open + 2, e.size() - open - 3);
+    if (const auto slash = where.find_last_of("/\\"); slash != std::string::npos)
+        where = where.substr(slash + 1);
+    w.timingException = e.substr(0, open) + " (*" + where + ")";
+    return w;
+}
+
 cdc::WaiverRecord waiverFor(const cdc::OutputCrossing& output) {
     cdc::WaiverRecord w;
     w.rule = "CDC-OUTPUT-CLOCK";

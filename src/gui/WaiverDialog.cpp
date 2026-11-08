@@ -64,8 +64,10 @@ void WaiverDialog::build(const QString& what, bool editing) {
     for (const auto& [label, value] : {std::pair{tr("Rule:"), &proposal_.rule},
                                        {tr("Fingerprint:"), &proposal_.fingerprint},
                                        {tr("Source:"), &proposal_.source},
-                                       {tr("Destination:"), &proposal_.destination}}) {
-        if (value->empty() && (editing || label == tr("Source:") || label == tr("Destination:")))
+                                       {tr("Destination:"), &proposal_.destination},
+                                       {tr("Timing exception:"), &proposal_.timingException}}) {
+        if (value->empty() && (editing || label == tr("Source:") || label == tr("Destination:") ||
+                               label == tr("Timing exception:") || label == tr("Fingerprint:")))
             continue;
         auto* l = new QLabel(qs(*value), this);
         l->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -82,9 +84,14 @@ void WaiverDialog::build(const QString& what, bool editing) {
     form->addRow(tr("Waiver file:"), file_);
     layout->addLayout(form);
     if (!editing) {
-        auto* note = new QLabel(tr("The waiver covers this rule on this path only (by fingerprint): a design change "
-                                   "that creates another crossing is not waived silently."),
-                                this);
+        auto* note = new QLabel(
+            proposal_.fingerprint.empty() && !proposal_.timingException.empty()
+                ? tr("The waiver covers this rule on every crossing that this timing exception of the constraints "
+                     "covers, also crossings a later design change adds. set_false_path only removes a path from "
+                     "timing analysis: waive only values that do not change while the destination uses them.")
+                : tr("The waiver covers this rule on this path only (by fingerprint): a design change "
+                     "that creates another crossing is not waived silently."),
+            this);
         note->setWordWrap(true);
         layout->addWidget(note);
     }

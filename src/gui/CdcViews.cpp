@@ -674,6 +674,7 @@ ViolationView::ViolationView(QWidget* parent)
       waiverFilter_(combo(this, tr("Waived and not waived"))),
       exceptionFilter_(combo(this, tr("With or without timing exception"))),
       waiveButton_(new QPushButton(tr("Waive..."), this)),
+      waiveExceptionButton_(new QPushButton(tr("Waive by timing exception..."), this)),
       countLabel_(new QLabel(this)), model_(new detail::HitModel(this)), filter_(new detail::HitFilter(model_, this)), table_(new QTableView(this)),
       ruleInfo_(new QTextBrowser(this)) {
     auto* layout = new QVBoxLayout(this);
@@ -700,6 +701,11 @@ ViolationView::ViolationView(QWidget* parent)
                                 "project's waiver file"));
     waiveButton_->setEnabled(false);
     bar->addWidget(waiveButton_);
+    waiveExceptionButton_->setToolTip(
+        tr("Add a waiver for the selected rule on every crossing that the same timing exception of the constraints "
+           "(set_false_path / set_max_delay) covers"));
+    waiveExceptionButton_->setEnabled(false);
+    bar->addWidget(waiveExceptionButton_);
     bar->addStretch(1);
     bar->addWidget(countLabel_);
     layout->addLayout(bar);
@@ -723,12 +729,17 @@ ViolationView::ViolationView(QWidget* parent)
                     return;
                 const auto& r = model_->row(filter_->mapToSource(current).row());
                 showRule(r.path, r.hit);
-                waiveButton_->setEnabled(result_ && result_->cdc &&
-                                         result_->cdc->paths.at(r.path).hits.at(r.hit).waiver.empty());
+                const bool open = result_ && result_->cdc && result_->cdc->paths.at(r.path).hits.at(r.hit).waiver.empty();
+                waiveButton_->setEnabled(open);
+                waiveExceptionButton_->setEnabled(open && !result_->cdc->paths.at(r.path).timingException.empty());
             });
     connect(waiveButton_, &QPushButton::clicked, this, [this] {
         if (const auto h = currentHit())
             emit waiveRequested(h->first, h->second);
+    });
+    connect(waiveExceptionButton_, &QPushButton::clicked, this, [this] {
+        if (const auto h = currentHit())
+            emit waiveExceptionRequested(h->first, h->second);
     });
     connect(table_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
         if (!result_ || !result_->cdc || !index.isValid())
@@ -752,6 +763,7 @@ std::optional<std::pair<std::size_t, std::size_t>> ViolationView::currentHit() c
 
 void ViolationView::clear() {
     waiveButton_->setEnabled(false);
+    waiveExceptionButton_->setEnabled(false);
     result_.reset();
     model_->setResult(nullptr);
     ruleInfo_->setHtml(tr("<p>No rule results.</p>"));

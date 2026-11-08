@@ -552,10 +552,11 @@ int runWaiveTest(MainWindow& window, const QString& project) {
         return fail("project copy could not be saved");
     static QString file;
     file = dir.filePath(QStringLiteral("new-waivers.json"));
-    enum Stage { Start, HitWaived, Edited, Removed, OutputWaived };
+    enum Stage { Start, HitWaived, Edited, Removed, ExceptionWaived, OutputWaived };
     struct State {
         Stage stage = Start;
         std::string hitRule, hitFingerprint, hitId, outFingerprint, outId;
+        std::string excRule, excException, excId; // waived by timing exception
         std::size_t waivedBefore = 0;
     };
     static State st;
@@ -595,6 +596,40 @@ int runWaiveTest(MainWindow& window, const QString& project) {
                 return "the waiver could not be added";
             return "";
         }
+        // waive an open rule hit by the timing exception covering its crossing;
+        // false: no crossing has one
+        static bool waiveByException(const opencdc::cdc::CdcResult& c, const char*& err) {
+            for (const auto& p : c.paths) {
+                if (p.timingException.empty()) {
+                    // negative: no exception, no such dialog
+                    if (!p.hits.empty() && win->waiverDialogForException(p.id, 0)) {
+                        err = "a timing-exception waiver is offered for a crossing without exception";
+                        return true;
+                    }
+                    continue;
+                }
+                for (std::size_t h = 0; h < p.hits.size(); ++h)
+                    if (p.hits[h].waiver.empty()) {
+                        auto dlg = win->waiverDialogForException(p.id, h);
+                        if (!dlg) {
+                            err = "no timing-exception waiver dialog";
+                            return true;
+                        }
+                        const auto proposal = dlg->waiver();
+                        if (!proposal.fingerprint.empty() || proposal.rule != p.hits[h].ruleId ||
+                            proposal.timingException.find("(*") == std::string::npos) {
+                            err = "the timing-exception waiver proposal is not rule + exception";
+                            return true;
+                        }
+                        st.excRule = p.hits[h].ruleId;
+                        st.excException = p.timingException;
+                        st.stage = ExceptionWaived;
+                        err = waiveThrough(std::move(dlg), st.excId);
+                        return true;
+                    }
+            }
+            return false;
+        }
         // waive the first open output crossing; false: none
         static bool waiveOutput(const opencdc::cdc::CdcResult& c, const char*& err) {
             for (std::size_t i = 0; i < c.outputs.size(); ++i)
@@ -611,9 +646,10 @@ int runWaiveTest(MainWindow& window, const QString& project) {
     auto done = [finish] {
         if (st.hitRule.empty() && st.outFingerprint.empty())
             return finish(fail("nothing to waive in this project"));
-        std::printf("GUI waive test passed: rule hit %s %s, output %s %s\n",
+        std::printf("GUI waive test passed: rule hit %s %s, timing exception %s, output %s %s\n",
                     st.hitRule.empty() ? "-" : st.hitRule.c_str(),
                     st.hitId.empty() ? "" : (st.hitId + " (waived, edited, removed)").c_str(),
+                    st.excId.empty() ? "-" : (st.excRule + " " + st.excId).c_str(),
                     st.outFingerprint.empty() ? "-" : st.outFingerprint.c_str(), st.outId.c_str());
         finish(0);
     };
@@ -696,6 +732,28 @@ int runWaiveTest(MainWindow& window, const QString& project) {
                     if (!h || !h->waiver.empty() ||
                         std::ranges::any_of(c.waivers, [](const auto& w) { return w.id == st.hitId; }))
                         return finish(fail("the removed waiver still applies"));
+                    if (Helpers::waiveByException(c, err)) {
+                        if (*err)
+                            return finish(fail(err));
+                        return;
+                    }
+                    if (!Helpers::waiveOutput(c, err))
+                        return done();
+                    if (*err)
+                        return finish(fail(err));
+                    return;
+                }
+                case ExceptionWaived: {
+                    // every hit of the rule on a crossing with this exception is waived
+                    // by it, no hit on a crossing without one
+                    for (const auto& p : c.paths)
+                        for (const auto& h : p.hits) {
+                            const bool covered = h.ruleId == st.excRule && p.timingException == st.excException;
+                            if (covered && h.waiver != st.excId)
+                                return finish(fail("a crossing the timing exception covers is not waived"));
+                            if (p.timingException.empty() && h.waiver == st.excId)
+                                return finish(fail("a crossing without timing exception is waived by it"));
+                        }
                     if (!Helpers::waiveOutput(c, err))
                         return done();
                     if (*err)

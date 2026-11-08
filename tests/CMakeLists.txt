@@ -105,7 +105,7 @@ opencdc_cli_test(suggest_sdc 3
     analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json -q
     --suggest-sdc ${CMAKE_CURRENT_BINARY_DIR}/suggested.sdc)
 opencdc_cli_test(analyze_quartus_project 3
-    "Language: systemverilog-2017 \\+ vhdl.*alias=pll\\|altera_pll_i\\|general\\[1\\].gpll~PLL_OUTPUT_COUNTER\\|divclk.*PRJ-QSF-SKIPPED.*table.mif.*Quartus project imported: 3 source\\(s\\).*CON-EXCLUSIVE-AS-ASYNC.*CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized"
+    "Language: systemverilog-2017 \\+ vhdl.*alias=pll\\|altera_pll_i\\|general\\[1\\].gpll~PLL_OUTPUT_COUNTER\\|divclk.*PRJ-QSF-SKIPPED.*table.mif.*Quartus project imported: 3 source\\(s\\).*CON-EXCLUSIVE-AS-ASYNC.*CDC     : 3 crossing path\\(s\\), 1 synchronized, 2 unsynchronized.*1 unsynchronized path\\(s\\) covered by a timing exception.*demo_top.cfg_mode"
     analyze ${PROJECT_SOURCE_DIR}/examples/quartus_project/demo.qpf)
 opencdc_cli_test(analyze_vivado_project 0
     "Language: verilog-2001 \\+ vhdl.*Hierarchy:.*u_sync \\(demo_lib_sync\\).*PRJ-XPR-DISABLED.*PRJ-XPR-SKIPPED.*init.coe.*Vivado project imported: 2 source\\(s\\), 2 constraint file\\(s\\), top 'demo_top'.*CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized"
@@ -224,6 +224,10 @@ if(TARGET opencdc-gui)
     add_test(NAME gui.waive_output
         COMMAND opencdc-gui --waive-test ${PROJECT_SOURCE_DIR}/examples/output_ports/output_ports.ocdc.json)
     set_tests_properties(gui.waive_output PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME gui.waive_timing_exception
+        COMMAND opencdc-gui --waive-test ${PROJECT_SOURCE_DIR}/examples/quartus_project/demo.qpf)
+    set_tests_properties(gui.waive_timing_exception PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        PASS_REGULAR_EXPRESSION "timing exception CDC-[0-9]+ W-[0-9]+")
     add_test(NAME gui.project_edit
         COMMAND opencdc-gui --edit-test ${PROJECT_SOURCE_DIR}/examples/mixed/cdc_advanced/cdc_advanced_mixed.ocdc.json)
     set_tests_properties(gui.project_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
