@@ -584,7 +584,7 @@ public:
     void elaborateForeignInstance(const Stmt& s, Scope& scope, const std::string& module);
     /// Attributes specified for the label of an instance statement.
     std::vector<ir::Attribute> labelAttributes(const Scope& scope, const std::string& label) const;
-    SVal fromForeign(const ir::InstanceParam& p, const Type* t, Loc l);
+    SVal fromForeign(const ir::InstanceParam& p, const std::string& generic, const Type* t, Loc l);
     std::optional<ir::InstanceParam> toForeign(const SVal& v);
     const std::vector<ir::InstanceParam>* foreignParams_ = nullptr;
     std::map<std::size_t, std::vector<PortPiece>> portPieces_; ///< by ModuleId index

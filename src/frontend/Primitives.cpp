@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <regex>
+#include <set>
 #include <sstream>
 
 namespace opencdc::frontend {
@@ -12,6 +13,42 @@ namespace {
 std::string lower(std::string s) {
     std::ranges::transform(s, s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
+}
+
+/// Names that the Verilog text instantiates: an identifier followed by '#' or by
+/// an instance name and '(' ("FDRE #(" or "FDRE u_ff ("), comments included.
+std::set<std::string> instantiatedNames(const std::string& t) {
+    const auto idStart = [](char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; };
+    const auto idChar = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    const auto space = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
+    std::set<std::string> out;
+    const std::size_t n = t.size();
+    std::size_t i = 0;
+    while (i < n) {
+        if (!idStart(t[i]) || (i > 0 && (idChar(t[i - 1]) || t[i - 1] == '$'))) {
+            ++i;
+            continue;
+        }
+        std::size_t j = i;
+        while (j < n && (idChar(t[j]) || t[j] == '$'))
+            ++j;
+        std::size_t k = j;
+        while (k < n && space(t[k]))
+            ++k;
+        bool inst = k < n && t[k] == '#';
+        if (!inst && k > j && k < n && idStart(t[k])) {
+            std::size_t m = k;
+            while (m < n && idChar(t[m]))
+                ++m;
+            while (m < n && space(t[m]))
+                ++m;
+            inst = m < n && t[m] == '(';
+        }
+        if (inst)
+            out.insert(t.substr(i, j - i));
+        i = j;
+    }
+    return out;
 }
 
 } // namespace
@@ -105,11 +142,12 @@ PrimitiveLibrary::PrimitiveLibrary() {
     for (const auto& g : generators_)
         names_.push_back(g.name);
     // dependencies: other modelled modules instantiated by a model
-    for (auto& m : models_)
+    for (auto& m : models_) {
+        const auto used = instantiatedNames(m.text);
         for (const auto& o : models_)
-            if (&o != &m && std::regex_search(m.text, std::regex("(^|[^A-Za-z0-9_$])" + o.name +
-                                                                 "(\\s*#|\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\()")))
+            if (&o != &m && used.contains(o.name))
                 m.deps.push_back(o.name);
+    }
 }
 
 std::optional<std::string> PrimitiveLibrary::find(const std::string& name) const {

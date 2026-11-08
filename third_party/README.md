@@ -2,7 +2,7 @@
 
 All dependencies are fetched at configure time by `cmake/Dependencies.cmake`
 (CMake `FetchContent`) and pinned to exact versions. Nothing is vendored in
-this directory yet; it is reserved for offline mirrors.
+this directory; `patches/` holds OpenCDC's fixes to them (see below).
 
 | Component | Version | License | Used by | How it is obtained |
 |---|---|---|---|---|
@@ -14,6 +14,18 @@ this directory yet; it is reserved for offline mirrors.
 | [CLI11](https://github.com/CLIUtils/CLI11) | v2.5.0 | BSD-3-Clause | `opencdc` CLI | FetchContent (git tag) |
 | [Catch2](https://github.com/catchorg/Catch2) | v3.16.0 | BSL-1.0 | unit tests only | FetchContent (git tag) |
 | [Qt](https://www.qt.io/) | ≥ 6.5 (CI: 6.8.3) | LGPL-3.0 (open source edition) | `opencdc-gui` only | installed separately, found with `find_package(Qt6)` |
+
+## Patches
+
+`third_party/patches/<dependency>-NNNN-*.patch` are OpenCDC's fixes to a
+dependency, applied by `cmake/ApplyPatches.cmake` right after the sources are
+fetched (and to an offline mirror given with `FETCHCONTENT_SOURCE_DIR_<NAME>`).
+Applying is idempotent; a patch that no longer applies stops the configuration,
+so a version update cannot silently drop a fix.
+
+| Patch | Fixes |
+|---|---|
+| `slang-0001-implicit-parameter-type-from-defparam.patch` | An implicitly typed parameter without a default value whose value is set by a `defparam` (`parameter [9:0] P;`, `parameter P;`, `parameter signed P;`) got the error type, so every reference to it evaluated as invalid without a diagnostic (registers that depend on it were lost). It now takes the declared range and signing, or else the type of the value (IEEE 1800-2017 6.20.2). Found in MiSTer-devel/NES_MiSTer. |
 
 ## Licensing notes
 

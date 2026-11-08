@@ -29,6 +29,7 @@ add_executable(opencdc_tests
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_quartus_compat.cpp
+    frontend/test_defparam.cpp
     frontend/test_sv_interfaces.cpp
     frontend/test_encoding.cpp
     frontend/test_xci.cpp

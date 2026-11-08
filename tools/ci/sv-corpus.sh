@@ -115,6 +115,11 @@ fetch_sparse $cq https://github.com/cteqeu/SoC 8aeef06a58fd1986c3f65ef4078604445
 # template core, a Quartus project; its pre-flow script writes build_id.v (the build date), done here as it does
 fetch Template_MiSTer https://github.com/MiSTer-devel/Template_MiSTer e901a9fa6548f4eb024619357b89d48be94fd9f8
 printf '`define BUILD_DATE "261108"' > Template_MiSTer/build_id.v
+# MiSTer-devel/NES_MiSTer (GPL-3.0, only fetched for this check): a whole core on the MiSTer framework,
+# SystemVerilog with VHDL (savestates, the VM2413 sound chip), parameters without a default value set
+# through two levels of defparams; rtl/ and sys/ only (not the released bitstreams)
+fetch_sparse NES_MiSTer https://github.com/MiSTer-devel/NES_MiSTer 49a0a662e244469ca77b2155746a066df704ffae rtl sys
+printf '`define BUILD_DATE "261108"' > NES_MiSTer/build_id.v
 
 # ATaylorCEngFIET/Hackster (Hackster.io projects without a license, only fetched for this check): block designs
 # with the Zynq UltraScale+ MPSoC (Ultra96), MicroBlaze on Spartan-7 with a MIPI camera, a Sobel filter (HLS IP
@@ -436,6 +441,7 @@ check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wi
 # a Quartus project (.qpf) as it is: Quartus' leniencies (nets assigned procedurally, generate-block names used
 # in the module), Cyclone V HPS atoms, PLL clocks with Quartus' names (sys_top.sdc's clock groups match them)
 check Template_MiSTer/Template.qpf "Clocks  : 9 \(1440/1513 registers resolved\).*sysmem\|fpga_interfaces\|h2f_user0_clk  \[constraint\].*period=10ns.*alias=emu\|pll\|pll_inst\|altera_pll_i\|general\[0\].gpll~PLL_OUTPUT_COUNTER\|divclk.*Quartus project imported: 46 source\(s\), 2 constraint file\(s\), top 'sys_top'.*FE-NET-PROCEDURAL-ASSIGN\]: net 'next_state_write'.*FE-GENERATE-SCOPE\]: 'kbd_rd'.*Summary : 0 error\(s\).*CDC     : 414 crossing path\(s\), 34 synchronized, 380 unsynchronized"
+check NES_MiSTer/NES.qpf "Instances: 457.*Clocks  : 11 \(3664/3720 registers resolved\).*emu\|pll\|pll_inst\|altera_pll_i\|general\[2\].gpll~PLL_OUTPUT_COUNTER\|divclk.*period=46.5608ns.*Quartus project imported: 103 source\(s\), 2 constraint file\(s\), top 'sys_top'.*Summary : 0 error\(s\).*CDC     : 461 crossing path\(s\), 34 synchronized, 427 unsynchronized"
 check u96_mpsoc.ocdc.json "Clocks  : 1 \(93/93 registers resolved\).*zynq_ultra_ps_e_0.pl_clk0  \[black-box\] alias=clk_pl_0 .*period=10ns.*zynq_ultra_ps_e:3.2\) modelled from its configuration: PL clocks pl_clk0.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 # MicroBlaze (simulation netlist: slice gates, SRLC16E), its debug module (FDC_1/FDRE_1), MMCM_ADV, an encrypted IP known by
 # its interface clocks; the camera interface drives pclk_out twice (an assignment and a BUFG): a real error

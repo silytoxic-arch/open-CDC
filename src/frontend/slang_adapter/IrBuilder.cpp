@@ -880,7 +880,9 @@ void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
                 unsupported("IR-UNSUPPORTED-PARAM",
                             "non-constant parameter value at instance '" + ci.name + "' of '" + ci.definition + "'",
                             u.location);
-                continue;
+                // kept without a value: the following ordered parameters keep their position
+                if (!pname.empty())
+                    continue;
             }
             ci.unresolvedParams.push_back(std::move(ip));
         }

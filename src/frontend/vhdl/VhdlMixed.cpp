@@ -61,14 +61,19 @@ bool Elaborator::hasEntity(const std::string& name) {
 // Values across the border
 // ---------------------------------------------------------------------------
 
-SVal Elaborator::fromForeign(const ir::InstanceParam& p, const Type* t, Loc l) {
+SVal Elaborator::fromForeign(const ir::InstanceParam& p, const std::string& generic, const Type* t, Loc l) {
+    if (!p.bits && !p.str && !p.real) {
+        // the instance gives a value that OpenCDC cannot read (IR-UNSUPPORTED-PARAM)
+        error("VHDL-GENERIC", "the value of generic '" + generic + "' given by the instance is not known", l);
+        return {};
+    }
     if (!t) {
         error("VHDL-GENERIC", "generic without a type", l);
         return {};
     }
     const Type& B = t->baseType();
     auto bad = [&](const std::string& what) {
-        error("VHDL-GENERIC", "parameter value for '" + p.name + "' cannot be converted to '" + t->name + "' (" +
+        error("VHDL-GENERIC", "parameter value for '" + generic + "' cannot be converted to '" + t->name + "' (" +
                                   what + ")",
               l);
         return SVal{};

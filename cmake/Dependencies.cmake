@@ -37,6 +37,10 @@ FetchContent_Declare(CLI11
     SYSTEM)
 
 FetchContent_MakeAvailable(slang nlohmann_json CLI11)
+# OpenCDC's fixes to slang (third_party/patches, see third_party/README.md);
+# applied before anything is compiled
+include(${CMAKE_CURRENT_LIST_DIR}/ApplyPatches.cmake)
+opencdc_apply_patches("${slang_SOURCE_DIR}" slang)
 
 if(OPENCDC_BUILD_TESTS)
     # ---- Catch2 v3 (BSL-1.0): unit tests ----

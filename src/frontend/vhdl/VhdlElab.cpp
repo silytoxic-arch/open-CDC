@@ -370,7 +370,7 @@ Scope* Elaborator::bindGenerics(const DesignUnit& entity, const std::string& lib
                 }
             }
             else if (auto fit = foreign.find(n.key); !actual && fit != foreign.end()) {
-                SVal val = fromForeign(*fit->second, s->type, l);
+                SVal val = fromForeign(*fit->second, n.text, s->type, l);
                 if (val.valid()) {
                     if (s->type && s->type->isArray() && !s->type->isFullyConstrained())
                         s->type = val.type;

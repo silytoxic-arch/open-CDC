@@ -127,6 +127,7 @@ Quartus 接受一些在 (System)Verilog 中是错误的写法，MiSTer 的框架
 
 - 导入成功（93 个源文件，5 个 IP 文件列表），34 处宽松写法都已处理，VHDL 部分（VM2413）也通过。
 - 仍然无法分析：`apu.sv` 中 VHDL 实体的参数来自两层 defparam（`nes.v` 设置 `apu.X`，`apu.sv` 再设置 `Dmc.X = X`）。slang 没有为这种链式 defparam 赋值（纯 Verilog 设计中也是如此，见已知限制）。
+- **更正（阶段 61）**：原因不是链式 defparam，而是没有默认值的隐式类型参数（`parameter [9:0] X`）由 defparam 赋值时得到错误类型。已在阶段 61 修复，NES_MiSTer 已加入语料库。
 
 ### 本地示例
 
@@ -181,7 +182,7 @@ Quartus 接受一些在 (System)Verilog 中是错误的写法，MiSTer 的框架
 
 ## 5. 已知限制
 
-- **链式 defparam**：一个 defparam 的值是另一个被 defparam 设置的参数时，slang 不赋值，相关寄存器丢失，而且没有报告。这阻碍了 NES_MiSTer 的分析。
+- **链式 defparam**：一个 defparam 的值是另一个被 defparam 设置的参数时，slang 不赋值，相关寄存器丢失，而且没有报告。这阻碍了 NES_MiSTer 的分析。（阶段 61 更正：实际原因见阶段 61 第 1.1 节，已修复。）
 - **Tcl 子集**：Quartus 设置脚本中的 `if`、`foreach`、`proc` 等不求值，并报告。
 - **Platform Designer 系统**：必须先生成（`qsys-generate`）。
 - **`inout reg` 端口**：读作输出后，外部输入的值不分析。

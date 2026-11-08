@@ -1,0 +1,52 @@
+diff --git a/source/ast/symbols/ParameterBuilder.cpp b/source/ast/symbols/ParameterBuilder.cpp
+index 3da437a..634e6ba 100644
+--- a/source/ast/symbols/ParameterBuilder.cpp
++++ b/source/ast/symbols/ParameterBuilder.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include "slang/ast/ASTContext.h"
+ #include "slang/ast/Compilation.h"
++#include "slang/ast/types/Type.h"
+ #include "slang/ast/Scope.h"
+ #include "slang/ast/symbols/ParameterSymbols.h"
+ #include "slang/diagnostics/DeclarationsDiags.h"
+@@ -282,6 +283,39 @@ const ParameterSymbolBase& ParameterBuilder::createParam(
+                 if (!it->second.expr) {
+                     param->setValue(comp, it->second.cv,
+                                     /* needsCoercion */ it->second.defparam == nullptr);
++
++                    // An implicitly typed parameter without a default value whose value
++                    // comes from a defparam ('parameter [9:0] P;', 'parameter P;'): its
++                    // type cannot be inferred from the (missing) initializer. Use the
++                    // declared range and signing, or else the type of the value [6.20.2],
++                    // so that references to the parameter see its value.
++                    if (decl.hasSyntax && decl.valueSyntax && decl.valueDecl &&
++                        !decl.valueDecl->initializer && decl.valueDecl->dimensions.empty() &&
++                        decl.valueSyntax->type->kind == SyntaxKind::ImplicitType) {
++                        auto& its = decl.valueSyntax->type->as<ImplicitTypeSyntax>();
++                        auto& cv = it->second.cv;
++                        const Type* type = nullptr;
++                        if (!its.dimensions.empty()) {
++                            type = &comp.getType(its, ASTContext(newScope, LookupLocation::before(*param)),
++                                                 nullptr);
++                        }
++                        else if (cv.isInteger()) {
++                            bitmask<IntegralFlags> iflags = IntegralFlags::FourState;
++                            if (its.signing ? its.signing.kind == parsing::TokenKind::SignedKeyword
++                                            : cv.integer().isSigned()) {
++                                iflags |= IntegralFlags::Signed;
++                            }
++                            type = &comp.getType(cv.integer().getBitWidth(), iflags);
++                        }
++                        else if (cv.isReal()) {
++                            type = &comp.getRealType();
++                        }
++                        else if (cv.isString()) {
++                            type = &comp.getStringType();
++                        }
++                        if (type)
++                            param->setType(*type);
++                    }
+                     return *param;
+                 }
+ 
