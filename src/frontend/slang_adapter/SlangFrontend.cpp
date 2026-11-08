@@ -18,6 +18,7 @@
 #include <slang/diagnostics/ExpressionsDiags.h>
 #include <slang/diagnostics/LexerDiags.h>
 #include <slang/diagnostics/LookupDiags.h>
+#include <slang/parsing/Lexer.h>
 #include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Preprocessor.h>
 #include <slang/syntax/AllSyntax.h>
@@ -739,6 +740,18 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
 
     slang::Bag options;
     options.set(ppOptions);
+    // "// synthesis translate_off" ... "translate_on" and the vendor variants (as
+    // the VHDL lexer): synthesis tools skip that code (ao486_MiSTer: a simulation-only
+    // cpu_export instance in pipeline.v)
+    slang::parsing::LexerOptions lexOptions;
+    for (const char* prefix : {"synthesis", "synopsys", "pragma", "xilinx", "altera", "intel", "exemplar", "cadence"}) {
+        lexOptions.commentHandlers[prefix]["translate_off"] = {slang::parsing::CommentHandler::TranslateOff,
+                                                               "translate_on"};
+        lexOptions.commentHandlers[prefix]["synthesis_off"] = {slang::parsing::CommentHandler::TranslateOff,
+                                                               "synthesis_on"};
+    }
+    lexOptions.commentHandlers["rtl_synthesis"]["off"] = {slang::parsing::CommentHandler::TranslateOff, "on"};
+    options.set(lexOptions);
     options.set(compOptions);
     std::vector<std::string_view> pathViews(paths.begin(), paths.end());
     // All files form one compilation unit (macros flow from earlier files to

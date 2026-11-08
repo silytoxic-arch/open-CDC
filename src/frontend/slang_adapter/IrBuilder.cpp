@@ -1136,6 +1136,17 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
                 return lower(*x).resized(w, false);
             if (const auto* t = ifaceTarget(e.as<sast::HierarchicalValueExpression>().symbol))
                 return read(*t).resized(w, false);
+            // a name in a generate block of this same module (ao486_MiSTer mt32pi.sv:
+            // clk_rate[0].cnt): an ordinary read of that net
+            {
+                const auto& hs = e.as<sast::HierarchicalValueExpression>().symbol;
+                const sast::Scope* sc = hs.getParentScope();
+                while (sc && sc->asSymbol().kind != sast::SymbolKind::InstanceBody)
+                    sc = sc->asSymbol().getParentScope();
+                if (sc && &sc->asSymbol() == &sym_ &&
+                    (hs.kind == sast::SymbolKind::Net || hs.kind == sast::SymbolKind::Variable) && netFor(hs))
+                    return read(hs).resized(w, e.type->isSigned());
+            }
             return opaque(e, "hierarchical reference '" +
                                  std::string(e.as<sast::HierarchicalValueExpression>().symbol.name) + "'");
         }

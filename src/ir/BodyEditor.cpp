@@ -214,6 +214,7 @@ void BodyEditor::finish(DiagnosticSink& sink, const std::function<void(const std
         l.d = passThroughMuxBits(l.d);
     pruneDeadStorage(sink);
     removeDeadCells(onRemap);
+    dropOverriddenZ();
     checkMultipleDrivers(sink);
 }
 
@@ -580,6 +581,94 @@ void BodyEditor::removeDeadCells(const std::function<void(const std::vector<std:
     body_.cells = std::move(cells);
     driverCell_.clear();
     cellCache_.clear();
+}
+
+void BodyEditor::dropOverriddenZ() {
+    // `assign {SDRAM_A, ...} = 'Z;` next to an instance output that drives the same
+    // bits (ao486_MiSTer emu): a high-impedance driver gives way to any other driver,
+    // as synthesis resolves it, so those bits of the assignment are dropped
+    auto isZ = [](const SigSpec& b) {
+        const auto& ch = b.chunks();
+        return ch.size() == 1 && ch[0].isConst() && ch[0].constant[0] == Logic::Z;
+    };
+    auto hasZ = [](const Connection& c) {
+        if (c.kind != ConnKind::Assign || c.lhs.width() != c.rhs.width())
+            return false;
+        for (const auto& ch : c.rhs.chunks())
+            if (ch.isConst() && std::ranges::find(ch.constant.bits(), Logic::Z) != ch.constant.bits().end())
+                return true;
+        return false;
+    };
+    auto zBit = [&](const Connection& c, std::uint32_t i) { return isZ(c.rhs.bit(i)); };
+    std::vector<std::vector<bool>> driven(body_.nets.size());
+    auto mark = [&](const SigSpec& s) {
+        for (const auto& c : s.chunks()) {
+            if (c.isConst())
+                continue;
+            auto& d = driven[c.net.index()];
+            if (d.size() < c.offset + c.width)
+                d.resize(c.offset + c.width, false);
+            for (std::uint32_t k = 0; k < c.width; ++k)
+                d[c.offset + k] = true;
+        }
+    };
+    bool anyZ = false;
+    for (const auto& c : body_.connections) {
+        if (!hasZ(c)) {
+            mark(c.lhs);
+            continue;
+        }
+        anyZ = true;
+        for (std::uint32_t i = 0; i < c.lhs.width(); ++i)
+            if (!zBit(c, i))
+                mark(c.lhs.bit(i));
+    }
+    if (!anyZ)
+        return;
+    for (const auto& p : body_.ports)
+        if (p.dir == PortDir::In)
+            mark(body_.netSig(p.net));
+    for (const auto& r : body_.registers)
+        mark(r.q);
+    for (const auto& l : body_.latches)
+        mark(l.q);
+    for (const auto& ch : body_.children)
+        for (const auto& p : ch.ports)
+            if (p.dir == PortDir::Out)
+                mark(p.actual);
+    auto isDriven = [&](const SigSpec& b) {
+        const auto& ch = b.chunks();
+        if (ch.size() != 1 || ch[0].isConst())
+            return false;
+        const auto& d = driven[ch[0].net.index()];
+        return ch[0].offset < d.size() && d[ch[0].offset];
+    };
+    std::vector<Connection> kept;
+    kept.reserve(body_.connections.size());
+    for (auto& c : body_.connections) {
+        if (!hasZ(c)) {
+            kept.push_back(std::move(c));
+            continue;
+        }
+        bool drop = false;
+        for (std::uint32_t i = 0; i < c.lhs.width() && !drop; ++i)
+            drop = zBit(c, i) && isDriven(c.lhs.bit(i));
+        if (!drop) {
+            kept.push_back(std::move(c));
+            continue;
+        }
+        Connection n = c;
+        n.lhs = SigSpec{};
+        n.rhs = SigSpec{};
+        for (std::uint32_t i = 0; i < c.lhs.width(); ++i)
+            if (!(zBit(c, i) && isDriven(c.lhs.bit(i)))) {
+                n.lhs.append(c.lhs.bit(i));
+                n.rhs.append(c.rhs.bit(i));
+            }
+        if (n.lhs.width() > 0)
+            kept.push_back(std::move(n));
+    }
+    body_.connections = std::move(kept);
 }
 
 void BodyEditor::checkMultipleDrivers(DiagnosticSink& sink) {

@@ -62,6 +62,9 @@ public:
 private:
     void pruneDeadStorage(DiagnosticSink& sink);
     void removeDeadCells(const std::function<void(const std::vector<std::uint32_t>&)>& onRemap);
+    /// Drops bits of continuous assignments of a constant 'Z when something else
+    /// drives the same bits (the other driver wins, as synthesis resolves it).
+    void dropOverriddenZ();
     void checkMultipleDrivers(DiagnosticSink& sink);
 
     ModuleBody& body_;

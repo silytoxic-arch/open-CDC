@@ -281,6 +281,70 @@ TEST_CASE("Continuous assignment and always block on the same net", "[extract][d
     CHECK(e.countCode("IR-MULTIDRIVER") == 1); // only module n
 }
 
+TEST_CASE("A constant 'Z assignment gives way to another driver", "[extract][drivers]") {
+    // ao486_MiSTer: assign {SDRAM_A, ..., SDRAM_CLK, ...} = 'Z; and the sdram instance
+    // drives SDRAM_CLK through an output port
+    auto e = extract("module c(input a, output y); assign y = ~a; endmodule\n"
+                     "module m(input a, input b, output [2:0] o, output z, output n);\n"
+                     "  assign o = 'Z;\n"
+                     "  c u (.a(a), .y(o[1]));\n"
+                     "  assign z = 1'bz;\n" // negative: alone, the 'Z stays
+                     "  assign n = a;\n"
+                     "  assign n = b;\n" // negative: two real drivers
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK(e.countCode("IR-MULTIDRIVER") == 1);
+    bool onN = false;
+    for (const auto& d : e.diags)
+        onN |= d.code == "IR-MULTIDRIVER" && d.message.find("'n'") != std::string::npos;
+    CHECK(onN);
+    // bit 1 is driven by u; bits 2 and 0 keep the 'Z
+    CHECK(e.has("assign {o[2], o[0]} = 2'bzz"));
+    CHECK(e.has("inst u : c (.a(a), .y(o[1]))"));
+    CHECK_FALSE(e.contains("3'bzzz"));
+    CHECK(e.has("assign z = 1'bz"));
+}
+
+TEST_CASE("A hierarchical reference into a generate block of the same module", "[extract]") {
+    // ao486_MiSTer mt32pi.sv: crossed <= (clk_rate[0].cnt <= clk_rate[1].cnt)
+    auto e = extract("module c(input clk, input d, output reg q); always @(posedge clk) q <= d; endmodule\n"
+                     "module m(input clk, input [1:0] d, output reg y, output reg w);\n"
+                     "  for (genvar i = 0; i < 2; i++) begin : g\n"
+                     "    reg r; always @(posedge clk) r <= d[i];\n"
+                     "  end\n"
+                     "  c u (.clk(clk), .d(d[0]), .q());\n"
+                     "  always @(posedge clk) y <= g[0].r & g[1].r;\n"
+                     "  always @(posedge clk) w <= u.q;\n" // negative: into a child instance
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK(e.has("cell $and$0 [1] = and(A=g[0].r, B=g[1].r)"));
+    CHECK(e.has("reg y <= $and$0 @(posedge clk)"));
+    // only u.q is still reported
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 1);
+}
+
+TEST_CASE("Verilog: synthesis translate_off regions are skipped", "[extract]") {
+    // ao486_MiSTer pipeline.v: a simulation-only instance between translate_off and translate_on
+    auto e = extract("module m(input clk, input d, output reg q, output reg p);\n"
+                     "  // synthesis translate_off\n"
+                     "  sim_only_export x (.clk(clk));\n"
+                     "  // synthesis translate_on\n"
+                     "  /* synopsys translate_off */ initial $display(\"sim\"); /* synopsys translate_on */\n"
+                     "  always @(posedge clk) q <= d;\n"
+                     "  // pragma translate_off\n"
+                     "  always @(posedge clk) p <= 1'b0;\n"
+                     "  // pragma translate_on\n"
+                     "  always @(posedge clk) p <= ~d;\n" // after translate_on: analyzed, one driver
+                     "  // translate_off (no tool prefix: an ordinary comment)\n"
+                     "endmodule\n",
+                     LanguageStd::Verilog2001, "m");
+    CHECK_FALSE(e.hasErrors());
+    CHECK(e.countCode("FE-UNKNOWN-MODULE") == 0);
+    CHECK(e.countCode("IR-MULTIDRIVER") == 0);
+    CHECK(e.has("reg q <= d @(posedge clk)"));
+    CHECK(e.has("reg p <= $not$0 @(posedge clk)"));
+}
+
 // ---------------------------------------------------------------------------
 // Combinational processes and latches
 // ---------------------------------------------------------------------------
