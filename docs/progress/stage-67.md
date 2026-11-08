@@ -57,7 +57,9 @@
   - 豁免本身是正确的，改正正则表达式后通过。
 - SV 语料 24 个项目全部匹配，VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- GitHub Actions Windows x64 / VS2022（提交 87b846c，运行 42463393895）：
+  - Release：598/598 通过，生成 `OpenCDC-0.67.0-windows-x64.zip` 与 `.exe`；
+  - Debug：598/598 通过（包括 `gui.waive_timing_exception`）。
 
 ## 5. 已知限制
 
