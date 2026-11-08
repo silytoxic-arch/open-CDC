@@ -90,6 +90,33 @@ TEST_CASE("Tcl syntax: braces, quotes, continuation, comments, variables, nestin
     CHECK(p.set.clocks[2].name == "clk_b"); // default name = object name
 }
 
+TEST_CASE("Tcl: a backslash-newline inside braces or quotes is one space", "[constraints]") {
+    // SNES_MiSTer SNES.sdc lists register names inside braces over several lines,
+    // each ending in a backslash
+    FakeResolver r;
+    auto p = parse("set_false_path -from [get_ports { clk \\\n"
+                   "\t\t\t\t   clk_b }] \\\n"
+                   "  -to [get_ports \"data\\[0\\] \\\n    data\\[1\\]\"]\n"
+                   // negative: an escaped character that is not a newline stays part of the name
+                   "set_false_path -from [get_ports {data\\[0\\]}]\n"
+                   "create_clock -period 4 -name late [get_ports rst_n]\n",
+                   r);
+    CHECK(p.countCode("CON-PARSE") == 0);
+    CHECK(p.countCode("CON-UNMATCHED") == 0);
+    CHECK(std::ranges::find(r.queries, "ports:\\") == r.queries.end());
+    CHECK(std::ranges::find(r.queries, "ports:clk") != r.queries.end());
+    CHECK(std::ranges::find(r.queries, "ports:clk_b") != r.queries.end());
+    CHECK(std::ranges::find(r.queries, "ports:data[1]") != r.queries.end()); // quotes substitute \\[
+    CHECK(std::ranges::find(r.queries, "ports:data\\[0\\]") != r.queries.end()); // braces keep it
+    REQUIRE(p.set.pathExceptions.size() == 2);
+    CHECK(p.set.pathExceptions[0].from.size() == 2);
+    CHECK(p.set.pathExceptions[0].to.size() == 2);
+    CHECK(p.set.pathExceptions[1].from.size() == 1);
+    // line numbers still count the continued lines
+    REQUIRE(p.set.clocks.size() == 1);
+    CHECK(p.set.clocks[0].loc.line == 6);
+}
+
 TEST_CASE("CRLF line endings (files written on Windows) parse like LF", "[constraints]") {
     const std::string lf = "# comment \\\n"
                            "  continued comment\n"
@@ -646,6 +673,17 @@ TEST_CASE("Quartus collections: '|' names, registers by signal name, keepers, co
                    "set y [get_registers nosuch]\n",
                    r);
     CHECK(q.countCode("CON-UNMATCHED") == 2);
+    // stars after the index (SNES_MiSTer: emu|sdram|st_num[*]*): the bits, any name suffix
+    auto t = parse("set all [get_registers {a_reg[*]*}]\n"
+                   "set one [get_registers {a_reg[1]*}]\n"
+                   "set none [get_registers {a_reg[2]*}]\n" // negative: no such bit
+                   "create_clock -name a[get_collection_size $all]_o[get_collection_size $one] -period 1\n",
+                   r);
+    REQUIRE(t.set.clocks.size() == 1);
+    CHECK(t.set.clocks[0].name == "a1_o1");
+    CHECK(t.countCode("CON-UNMATCHED") == 1);
+    CHECK(r.quartus("a_reg[*]*", QuartusKind::Registers, false).at(0).bits.size() == 2);
+    CHECK(r.quartus("a_reg[1]*", QuartusKind::Registers, false).at(0).bits.size() == 1);
 }
 
 TEST_CASE("Vivado names leave unnamed generate blocks out (genblk)", "[constraints]") {

@@ -551,9 +551,38 @@ TEST_CASE("Primitives: Intel altsyncram and DDR cells", "[primitives]") {
     REQUIRE(run->r->cdc);
     dumpPaths(*run);
     CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
-    CHECK(crosses(*run, "top.dual.mem_a", "top.dual.qb"));
+    CHECK(crosses(*run, "top.dual.mem_a", "top.dual.g_dual.qb"));
     CHECK_FALSE(crosses(*run, "top.", "top.single."));
     CHECK(crosses(*run, "top.din.", "top.dout."));
+}
+
+TEST_CASE("Primitives: single-port and ROM altsyncram have no port B", "[primitives]") {
+    // SNES_MiSTer spram_sz: operation_mode SINGLE_PORT, clock1 left unconnected
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input [7:0] d, input [3:0] a, output [7:0] q, output [7:0] r,\n"
+        "           output [7:0] u);\n"
+        "  reg [7:0] dr, qr, rr, ur; reg [3:0] ar; wire [7:0] qs, rs, us;\n"
+        "  always @(posedge clk_a) begin dr <= d; ar <= a; end\n"
+        "  altsyncram #(.operation_mode(\"SINGLE_PORT\"), .width_a(8), .widthad_a(4), .numwords_a(16))\n"
+        "    sp (.clock0(clk_a), .wren_a(1'b1), .address_a(ar), .data_a(dr), .q_a(qs));\n"
+        "  altsyncram #(.operation_mode(\"ROM\"), .width_a(8), .widthad_a(4), .numwords_a(16))\n"
+        "    rom (.clock0(clk_a), .address_a(ar), .q_a(rs));\n"
+        // negative: a dual-port memory still has its port B on clock1 (here unconnected)
+        "  altsyncram #(.operation_mode(\"DUAL_PORT\"), .width_a(8), .widthad_a(4), .numwords_a(16), .width_b(8),\n"
+        "    .widthad_b(4), .numwords_b(16), .address_reg_b(\"CLOCK1\"))\n"
+        "    dp (.clock0(clk_a), .wren_a(1'b1), .address_a(ar), .data_a(dr), .address_b(ar), .q_b(us));\n"
+        "  always @(posedge clk_b) begin qr <= qs; rr <= rs; ur <= us; end\n"
+        "  assign q = qr; assign r = rr; assign u = ur;\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    // only the dual-port memory has registers on the unconnected clock1
+    CHECK(run->count("CLK-UNRESOLVED") == 1);
+    CHECK(crosses(*run, "top.sp.qa", "top.qr"));
+    CHECK(crosses(*run, "top.rom.qa", "top.rr"));
 }
 
 TEST_CASE("Primitives: Intel altdpram (MLAB) from VHDL", "[primitives][vhdl]") {
@@ -802,7 +831,7 @@ TEST_CASE("Primitives: Intel altera_syncram is altsyncram", "[primitives]") {
                        "top");
     REQUIRE(run->r->cdc);
     dumpPaths(*run);
-    CHECK(crosses(*run, "top.m.mem_a", "top.m.qb"));
+    CHECK(crosses(*run, "top.m.mem_a", "top.m.g_dual.qb"));
 }
 
 TEST_CASE("Registers whose enable is constant 0 through the hierarchy are no sources", "[primitives]") {

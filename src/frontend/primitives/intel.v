@@ -229,6 +229,7 @@ endmodule
 // Port A on clock0; port B on clock1 when its address/output registers say
 // so (address_reg_b / outdata_reg_b = "CLOCK1"), otherwise on clock0. Each
 // write port writes its own array; both are read (see the XPM memory note).
+// SINGLE_PORT and ROM have no port B (clock1 is left unconnected).
 module altsyncram #(parameter address_aclr_a = "NONE", parameter address_aclr_b = "NONE",
                     parameter address_reg_b = "CLOCK1", parameter byte_size = 8,
                     parameter clock_enable_input_a = "BYPASS", parameter clock_enable_input_b = "BYPASS",
@@ -253,23 +254,29 @@ module altsyncram #(parameter address_aclr_a = "NONE", parameter address_aclr_b 
                     output [width_b-1:0] q_b, input rden_a, input rden_b, input wren_a, input wren_b);
     localparam integer W = width_a > width_b ? width_a : width_b;
     reg [W-1:0] mem_a [0:numwords_a-1];
-    reg [W-1:0] mem_b [0:numwords_a-1];
-    wire cb;
+    always @(posedge clock0) if (wren_a) mem_a[address_a] <= data_a;
+    reg [width_a-1:0] qa;
+    assign q_a = qa;
     generate
-        if (address_reg_b == "CLOCK1" || outdata_reg_b == "CLOCK1") begin : g_c1
-            assign cb = clock1;
-        end else begin : g_c0
-            assign cb = clock0;
+        if (operation_mode == "SINGLE_PORT" || operation_mode == "ROM") begin : g_single
+            // no port B: clock1 and the port B inputs are unused
+            always @(posedge clock0) qa <= mem_a[address_a];
+            assign q_b = {width_b{1'b0}};
+        end else begin : g_dual
+            reg [W-1:0] mem_b [0:numwords_a-1];
+            wire cb;
+            if (address_reg_b == "CLOCK1" || outdata_reg_b == "CLOCK1") begin : g_c1
+                assign cb = clock1;
+            end else begin : g_c0
+                assign cb = clock0;
+            end
+            always @(posedge cb) if (wren_b) mem_b[address_b] <= data_b;
+            reg [width_b-1:0] qb;
+            always @(posedge clock0) qa <= mem_a[address_a] ^ mem_b[address_a];
+            always @(posedge cb) qb <= mem_a[address_b] ^ mem_b[address_b];
+            assign q_b = qb;
         end
     endgenerate
-    always @(posedge clock0) if (wren_a) mem_a[address_a] <= data_a;
-    always @(posedge cb) if (wren_b) mem_b[address_b] <= data_b;
-    reg [width_a-1:0] qa;
-    reg [width_b-1:0] qb;
-    always @(posedge clock0) qa <= mem_a[address_a] ^ mem_b[address_a];
-    always @(posedge cb) qb <= mem_a[address_b] ^ mem_b[address_b];
-    assign q_a = qa;
-    assign q_b = qb;
     assign eccstatus = 8'd0;
 endmodule
 
@@ -379,23 +386,29 @@ module altera_syncram #(parameter address_aclr_a = "NONE", parameter address_acl
                     output [width_b-1:0] q_b, input rden_a, input rden_b, input wren_a, input wren_b);
     localparam integer W = width_a > width_b ? width_a : width_b;
     reg [W-1:0] mem_a [0:numwords_a-1];
-    reg [W-1:0] mem_b [0:numwords_a-1];
-    wire cb;
+    always @(posedge clock0) if (wren_a) mem_a[address_a] <= data_a;
+    reg [width_a-1:0] qa;
+    assign q_a = qa;
     generate
-        if (address_reg_b == "CLOCK1" || outdata_reg_b == "CLOCK1") begin : g_c1
-            assign cb = clock1;
-        end else begin : g_c0
-            assign cb = clock0;
+        if (operation_mode == "SINGLE_PORT" || operation_mode == "ROM") begin : g_single
+            // no port B: clock1 and the port B inputs are unused
+            always @(posedge clock0) qa <= mem_a[address_a];
+            assign q_b = {width_b{1'b0}};
+        end else begin : g_dual
+            reg [W-1:0] mem_b [0:numwords_a-1];
+            wire cb;
+            if (address_reg_b == "CLOCK1" || outdata_reg_b == "CLOCK1") begin : g_c1
+                assign cb = clock1;
+            end else begin : g_c0
+                assign cb = clock0;
+            end
+            always @(posedge cb) if (wren_b) mem_b[address_b] <= data_b;
+            reg [width_b-1:0] qb;
+            always @(posedge clock0) qa <= mem_a[address_a] ^ mem_b[address_a];
+            always @(posedge cb) qb <= mem_a[address_b] ^ mem_b[address_b];
+            assign q_b = qb;
         end
     endgenerate
-    always @(posedge clock0) if (wren_a) mem_a[address_a] <= data_a;
-    always @(posedge cb) if (wren_b) mem_b[address_b] <= data_b;
-    reg [width_a-1:0] qa;
-    reg [width_b-1:0] qb;
-    always @(posedge clock0) qa <= mem_a[address_a] ^ mem_b[address_a];
-    always @(posedge cb) qb <= mem_a[address_b] ^ mem_b[address_b];
-    assign q_a = qa;
-    assign q_b = qb;
     assign eccstatus = 8'd0;
 endmodule
 

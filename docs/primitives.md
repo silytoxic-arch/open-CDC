@@ -90,7 +90,7 @@ Sources:
 | `altera_std_synchronizer`, `altera_std_synchronizer_bundle` | `depth`-flop chain (per bit): `din_s1` then `dreg`, Intel's register names (so Intel's SDC such as `*altera_std_synchronizer:*|din_s1` matches) |
 | `altera_reset_synchronizer` | Reset synchronizer (`ASYNC_RESET` selects asynchronous assertion): `altera_reset_synchronizer_int_chain` (`DEPTH` stages) then `altera_reset_synchronizer_int_chain_out`, as in Intel's source |
 | `dcfifo` | Asynchronous FIFO with Gray pointers synchronized in both directions (`rdsync_delaypipe` − 2 stages, at least 2) |
-| `altsyncram`, `altera_syncram` | Port A on `clock0`; port B on `clock1` when `address_reg_b` or `outdata_reg_b` is `"CLOCK1"`, otherwise on `clock0`; per-port write arrays as for block RAM |
+| `altsyncram`, `altera_syncram` | Port A on `clock0`; port B on `clock1` when `address_reg_b` or `outdata_reg_b` is `"CLOCK1"`, otherwise on `clock0`; per-port write arrays as for block RAM; `operation_mode` `"SINGLE_PORT"` or `"ROM"`: port A only |
 | `altdpram` | Dual-port (MLAB) RAM: written on `inclock`; the read address registered on `inclock` or `outclock` (`rdaddress_reg`), or not; the output registered on `outclock` or `inclock` (`outdata_reg`), or read asynchronously |
 | `scfifo` | Single-clock FIFO on `clock`: written on `clock`; `q` combinational from the memory when `lpm_showahead` is `"ON"`, otherwise registered on `clock` |
 | `lpm_mult`, `lpm_divide` | Combinational multiplier / divider; with `lpm_pipeline` > 0 the result passes through that many stages on `clock` (held while `clken` is `0`). VHDL declarations in `lpm.lpm_components` |

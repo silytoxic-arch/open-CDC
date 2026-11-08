@@ -81,8 +81,12 @@ bool globMatch(std::string_view p, std::string_view t, bool nocase) {
 
 namespace {
 
-/// Splits "base[idx]" (unescaped brackets) at the last '['.
+/// Splits "base[idx]" (unescaped brackets) at the last '['. Stars after the index
+/// ("st_num[*]*", as SNES_MiSTer writes it for Quartus: the bit and any name suffix
+/// such as "~DUPLICATE") are dropped: bit names here have no suffix.
 std::optional<std::pair<std::string, std::string>> splitIndex(std::string_view pattern) {
+    while (pattern.size() > 3 && pattern.back() == '*' && pattern[pattern.size() - 2] != '\\')
+        pattern.remove_suffix(1);
     if (pattern.size() < 3 || pattern.back() != ']')
         return std::nullopt;
     // Find the matching '[' of the trailing ']' (allow escaped brackets).
@@ -1072,16 +1076,30 @@ public:
 private:
     static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
+    // Tcl: a backslash-newline and the spaces and tabs after it are one space, also
+    // inside braces (the substitution happens before the command is parsed); SNES_MiSTer
+    // lists register names in braces over several lines ending in '\'
+    bool continuation(std::string& out) {
+        if (i_ + 1 >= s_.size() || s_[i_ + 1] != '\n')
+            return false;
+        ++line_;
+        i_ += 2;
+        while (i_ < s_.size() && (s_[i_] == ' ' || s_[i_] == '\t'))
+            ++i_;
+        out += ' ';
+        return true;
+    }
+
     bool readBraced(std::string& out) {
         int depth = 1;
         ++i_;
         while (i_ < s_.size()) {
             const char c = s_[i_];
+            if (c == '\\' && continuation(out))
+                continue;
             if (c == '\\' && i_ + 1 < s_.size()) {
                 out += c;
                 out += s_[i_ + 1];
-                if (s_[i_ + 1] == '\n')
-                    ++line_;
                 i_ += 2;
                 continue;
             }
@@ -1104,6 +1122,8 @@ private:
         int depth = 0;
         while (i_ < s_.size()) {
             const char c = s_[i_];
+            if (c == '\\' && continuation(out))
+                continue;
             if (c == '\\' && i_ + 1 < s_.size()) {
                 out += c;
                 out += s_[i_ + 1];
@@ -1132,6 +1152,8 @@ private:
     bool readQuoted(std::string& out) {
         ++i_;
         while (i_ < s_.size() && s_[i_] != '"') {
+            if (s_[i_] == '\\' && continuation(out))
+                continue;
             if (s_[i_] == '\\' && i_ + 1 < s_.size()) {
                 out += s_[i_];
                 out += s_[i_ + 1];

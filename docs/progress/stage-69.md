@@ -133,7 +133,9 @@ CX4_A <= ("0" & PRG_ADDR) and ROM_MASK(22 downto 0);   -- CX4Map.vhd：22 位与
   - 结论：差异完全来自 1.2，4 个寄存器都是每次先赋值再读的变量，去掉是正确的。临时代码已删除。
 - VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）：见下方 CI 记录。
+- Windows（GitHub Actions，提交 d3ed126，运行 42476044428）：
+  - Release：608/608 通过，生成 `OpenCDC-0.69.0-windows-x64.zip` 与 `.exe`；
+  - Debug：608/608 通过。
 
 ## 5. 已知限制
 
