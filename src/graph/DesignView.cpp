@@ -20,6 +20,12 @@ const char* toString(DriverKind k) noexcept {
     return "?";
 }
 
+namespace {
+std::tuple<std::uint32_t, std::uint32_t, std::uint32_t> padKey(InstanceId inst, NetId net, std::uint32_t bit) {
+    return {static_cast<std::uint32_t>(inst.index()), static_cast<std::uint32_t>(net.index()), bit};
+}
+} // namespace
+
 DesignView::DesignView(const Design& design) : design_(design) {
     bodies_.resize(design.bodies.size());
     // inout ports: driven from inside where the body (or a child, through its own
@@ -174,7 +180,7 @@ DesignView::DesignView(const Design& design) : design_(design) {
                     }
                 }
                 if (tristate)
-                    pads_.emplace(std::tuple{inst.index(), p.net.index(), bit},
+                    pads_.emplace(padKey(inst, p.net, bit),
                                   inner ? *inner : BitRef{inst, p.net, bit});
             }
         }
@@ -182,11 +188,11 @@ DesignView::DesignView(const Design& design) : design_(design) {
 }
 
 bool DesignView::isPad(const BitRef& b) const {
-    return pads_.contains(std::tuple{b.inst.index(), b.net.index(), b.bit});
+    return pads_.contains(padKey(b.inst, b.net, b.bit));
 }
 
 std::optional<BitRef> DesignView::padInternal(const BitRef& b) const {
-    const auto it = pads_.find(std::tuple{b.inst.index(), b.net.index(), b.bit});
+    const auto it = pads_.find(padKey(b.inst, b.net, b.bit));
     if (it == pads_.end() || (it->second.inst == b.inst && it->second.net == b.net && it->second.bit == b.bit))
         return std::nullopt; // not a pad, or driven by a constant 'z only
     return it->second;

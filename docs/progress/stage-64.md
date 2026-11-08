@@ -91,7 +91,7 @@ endcase
 - 本地 Linux GCC Debug：595 个测试全部通过（新增 3 个测试用例）。
 - SV 语料 24 个项目全部匹配（NES_MiSTer 的期望值已更新），VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- Windows（GitHub Actions）：第一次运行（提交 33ca652）的 Debug 构建失败：MSVC 警告 C4267（`std::tuple{...}` 推导出 `size_t`，再转换为 `uint32_t` 的键），警告按错误处理。GCC 和 Clang 不报告这个转换。改为显式构造 `uint32_t` 键（`padKey`）后重新运行，结果见交付说明。
 
 ## 5. 已知限制
 
