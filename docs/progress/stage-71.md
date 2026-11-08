@@ -74,7 +74,9 @@ cyclonev_hps_interface_fpga2sdram f2sdram(..., .cmd_port_clk_0(...), .cmd_port_c
   - 实际的 27 条（每个 `f2sdram` 13 条，两个实例，加上 `hps2fpga` 1 条）是正确的，已改正期望值。
 - SV 语料 26 个项目全部匹配，VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）：见提交后的记录。
+- Windows（GitHub Actions，提交 bef4e75，运行 42478444447）：
+  - Release：611/611 通过，生成 `OpenCDC-0.71.0-windows-x64.zip` 与 `.exe`；
+  - Debug：611/611 通过。
 
 ## 5. 已知限制
 

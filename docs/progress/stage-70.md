@@ -83,7 +83,7 @@ altsyncram_component : altsyncram generic map (operation_mode => "SINGLE_PORT", 
 - SV 语料 26 个项目全部匹配（期望值按第 2 节更新），VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
 - 阶段 69 的 Windows CI（提交 d3ed126，运行 42476044428）：Release 与 Debug 均 608/608 通过。
-- 本阶段的 Windows CI：见提交后的记录。
+- 本阶段的 Windows CI：提交 f116933 的运行在完成前被下一次推送（阶段 71，提交 bef4e75）按工作流的 `cancel-in-progress` 设置取消。阶段 71 包含本阶段的全部修改，它的运行 42478444447 的 Release 与 Debug 均 611/611 通过，也验证了本阶段。
 
 ## 5. 已知限制
 
