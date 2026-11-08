@@ -30,7 +30,17 @@ jobs:
           cache: true
 
       - name: Configure
-        run: cmake --preset windows-msvc-ci
+        # the dependencies are downloaded here (FetchContent): a dropped download
+        # (a network hiccup of the runner) is retried before the job fails
+        shell: pwsh
+        run: |
+          for ($i = 1; $i -le 3; $i++) {
+            cmake --preset windows-msvc-ci
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Write-Host "configure failed (attempt $i), retrying in $($i * 20) s"
+            Start-Sleep -Seconds ($i * 20)
+          }
+          exit 1
 
       - name: Build
         run: cmake --build --preset windows-msvc-ci-${{ matrix.config == 'Debug' && 'debug' || 'release' }} --parallel

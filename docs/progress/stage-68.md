@@ -130,7 +130,7 @@ MLAB/LUT 双端口存储器 `altdpram` 以前是黑盒，现在加入 Intel 原�
   - 它的设计（任务对模块变量 `q` 赋值）现在被正确建模为 `reg q <= d`，所以改为检查这一点，并保留含延迟的任务作为反例。
 - SV 语料 25 个项目全部匹配（新增 Genesis_MiSTer），其他项目结果不变；VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- Windows（GitHub Actions）：第一次运行（提交 5244cc9，运行 42466164822）的 Release 任务在 Configure 步骤失败：从 GitHub 下载 nlohmann/json 的发布包失败（运行器的网络问题，与代码无关）。没有可用的 GitHub 令牌重新运行这个任务，于是让 CI 的 Configure 步骤在失败时重试（最多 3 次，间隔 20、40 秒），再推送触发新的运行，结果见交付说明。
 
 ## 5. 已知限制
 
