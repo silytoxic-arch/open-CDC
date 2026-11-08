@@ -59,7 +59,9 @@
 - 本地 Linux GCC Debug：597 个测试全部通过（包括 GUI 测试）。
 - SV 语料 24 个项目全部匹配，VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- GitHub Actions Windows x64 / VS2022（提交 f3aeaa0，运行 42461465330）：
+  - Release：597/597 通过，生成 `OpenCDC-0.66.0-windows-x64.zip` 与 `.exe`；
+  - Debug：597/597 通过。
 
 ## 5. 已知限制
 
