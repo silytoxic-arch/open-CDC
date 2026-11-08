@@ -111,7 +111,113 @@ std::vector<std::pair<std::uint32_t, std::uint32_t>> runs(const BitMask& m) {
 // Values
 // ============================================================================
 
+namespace {
+/// The variable at the root of an assignment target (`ram[a]` -> ram).
+const sast::ValueSymbol* targetRoot(const sast::Expression& e) {
+    switch (e.kind) {
+        case sast::ExpressionKind::NamedValue: return &e.as<sast::NamedValueExpression>().symbol;
+        case sast::ExpressionKind::ElementSelect: return targetRoot(e.as<sast::ElementSelectExpression>().value());
+        case sast::ExpressionKind::RangeSelect: return targetRoot(e.as<sast::RangeSelectExpression>().value());
+        case sast::ExpressionKind::MemberAccess: return targetRoot(e.as<sast::MemberAccessExpression>().value());
+        default: return nullptr;
+    }
+}
+
+struct WrittenMemories : sast::ASTVisitor<WrittenMemories, sast::VisitFlags::Statements | sast::VisitFlags::Expressions> {
+    std::unordered_set<const sast::ValueSymbol*> found;
+    void handle(const sast::AssignmentExpression& e) {
+        if (const auto* r = targetRoot(e.left());
+            r && r->kind == sast::SymbolKind::Variable && r->getType().getCanonicalType().isUnpackedArray())
+            found.insert(r);
+        visitDefault(e);
+    }
+};
+} // namespace
+
+void BodyBuilder::findSharedMemories(const sast::Scope& scope) {
+    // true dual-port RAM inferred from two always blocks (C64_MiSTer iecdrv_mem: written
+    // on clock_a and on clock_b): as for the vendor memory models, each write port
+    // writes its own array and every read sees all of them
+    std::unordered_map<const sast::ValueSymbol*, std::vector<const sast::ProceduralBlockSymbol*>> writers;
+    std::vector<const sast::ValueSymbol*> order;
+    std::function<void(const sast::Scope&)> walk = [&](const sast::Scope& sc) {
+        for (const auto& m : sc.members()) {
+            if (m.kind == sast::SymbolKind::ProceduralBlock) {
+                const auto& pb = m.as<sast::ProceduralBlockSymbol>();
+                // clocked writers (registers); a memory written by combinational
+                // logic is not a RAM
+                if ((pb.procedureKind != sast::ProceduralBlockKind::Always &&
+                     pb.procedureKind != sast::ProceduralBlockKind::AlwaysFF) ||
+                    pb.getBody().kind != sast::StatementKind::Timed ||
+                    pb.getBody().as<sast::TimedStatement>().timing.kind == sast::TimingControlKind::ImplicitEvent)
+                    continue;
+                WrittenMemories w;
+                pb.getBody().visit(w);
+                for (const auto* v : w.found) {
+                    auto& list = writers[v];
+                    if (list.empty())
+                        order.push_back(v);
+                    list.push_back(&pb);
+                }
+            }
+            else if (m.kind == sast::SymbolKind::GenerateBlock) {
+                if (!m.as<sast::GenerateBlockSymbol>().isUninstantiated)
+                    walk(m.as<sast::GenerateBlockSymbol>());
+            }
+            else if (m.kind == sast::SymbolKind::GenerateBlockArray) {
+                for (const auto* e : m.as<sast::GenerateBlockArraySymbol>().entries)
+                    if (!e->isUninstantiated)
+                        walk(*e);
+            }
+        }
+    };
+    walk(scope);
+    for (const auto* v : order) {
+        const auto& list = writers[v];
+        auto net = list.size() > 1 ? netFor(*v) : std::nullopt;
+        if (!net)
+            continue;
+        SharedMemory m;
+        m.writers = list;
+        m.copies.push_back(*net);
+        for (std::size_t k = 1; k < list.size(); ++k) {
+            ir::Net copy = body_.net(*net);
+            copy.name += "#" + std::to_string(k + 1);
+            m.copies.push_back(body_.addNet(std::move(copy)));
+        }
+        sharedMem_.emplace(v, std::move(m));
+    }
+}
+
+std::optional<NetId> BodyBuilder::ownCopy(const sast::ValueSymbol& s) const {
+    const auto it = sharedMem_.find(&s);
+    if (it == sharedMem_.end() || !curBlock_)
+        return std::nullopt;
+    for (std::size_t k = 0; k < it->second.writers.size(); ++k)
+        if (it->second.writers[k] == curBlock_)
+            return it->second.copies[k];
+    return std::nullopt;
+}
+
+SigSpec BodyBuilder::sharedRead(const sast::ValueSymbol& s, const SigSpec& own) {
+    const auto& m = sharedMem_.at(&s);
+    const auto mine = ownCopy(s);
+    SigSpec v = own;
+    for (const auto n : m.copies) {
+        if (mine && n == *mine)
+            continue;
+        const SigSpec c = body_.netSig(n);
+        v = v.empty() ? c : cell(CellKind::Xor, {v, c}, c.width(), s.location);
+    }
+    return v;
+}
+
 SigSpec BodyBuilder::defaultValue(const sast::ValueSymbol& s) {
+    if (!sharedMem_.empty() && sharedMem_.contains(&s)) {
+        if (auto own = ownCopy(s))
+            return body_.netSig(*own); // the hold value of this block's copy
+        return sharedRead(s, {});
+    }
     if (auto n = netFor(s))
         return body_.netSig(*n);
     return SigSpec::allX(widthOf(s));
@@ -124,6 +230,11 @@ SigSpec BodyBuilder::nbaBase(const ProcState& st, const sast::ValueSymbol& s) {
 }
 
 SigSpec BodyBuilder::read(const sast::ValueSymbol& s) {
+    if (!sharedMem_.empty() && sharedMem_.contains(&s) && ownCopy(s)) {
+        // a writer of a shared memory reads its own copy (with its blocking writes) and the others
+        const auto* v = proc_ ? proc_->cur.find(&s) : nullptr;
+        return sharedRead(s, v ? *v : defaultValue(s));
+    }
     if (proc_) {
         if (const auto* v = proc_->cur.find(&s))
             return *v;
@@ -192,7 +303,20 @@ void BodyBuilder::assignTargets(const std::vector<LTarget>& targets, const SigSp
                 rd.rangeLeft = t.left;
                 rd.rangeRight = t.right;
                 rd.origin = loc(l);
-                elem = emit(std::move(rd)).replaced(t.subOffset, part);
+                if (t.subDynamic) {
+                    Cell in;
+                    in.kind = CellKind::DynInsert;
+                    in.inputs = {emit(std::move(rd)), t.subIndex, part};
+                    in.width = t.unitWidth;
+                    in.isSigned = t.subIndexSigned;
+                    in.elemWidth = t.width;
+                    in.rangeLeft = t.subLeft;
+                    in.rangeRight = t.subRight;
+                    in.origin = loc(l);
+                    elem = emit(std::move(in));
+                }
+                else
+                    elem = emit(std::move(rd)).replaced(t.subOffset, part);
             }
             Cell c;
             c.kind = CellKind::DynInsert;
@@ -420,7 +544,13 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
             SigSpec b = v.resized(w, false);
             const auto bc = b.asConst();
             const CellKind k = (wildcard && !(bc && bc->isFullyDefined())) ? CellKind::EqWild : CellKind::Eq;
-            SigSpec eq = cell(k, {a, b}, 1, l);
+            SigSpec eq;
+            if (const auto ac = a.asConst(); k == CellKind::Eq && ac && bc && ac->isFullyDefined() && bc->isFullyDefined())
+                // a constant selector (case (BITS) in C64_MiSTer sid_dac.sv): only the matching
+                // item is lowered, the others are not hardware
+                eq = SigSpec::constant(*ac == *bc ? 1 : 0, 1);
+            else
+                eq = cell(k, {a, b}, 1, l);
             acc = acc.empty() ? eq : cell(CellKind::Or, {acc, eq}, 1, l);
         }
         return acc.empty() ? SigSpec::constant(0, 1) : acc;
@@ -531,7 +661,19 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
         for (std::uint64_t v = 0; complete && v < seen.size(); ++v)
             if ((v & fixedMask) == fixedVal && !seen[v])
                 complete = false;
-        if (complete)
+        // a last item that is already constant stays so (a constant selector: an item
+        // that never matches is not lowered)
+        if (complete && !conds.back().isFullyConst())
+            conds.back() = SigSpec::constant(1, 1);
+    }
+    // otherwise, the items together match every two-state value of the signals the
+    // selector is made of (C64_MiSTer NextZ80ALU: case (OP[3] ? EXOP[2:0] : OP[2:0])
+    // lists all 8 values; the selector, a 32-bit multiplexer, has no constant upper bits)
+    if (!c.defaultCase && conds.size() > 1 && !conds.back().isFullyConst()) {
+        SigSpec any = conds.front();
+        for (std::size_t k = 1; k < conds.size(); ++k)
+            any = cell(CellKind::Or, {any, conds[k]}, 1, l);
+        if (ed_.alwaysTrue(any))
             conds.back() = SigSpec::constant(1, 1);
     }
 
@@ -861,6 +1003,12 @@ void BodyBuilder::execTaskCall(const sast::CallExpression& call, ProcState& st, 
 
 
 void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
+    const auto* savedBlock = std::exchange(curBlock_, &pb);
+    struct Restore {
+        const sast::ProceduralBlockSymbol*& slot;
+        const sast::ProceduralBlockSymbol* value;
+        ~Restore() { slot = value; }
+    } restore{curBlock_, savedBlock};
     using PK = sast::ProceduralBlockKind;
     const auto l = pb.location;
     const auto& body = pb.getBody();
@@ -1147,7 +1295,9 @@ void BodyBuilder::lowerSequential(const sast::Statement& body, std::vector<std::
         const SigSpec d = finalValue(clocked, s);
         if (loopVars_.contains(s) && d.isFullyConst())
             continue;
-        auto net = netFor(*s);
+        auto net = ownCopy(*s);
+        if (!net)
+            net = netFor(*s);
         if (!net)
             continue; // automatic local: purely combinational inside the block
         const auto W = body_.net(*net).width;

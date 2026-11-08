@@ -781,6 +781,20 @@ const Type* Elaborator::elaborateTypeDef(Scope& scope, const Ident& name, const 
             t.element = def.element ? subtype(*def.element, ctx) : nullptr;
             if (!t.element)
                 t.element = std_.bit;
+            // a constrained array type declaration declares an anonymous unconstrained
+            // base type and the named type as its subtype (IEEE 1076 5.3.2.1): the
+            // predefined "&" works on the base type (C64_MiSTer:
+            // charStore(37 downto 0) & nextChar with charStore of a 39-element type)
+            if (std::ranges::any_of(t.indexRanges, [](const auto& r) { return r.has_value(); })) {
+                std::vector<IntRange> ranges;
+                for (const auto& r : t.indexRanges)
+                    ranges.push_back(r.value_or(IntRange{0, -1, true}));
+                Type u = t;
+                for (auto& r : u.indexRanges)
+                    r = std::nullopt;
+                const Type* base = types.make(std::move(u));
+                return types.constrainedArray(base, std::move(ranges)); // keeps the name
+            }
             return types.make(std::move(t));
         }
         case TypeDef::Kind::Record: {

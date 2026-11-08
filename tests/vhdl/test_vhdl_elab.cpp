@@ -1208,6 +1208,34 @@ TEST_CASE("VHDL: a type conversion in the formal part of a port association", "[
     CHECK(r.has("inst u : child (.clk(clk), .d(d), .q(s))"));
 }
 
+TEST_CASE("VHDL: '&' on a constrained array type works on its unconstrained base", "[vhdl][elab]") {
+    // C64_MiSTer video_vicII_656x.vhd: charStore <= charStore(37 downto 0) & nextChar;
+    // with type charStoreDef is array(38 downto 0) of unsigned(11 downto 0)
+    auto r = elaborate(lib("entity t is port (clk : in std_logic; d : in unsigned(3 downto 0); q : out unsigned(3 downto 0));\n"
+                           "end;\n"
+                           "architecture rtl of t is\n"
+                           "  type st is array(2 downto 0) of unsigned(3 downto 0);\n"
+                           "  signal s : st;\n"
+                           "begin\n"
+                           "  process (clk) begin if rising_edge(clk) then s <= s(1 downto 0) & d; end if; end process;\n"
+                           "  q <= s(2);\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.has("reg s "));
+    // negative: a result of the wrong length is still an error
+    auto n = elaborate(lib("entity t is port (clk : in std_logic; d : in unsigned(3 downto 0)); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type st is array(2 downto 0) of unsigned(3 downto 0);\n"
+                           "  signal s : st;\n"
+                           "begin\n"
+                           "  process (clk) begin if rising_edge(clk) then s <= s & d; end if; end process;\n"
+                           "end;\n"),
+                       "t");
+    CHECK(n.count("VHDL-LENGTH") == 1);
+}
+
 TEST_CASE("VHDL negative: a clock edge that is not the last condition stays unsupported", "[vhdl][elab]") {
     auto r = elaborate(lib("entity t is port (clk, rst_n, d : in std_logic; q : out std_logic); end;\n"
                            "architecture rtl of t is begin\n"

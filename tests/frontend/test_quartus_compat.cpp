@@ -115,6 +115,56 @@ TEST_CASE("Quartus compatibility: names of a generate block used in the module",
     CHECK(a.crosses("kbd", "m.q"));
 }
 
+TEST_CASE("Quartus compatibility: function ports declared as wire", "[frontend][quartus]") {
+    // C64_MiSTer sid_tables.sv: function signed [15:0] tanh_y_mirror(wire x_neg, wire signed [15:0] y)
+    test::TempDir dir;
+    const auto a = analyze(dir,
+                           {{"m.sv", "module m (input clk, input signed [15:0] d, input n, output reg signed [15:0] q);\n"
+                                     "  function signed [15:0] mirror(wire x_neg, wire signed [15:0] y);\n"
+                                     "    mirror = x_neg ? -y : y;\n"
+                                     "  endfunction\n"
+                                     "  always @(posedge clk) q <= mirror(n, d);\n"
+                                     "endmodule\n"}},
+                           "m");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-WIRE-FUNCTION-PORT") == 2);
+    // negative: 'wire' as a data type elsewhere is still an error
+    test::TempDir dir2;
+    const auto b = analyze(dir2, {{"m.sv", "module m (input clk, output reg q);\n"
+                                           "  logic [wire] x;\n"
+                                           "  always @(posedge clk) q <= 1'b0;\n"
+                                           "endmodule\n"}},
+                           "m");
+    CHECK(b.errors() > 0);
+    CHECK(b.count("FE-WIRE-FUNCTION-PORT") == 0);
+}
+
+TEST_CASE("True dual-port RAM written from two always blocks", "[frontend][quartus]") {
+    // C64_MiSTer iecdrv_mem: one array written on clock_a and on clock_b (as the Intel
+    // and Xilinx templates infer a true dual-port RAM)
+    test::TempDir dir;
+    const auto a = analyze(dir,
+                           {{"m.sv", "module m (input ca, input cb, input [3:0] aa, input [3:0] ab, input [7:0] da,\n"
+                                     "          input [7:0] db, input wa, input wb, output reg [7:0] qa, output reg [7:0] qb,\n"
+                                     "          output reg [7:0] r1);\n"
+                                     "  reg [7:0] ram[16];\n"
+                                     "  always @(posedge ca) begin if (wa) ram[aa] <= da; qa <= ram[aa]; end\n"
+                                     "  always @(posedge cb) begin if (wb) ram[ab] <= db; qb <= ram[ab]; end\n"
+                                     // negative: written in one block only, read in the other: one array
+                                     "  reg [7:0] one[16];\n"
+                                     "  always @(posedge ca) one[aa] <= da;\n"
+                                     "  always @(posedge cb) r1 <= one[ab];\n"
+                                     "endmodule\n"}},
+                           "m");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("IR-MULTIDRIVER") == 0);
+    // each port writes its own array, each read port reads both
+    CHECK(a.crosses("m.ram#2", "m.qa"));
+    CHECK(a.crosses("m.ram", "m.qb"));
+    CHECK_FALSE(a.crosses("m.one#2", "m.r1"));
+    CHECK(a.crosses("m.one", "m.r1"));
+}
+
 TEST_CASE("Quartus compatibility negative: real errors stay errors", "[frontend][quartus]") {
     test::TempDir dir;
     // an identifier declared nowhere, and a wire with a continuous assignment and a

@@ -345,6 +345,53 @@ TEST_CASE("Verilog: synthesis translate_off regions are skipped", "[extract]") {
     CHECK(e.has("reg p <= $not$0 @(posedge clk)"));
 }
 
+TEST_CASE("Writing mem[i][j] with both indexes variable", "[extract]") {
+    // C64_MiSTer opl3fm.sv: ram[addr1 / RATIO][addr1 % RATIO] = data_in1
+    auto e = extract("module m(input clk, input [1:0] i, input [1:0] j, input [3:0] d, input we, output reg [15:0] q,\n"
+                     "         output reg [15:0] p);\n"
+                     "  reg [3:0][3:0] ram [0:3];\n"
+                     "  always @(posedge clk) if (we) ram[i][j] <= d;\n"
+                     "  always @(posedge clk) q <= ram[i];\n"
+                     // negative: a variable part select inside the element stays unsupported
+                     "  reg [15:0] mem [0:3];\n"
+                     "  always @(posedge clk) if (we) mem[i][j*4 +: 4] <= d;\n"
+                     "  always @(posedge clk) p <= mem[i];\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK(e.countCode("IR-UNSUPPORTED-LVALUE") == 1);
+    // the element is read, j's part replaced, and written back
+    CHECK(e.contains("= dyn_insert<4@3:0>(A=$dyn_select"));
+    CHECK(e.contains("reg ram <= "));
+}
+
+TEST_CASE("case: items covering every value of a computed selector, a constant selector", "[extract][case]") {
+    // C64_MiSTer NextZ80ALU: case (OP[3] ? EXOP[2:0] : OP[2:0]) with all 8 values;
+    // sid_dac.sv: case (BITS) in an initial block, BITS a parameter
+    auto e = extract("module m #(parameter N = 4) (input [3:0] op, input [2:0] ex, input a, input b,\n"
+                     "  output reg y, output reg n, output reg [7:0] w);\n"
+                     "  always @* case (op[3] ? ex : op[2:0])\n"
+                     "    0,5: y = a; 1: y = b; 2,3: y = ~a; 4,7: y = 0; 6: y = 1;\n"
+                     "  endcase\n"
+                     // negative: value 6 missing
+                     "  always @* case (op[3] ? ex : op[2:0])\n"
+                     "    0,5: n = a; 1: n = b; 2,3: n = ~a; 4,7: n = 0;\n"
+                     "  endcase\n"
+                     "  reg [7:0] tab [N];\n"
+                     "  always @* begin\n"
+                     "    case (N)\n"
+                     "      4: w = 8'd1;\n"
+                     "      8: w = tab[7];\n" // never taken: not lowered, no out-of-range warning
+                     "    endcase\n"
+                     "  end\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK_FALSE(e.contains("latch y "));
+    CHECK(e.contains("latch n "));
+    CHECK(e.countCode("IR-OUT-OF-RANGE") == 0);
+    CHECK_FALSE(e.contains("latch w "));
+    CHECK(e.has("comb  w = 8'b00000001"));
+}
+
 // ---------------------------------------------------------------------------
 // Combinational processes and latches
 // ---------------------------------------------------------------------------

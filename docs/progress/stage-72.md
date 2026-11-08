@@ -100,7 +100,9 @@ always @(posedge CLK_AUDIO) crossed <= (clk_rate[0].cnt <= clk_rate[1].cnt);   /
   - 被测试的行为本身是正确的。按实际输出改正期望值后通过。
 - SV 语料 27 个项目全部匹配（新增 ao486_MiSTer），VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）：见提交后的记录。
+- Windows（GitHub Actions，提交 8292ec3，运行 42485539613）：
+  - Release：614/614 通过，生成 `OpenCDC-0.72.0-windows-x64.zip` 与 `.exe`；
+  - Debug：614/614 通过。
 
 ## 5. 已知限制
 

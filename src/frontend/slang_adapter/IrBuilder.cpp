@@ -322,6 +322,7 @@ ModuleBody BodyBuilder::build() {
 
     declarePorts();
     declareScope(sym_);
+    findSharedMemories(sym_);
     lowerScope(sym_);
     finishVirtualPorts();
     ed_.finish(owner_.sink(), [this](const std::vector<std::uint32_t>& remap) {
@@ -1523,7 +1524,21 @@ bool BodyBuilder::lvalueInto(const sast::Expression& e, std::vector<LTarget>& ou
                 std::optional<std::int64_t> i1, i2;
                 if (e.kind == EK::ElementSelect) {
                     const auto& sel = e.as<sast::ElementSelectExpression>().selector();
-                    i1 = i2 = constIndex(lower(sel), sel.type->isSigned());
+                    SigSpec idx = lower(sel);
+                    i1 = i2 = constIndex(idx, sel.type->isSigned());
+                    if (!i1 && w == info->elemWidth) {
+                        // mem[i][j] with a variable j (C64_MiSTer iecdrv_misc.sv, opl3fm.sv):
+                        // read-modify-write of element i at a variable position
+                        t.sub = true;
+                        t.subDynamic = true;
+                        t.subIndex = std::move(idx);
+                        t.subIndexSigned = sel.type->isSigned();
+                        t.subLeft = info->left;
+                        t.subRight = info->right;
+                        t.width = w;
+                        out.push_back(t);
+                        return true;
+                    }
                 }
                 else {
                     const auto& rs = e.as<sast::RangeSelectExpression>();

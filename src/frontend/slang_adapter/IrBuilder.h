@@ -104,6 +104,13 @@ struct LTarget {
     std::int32_t right = 0;
     bool sub = false;               ///< dynamic: only [subOffset, +width) of the element is written
     std::uint32_t subOffset = 0;
+    /// dynamic: the written part of the element is itself selected by a variable
+    /// index (mem[i][j]); subOffset is then unused
+    bool subDynamic = false;
+    ir::SigSpec subIndex;
+    bool subIndexSigned = false;
+    std::int32_t subLeft = 0;
+    std::int32_t subRight = 0;
 };
 
 inline LTarget wholeTarget(const sast::ValueSymbol* sym, std::uint32_t width) {
@@ -211,6 +218,19 @@ private:
     std::string prefix_; ///< hierarchical path prefix of symbols in this body ("top.u_rx.")
     std::unordered_map<const sast::Symbol*, ir::NetId> netOf_;
     ir::BodyEditor ed_{body_}; ///< cell creation, control extraction, cleanup (shared with the VHDL frontend)
+    /// memories (unpacked arrays) written by several procedural blocks (a true
+    /// dual-port RAM): each writing block writes its own copy, reads see all copies
+    struct SharedMemory {
+        std::vector<const sast::ProceduralBlockSymbol*> writers;
+        std::vector<ir::NetId> copies; ///< aligned with writers; copies[0] is the declared net
+    };
+    std::unordered_map<const sast::ValueSymbol*, SharedMemory> sharedMem_;
+    const sast::ProceduralBlockSymbol* curBlock_ = nullptr; ///< the block being lowered
+    void findSharedMemories(const sast::Scope& scope);
+    /// the copy of a shared memory written by the block being lowered
+    std::optional<ir::NetId> ownCopy(const sast::ValueSymbol& s) const;
+    /// `own` (or every copy when empty) combined with the other copies of a shared memory
+    ir::SigSpec sharedRead(const sast::ValueSymbol& s, const ir::SigSpec& own);
     /// conditions of the enclosing 'if ... else if' chain (lowering an else branch)
     std::vector<ir::SigSpec> elseChain_;
     bool elseChainUnique_ = false; ///< the chain is unique / priority if

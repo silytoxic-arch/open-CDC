@@ -18,6 +18,7 @@
 #include <slang/diagnostics/ExpressionsDiags.h>
 #include <slang/diagnostics/LexerDiags.h>
 #include <slang/diagnostics/LookupDiags.h>
+#include <slang/diagnostics/ParserDiags.h>
 #include <slang/parsing/Lexer.h>
 #include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Preprocessor.h>
@@ -273,7 +274,8 @@ void preloadNonUtf8(const std::vector<std::string>& paths, const std::vector<std
 ///   keyword becomes `reg ` (same length), a port without a type gets `reg`;
 /// - a name declared in a generate block and used outside it in the enclosing
 ///   module (an undeclared identifier): its declaration is moved before the
-///   generate construct (on the same line).
+///   generate construct (on the same line);
+/// - a function port declared `wire`: the keyword is removed (an input).
 /// The edits are applied to the source text and the design compiled again.
 struct SourceEdit {
     std::string file; ///< the buffer's canonical path (as preloadNonUtf8 keys it)
@@ -300,6 +302,15 @@ std::string identifierAt(const slang::SourceManager& sm, slang::SourceLocation l
     return std::string(text.substr(loc.offset(), e - loc.offset()));
 }
 
+/// Whether the text before a location (skipping whitespace) ends in '(' or ',': the start of an item in a port list.
+bool afterListSeparator(const slang::SourceManager& sm, slang::SourceLocation loc) {
+    const auto text = sm.getSourceText(loc.buffer());
+    std::size_t i = loc.offset();
+    while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1])))
+        --i;
+    return i > 0 && (text[i - 1] == '(' || text[i - 1] == ',');
+}
+
 std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, const slang::syntax::SyntaxTree& tree,
                                            const slang::SourceManager& sm, const sast::RootSymbol& root) {
     using namespace slang::syntax;
@@ -316,6 +327,19 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
         else if (d.code == slang::diag::UndeclaredIdentifier || d.code == slang::diag::TypoIdentifier) {
             if (auto id = identifierAt(sm, loc); !id.empty())
                 undeclared.emplace_back(loc, std::move(id));
+        }
+        else if ((d.code == slang::diag::ExpectedFunctionPort || d.code == slang::diag::WireDataType) &&
+                 identifierAt(sm, loc) == "wire" && afterListSeparator(sm, loc)) {
+            // `function [9:0] f(wire signed [10:0] x)` (C64_MiSTer sid_tables.sv): a function
+            // port is a variable; Quartus reads `wire` as an input of that type. The keyword
+            // becomes spaces (an implicitly typed input)
+            const auto key = bufferKey(sm, loc.buffer());
+            if (std::ranges::none_of(edits, [&](const SourceEdit& e) { return e.file == key && e.offset == loc.offset(); }))
+                edits.push_back({key, loc.offset(), 4, "    ", "FE-WIRE-FUNCTION-PORT",
+                                 "function port declared as 'wire', which (System)Verilog does not allow: read as "
+                                 "an input of that type, as Quartus does",
+                                 "remove 'wire' (or write 'input') to make the design portable",
+                                 convertLocation(sm, loc)});
         }
     }
     if (!netUses.empty()) {
