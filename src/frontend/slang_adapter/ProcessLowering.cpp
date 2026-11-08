@@ -472,7 +472,21 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
                     seen[v] = true;
                 }
             }
-        if (constant && std::ranges::all_of(seen, [](bool b) { return b; }))
+        // constant bits of the selector ({a, 1'b0, b}): values with the other bit
+        // there never occur and need no item
+        std::uint64_t fixedMask = 0;
+        std::uint64_t fixedVal = 0;
+        for (std::uint32_t i = 0; i < w; ++i)
+            if (const auto k = sel.extract(i, 1).asConst(); k && (*k)[0] != ir::Logic::X && (*k)[0] != ir::Logic::Z) {
+                fixedMask |= std::uint64_t{1} << i;
+                if ((*k)[0] == ir::Logic::L1)
+                    fixedVal |= std::uint64_t{1} << i;
+            }
+        bool complete = constant;
+        for (std::uint64_t v = 0; complete && v < seen.size(); ++v)
+            if ((v & fixedMask) == fixedVal && !seen[v])
+                complete = false;
+        if (complete)
             conds.back() = SigSpec::constant(1, 1);
     }
 

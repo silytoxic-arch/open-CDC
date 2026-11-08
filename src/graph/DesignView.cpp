@@ -142,6 +142,54 @@ DesignView::DesignView(const Design& design) : design_(design) {
         if (node.parent.valid())
             children_[node.parent.index()][node.childIndex] = InstanceId{static_cast<std::uint32_t>(i)};
     }
+    // tristate pads: bits of a top instance's inout ports assigned 'z or (oe ? d : 'z)
+    for (std::size_t i = 0; i < design.instances.size(); ++i) {
+        const auto& node = design.instances[i];
+        if (node.parent.valid())
+            continue;
+        const InstanceId inst{static_cast<std::uint32_t>(i)};
+        const ModuleBody& body = design.body(node.body);
+        for (const auto& p : body.ports) {
+            if (p.dir != PortDir::InOut)
+                continue;
+            for (std::uint32_t bit = 0; bit < body.net(p.net).width; ++bit) {
+                const Entry* e = find(bodies_[node.body.index()], p.net, bit);
+                if (!e || e->kind != EntryKind::Conn)
+                    continue;
+                const SigSpec& rhs = body.connections[e->index].rhs;
+                const std::uint32_t pos = e->pos + (bit - e->lo);
+                if (pos >= rhs.width())
+                    continue;
+                const auto inner = bitOf(inst, rhs, pos);
+                bool tristate = !inner && constBit(rhs, pos) == Logic::Z;
+                if (inner) {
+                    const Entry* ce = find(bodies_[node.body.index()], inner->net, inner->bit);
+                    if (ce && ce->kind == EntryKind::Cell && body.cells[ce->index].kind == CellKind::Mux) {
+                        const auto& cell = body.cells[ce->index];
+                        const std::uint32_t cpos = ce->pos + (inner->bit - ce->lo);
+                        for (std::size_t k = 0; k < 2 && k < cell.inputs.size(); ++k)
+                            if (cpos < cell.inputs[k].width() && !bitOf(inst, cell.inputs[k], cpos) &&
+                                constBit(cell.inputs[k], cpos) == Logic::Z)
+                                tristate = true;
+                    }
+                }
+                if (tristate)
+                    pads_.emplace(std::tuple{inst.index(), p.net.index(), bit},
+                                  inner ? *inner : BitRef{inst, p.net, bit});
+            }
+        }
+    }
+}
+
+bool DesignView::isPad(const BitRef& b) const {
+    return pads_.contains(std::tuple{b.inst.index(), b.net.index(), b.bit});
+}
+
+std::optional<BitRef> DesignView::padInternal(const BitRef& b) const {
+    const auto it = pads_.find(std::tuple{b.inst.index(), b.net.index(), b.bit});
+    if (it == pads_.end() || (it->second.inst == b.inst && it->second.net == b.net && it->second.bit == b.bit))
+        return std::nullopt; // not a pad, or driven by a constant 'z only
+    return it->second;
 }
 
 const DesignView::Entry* DesignView::find(const BodyIndex& idx, NetId net, std::uint32_t bit) const {
@@ -202,6 +250,9 @@ Driver DesignView::driver(const BitRef& start, const std::function<bool(const Bi
             hops->push_back(cur);
         if (stop && stop(cur))
             return {DriverKind::Undriven, cur, 0, Logic::X};
+        // a tristate pad: the logic reading it sees the pin
+        if (!pads_.empty() && isPad(cur))
+            return {DriverKind::PrimaryInput, cur, 0, Logic::X};
 
         const auto& node = design_.instance(cur.inst);
         const ModuleBody& body = design_.body(node.body);

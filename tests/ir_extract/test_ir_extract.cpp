@@ -1081,3 +1081,15 @@ TEST_CASE("IR: static variables declared in a block keep their value; automatic 
     CHECK(e.contains("arst(reset -> 2'b00) en(ce)"));
     CHECK(e.has("reg o <= 2'b10 @(posedge clk)"));
 }
+
+TEST_CASE("IR: a case whose selector has constant bits needs no item for the values it cannot take", "[ir][case]") {
+    // NES_MiSTer Mapper162: case ({state[3][2], 1'b0, state[3][0]}) 0: 1: 4: 5:
+    auto e = extract("module t(input [3:0] st, input [7:0] a, b, c, d, output logic [7:0] p, output logic [7:0] n);\n"
+                     "  always_comb case ({st[2], 1'b0, st[0]}) 0: p = a; 1: p = b; 4: p = c; 5: p = d; endcase\n"
+                     // negative: the middle bit is 1, the items never match
+                     "  always_comb case ({st[2], 1'b1, st[0]}) 0: n = a; 1: n = b; 4: n = c; 5: n = d; endcase\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK_FALSE(e.contains("latch p "));
+    CHECK(e.contains("latch n "));
+}

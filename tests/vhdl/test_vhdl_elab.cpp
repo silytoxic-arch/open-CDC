@@ -1065,6 +1065,27 @@ TEST_CASE("VHDL: 'x <= r when rst else v when rising_edge(clk);' is a register w
     CHECK_FALSE(r.has("reg c "));
 }
 
+TEST_CASE("VHDL: a selected assignment listing every value of an enumeration is complete", "[vhdl][elab]") {
+    // T65: with Set_BusA_To select BusA <= ... when ..., 11 literals (4 bits, 5 codes unused)
+    auto r = elaborate(lib("entity t is port (s : in std_logic_vector(1 downto 0); a, b, c : in std_logic;\n"
+                           "  y, n : out std_logic); end;\n"
+                           "architecture rtl of t is\n"
+                           "  type e_t is (e0, e1, e2);\n"
+                           "  signal e : e_t;\n"
+                           "begin\n"
+                           "  e <= e0 when s = \"00\" else e1 when s = \"01\" else e2;\n"
+                           "  with e select y <= a when e0, b when e1, c when e2;\n"
+                           // negative: 'unaffected' keeps the value: a latch
+                           "  with e select n <= a when e0, b when e1, unaffected when others;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK_FALSE(r.has("latch y "));
+    CHECK(r.has("latch n "));
+    CHECK(r.count("IR-LATCH-INFERRED") == 1);
+}
+
 TEST_CASE("VHDL negative: a clock edge that is not the last condition stays unsupported", "[vhdl][elab]") {
     auto r = elaborate(lib("entity t is port (clk, rst_n, d : in std_logic; q : out std_logic); end;\n"
                            "architecture rtl of t is begin\n"

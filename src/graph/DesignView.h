@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <tuple>
 #include <optional>
 #include <string>
 #include <vector>
@@ -67,6 +69,12 @@ public:
     [[nodiscard]] Driver driver(const BitRef& b, const std::function<bool(const BitRef&)>& stop = {},
                                 std::vector<BitRef>* hops = nullptr) const;
 
+    /// A bit of a top-level inout port driven through a tristate (oe ? d : 'z): a pad.
+    /// Logic reading it sees the pin, a primary input; padInternal() gives the bit
+    /// that drives the pad from inside (for checks of what the design drives out).
+    [[nodiscard]] bool isPad(const BitRef& b) const;
+    [[nodiscard]] std::optional<BitRef> padInternal(const BitRef& b) const;
+
     /// BitRef of bit `index` of `sig` inside `inst`; nullopt for constant bits.
     [[nodiscard]] std::optional<BitRef> bitOf(ir::InstanceId inst, const ir::SigSpec& sig, std::uint32_t index) const;
     /// Constant value of bit `index` of `sig` (X if not constant).
@@ -113,6 +121,8 @@ private:
     std::size_t totalRegisters_ = 0;
     std::vector<std::size_t> latchBase_;                 ///< per InstanceId
     std::size_t totalLatches_ = 0;
+    /// top-level tristate pad bits -> the bit driving them from inside
+    std::map<std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>, BitRef> pads_;
 };
 
 } // namespace opencdc::graph

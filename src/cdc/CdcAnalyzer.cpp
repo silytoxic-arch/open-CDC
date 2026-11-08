@@ -212,7 +212,9 @@ private:
                         return e->from.empty() && e->fromClocks.empty() && e->fromClockBits.empty();
                     }))
                     continue;
-                const BitInput bi = st_.sg.inputOf(b);
+                // a tristate pad: what the design drives out of it
+                const auto padIn = st_.view.padInternal(b);
+                const BitInput bi = st_.sg.inputOf(padIn ? *padIn : b);
                 ConeEntry scratch;
                 for (const auto& ce : st_.sg.entries(bi, scratch)) {
                     const auto& node = st_.sg.nodes().at(ce.node);

@@ -502,6 +502,11 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
                     }
                     conds.push_back(c);
                 }
+                // as for case statements, VHDL requires the choices to cover every
+                // value of the selector's subtype: the last alternative takes the rest
+                // (encodings outside the subtype do not occur), no latch
+                if (!conds.empty())
+                    conds.back() = one();
             }
             else {
                 for (const auto& a : s.alts)

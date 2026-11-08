@@ -280,3 +280,34 @@ TEST_CASE("Mixed: a defparam'd parameter as a VHDL generic", "[frontend][vhdl]")
         "top");
     CHECK(b.count("VHDL-GENERIC") == 1);
 }
+
+TEST_CASE("Top-level tristate pads: the logic reading them sees the pin", "[frontend][quartus][pad]") {
+    test::TempDir dir;
+    // MiSTer: assign USER_IO[2] = !(SW[1] ? HDMI_I2S : user_out[2]) ? 1'b0 : 1'bZ; user_in <= USER_IO
+    const auto a = analyze(dir,
+                           {{"top.v", "module top (input clk_a, input clk_b, input oe, inout [1:0] io,\n"
+                                      "            output reg q, output reg q2, inout plain, output reg q3);\n"
+                                      "  reg r; always @(posedge clk_a) r <= ~r;\n"
+                                      "  assign io[0] = oe ? r : 1'bz;\n"
+                                      "  assign io[1] = !r ? 1'b0 : 1'bz;\n"
+                                      "  always @(posedge clk_b) begin q <= io[0]; q2 <= io[1]; end\n"
+                                      "  assign plain = r;\n" // negative: an inout used as a plain output
+                                      "  always @(posedge clk_b) q3 <= plain;\n"
+                                      "endmodule\n"}},
+                           "top",
+                           "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                           "create_clock -name clk_b -period 7 [get_ports clk_b]\n"
+                           "set_clock_groups -asynchronous -group clk_a -group clk_b\n"
+                           "set_output_delay -clock clk_b 1 [get_ports {io[0]}]\n");
+    CHECK(a.errors() == 0);
+    const auto toExactly = [&](std::string_view dst) {
+        return std::ranges::any_of(a.r->cdc->paths, [&](const auto& p) { return p.dstName == dst; });
+    };
+    REQUIRE(a.r->cdc);
+    CHECK_FALSE(toExactly("top.q"));
+    CHECK_FALSE(toExactly("top.q2"));
+    CHECK(a.has("CDC-NO-DOMAIN", "'top.io'"));
+    CHECK(a.crosses("top.r", "top.q3"));
+    // what the design drives out of the pad is still checked against its output delay
+    CHECK(a.has("CDC-OUTPUT-CLOCK", "output 'top.io[0]'"));
+}
