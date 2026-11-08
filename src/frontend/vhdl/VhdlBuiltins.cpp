@@ -756,10 +756,15 @@ SVal Elaborator::callBuiltin(Builtin b, const Symbol& sym, std::vector<SVal>& ar
             if (c.width() == 1 && w > 1)
                 c = c.repeated(w);
             if (a.width() != c.width()) {
-                error("VHDL-LENGTH", "operands of '" + sym.display + "' have different lengths (" +
-                                         std::to_string(a.width()) + " and " + std::to_string(c.width()) + ")",
-                      l);
-                return makeBits(rt, ir::SigSpec::allX(w));
+                // the IEEE package body asserts (a failure in simulation, which synthesis
+                // ignores) and returns its uninitialized result of the left operand's
+                // length: Quartus compiles the design (T80: ioq and x"7")
+                warn("VHDL-LENGTH-LOGIC",
+                     "operands of '" + sym.display + "' have different lengths (" + std::to_string(a.width()) +
+                         " and " + std::to_string(c.width()) +
+                         "): a failure in simulation; the result (as long as the left operand) is unknown",
+                     l);
+                return makeBits(args[0].type->isArray() ? args[0].type : rt, ir::SigSpec::allX(a.width()));
             }
             ir::CellKind k = b == Builtin::LogicAnd || b == Builtin::LogicNand   ? ir::CellKind::And
                              : b == Builtin::LogicOr || b == Builtin::LogicNor   ? ir::CellKind::Or

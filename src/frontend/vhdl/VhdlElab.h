@@ -261,6 +261,9 @@ struct Object {
     ir::SigSpec storage;           ///< canonical bits over the object's nets (empty: no hardware)
     SVal initial;                  ///< variables: value at the start of an activation
     bool readInitial = false;      ///< process variable: its stored value was read
+    /// local copy of a signal-class out parameter of a procedure: the body assigns
+    /// it with <=; the value is copied to the actual (a signal assignment) at the end
+    bool formalSignal = false;
     Loc loc;
 };
 

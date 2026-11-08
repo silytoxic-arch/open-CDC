@@ -727,12 +727,20 @@ TEST_CASE("Hierarchical references are reported and kept conservatively", "[extr
     CHECK(e.design->unsupported[0].module == "top");
 }
 
-TEST_CASE("Task calls inside always blocks are reported", "[extract][unsupported]") {
+TEST_CASE("Task calls inside always blocks: inlined without timing, reported with it", "[extract][unsupported]") {
+    // a task without timing writing a module variable (stage 68: inlined in the caller)
     auto e = extract("module m(input clk, input d, output reg q);\n"
                      "  task set_q(input v); q = v; endtask\n"
                      "  always @(posedge clk) set_q(d);\n"
                      "endmodule\n");
-    CHECK(e.countCode("IR-UNSUPPORTED-STMT") == 1);
+    CHECK(e.countCode("IR-UNSUPPORTED-STMT") == 0);
+    CHECK(e.has("reg q <= d @(posedge clk)"));
+    // negative: a task with a delay is reported
+    auto w = extract("module m(input clk, input d, output reg q);\n"
+                     "  task set_q(input v); #1 q = v; endtask\n"
+                     "  always @(posedge clk) set_q(d);\n"
+                     "endmodule\n");
+    CHECK(w.countCode("IR-UNSUPPORTED-STMT") == 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,5 +1099,50 @@ TEST_CASE("IR: a case whose selector has constant bits needs no item for the val
                      "endmodule\n",
                      LanguageStd::SystemVerilog2017);
     CHECK_FALSE(e.contains("latch p "));
+    CHECK(e.contains("latch n "));
+}
+
+TEST_CASE("IR: tasks without timing are inlined; their outputs and outer variables are assigned", "[ir][task]") {
+    // Genesis_MiSTer FX68K: always_comb mySubber(aOperand, dOperand, addCin, ..., subResult, subCout, subOv);
+    auto e = extract("module t(input clk, input [7:0] a, input [7:0] b, input add,\n"
+                     "         output reg [7:0] q, output reg c, output reg [7:0] q2, output reg [7:0] q3);\n"
+                     "  task automatic addsub(input [7:0] x, input [7:0] y, input doAdd, output [7:0] r, output co);\n"
+                     "    logic [8:0] t;\n"
+                     "    begin t = doAdd ? {1'b0, x} + {1'b0, y} : {1'b0, x} - {1'b0, y}; r = t[7:0]; co = t[8]; end\n"
+                     "  endtask\n"
+                     "  reg [7:0] glob;\n"
+                     "  task writesGlobal(input [7:0] x); glob = x; endtask\n"
+                     "  task waits(output [7:0] r); #1 r = 8'h0; endtask\n"
+                     "  logic [7:0] s; logic co;\n"
+                     "  always_comb addsub(a, b, add, s, co);\n"
+                     "  always @(posedge clk) begin q <= s; c <= co; end\n"
+                     "  always @(posedge clk) begin writesGlobal(a); q3 <= glob; end\n"
+                     // negative: a task that waits stays unsupported
+                     "  logic [7:0] w; always_comb waits(w);\n"
+                     "  always @(posedge clk) q2 <= w;\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(e.has("comb  s = $mux$2[7:0]"));
+    CHECK(e.has("comb  co = $mux$2[8]"));
+    CHECK(e.has("reg q3 <= a @(posedge clk)")); // glob = a, read after the call
+    CHECK(e.countCode("IR-UNSUPPORTED-STMT") == 1);
+    CHECK(std::ranges::any_of(e.diags, [](const Diagnostic& d) {
+        return d.code == "IR-UNSUPPORTED-STMT" && d.message.find("task call 'waits': it waits") != std::string::npos;
+    }));
+}
+
+TEST_CASE("IR: unique and priority case are full cases; unique0 and plain case are not", "[ir][case]") {
+    // Genesis_MiSTer FX68K ccrTable: always_comb unique case (col) 1: ... 2,3: ... endcase
+    auto e = extract("module t(input [1:0] s, input [3:0] a, b, output logic [3:0] u, output logic [3:0] p,\n"
+                     "         output logic [3:0] z, output logic [3:0] n);\n"
+                     "  always_comb unique case (s) 0: u = a; 1: u = b; endcase\n"
+                     "  always_comb priority case (s) 0: p = a; 1: p = b; endcase\n"
+                     "  always_comb unique0 case (s) 0: z = a; 1: z = b; endcase\n"
+                     "  always_comb case (s) 0: n = a; 1: n = b; endcase\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK_FALSE(e.contains("latch u "));
+    CHECK_FALSE(e.contains("latch p "));
+    CHECK(e.contains("latch z "));
     CHECK(e.contains("latch n "));
 }

@@ -120,6 +120,11 @@ printf '`define BUILD_DATE "261108"' > Template_MiSTer/build_id.v
 # through two levels of defparams; rtl/ and sys/ only (not the released bitstreams)
 fetch_sparse NES_MiSTer https://github.com/MiSTer-devel/NES_MiSTer 49a0a662e244469ca77b2155746a066df704ffae rtl sys
 printf '`define BUILD_DATE "261108"' > NES_MiSTer/build_id.v
+# MiSTer-devel/Genesis_MiSTer (GPL-3.0, only fetched for this check): a 68000 (FX68K, SystemVerilog with
+# tasks and unique case), a Z80 (T80, VHDL with concurrent procedure calls), the VDP (VHDL) and Intel MLAB RAM
+# (altdpram); rtl/ and sys/ only
+fetch_sparse Genesis_MiSTer https://github.com/MiSTer-devel/Genesis_MiSTer adc0c42cfb1fa5d484cc8566767f7d68982bc44a rtl sys
+printf '`define BUILD_DATE "261108"' > Genesis_MiSTer/build_id.v
 
 # ATaylorCEngFIET/Hackster (Hackster.io projects without a license, only fetched for this check): block designs
 # with the Zynq UltraScale+ MPSoC (Ultra96), MicroBlaze on Spartan-7 with a MIPI camera, a Sobel filter (HLS IP
@@ -442,6 +447,7 @@ check zybo_xadc.ocdc.json "Clocks  : 1 \(19/19 registers resolved\).*IP 'xadc_wi
 # in the module), Cyclone V HPS atoms, PLL clocks with Quartus' names (sys_top.sdc's clock groups match them)
 check Template_MiSTer/Template.qpf "Clocks  : 9 \(1575/1648 registers resolved\).*sysmem\|fpga_interfaces\|h2f_user0_clk  \[constraint\].*period=10ns.*alias=emu\|pll\|pll_inst\|altera_pll_i\|general\[0\].gpll~PLL_OUTPUT_COUNTER\|divclk.*Quartus project imported: 46 source\(s\), 2 constraint file\(s\), top 'sys_top'.*FE-NET-PROCEDURAL-ASSIGN\]: net 'next_state_write'.*FE-GENERATE-SCOPE\]: 'kbd_rd'.*Summary : 0 error\(s\).*CDC     : 485 crossing path\(s\), 53 synchronized, 432 unsynchronized.*121 unsynchronized path\(s\) covered by a timing exception"
 check NES_MiSTer/NES.qpf "Instances: 457.*Clocks  : 11 \(3830/3886 registers resolved\).*emu\|pll\|pll_inst\|altera_pll_i\|general\[2\].gpll~PLL_OUTPUT_COUNTER\|divclk.*period=46.5608ns.*Quartus project imported: 103 source\(s\), 2 constraint file\(s\), top 'sys_top'.*Summary : 0 error\(s\).*CDC     : 556 crossing path\(s\), 58 synchronized, 498 unsynchronized.*119 unsynchronized path\(s\) covered by a timing exception"
+check Genesis_MiSTer/Genesis.qpf "Instances: 381.*RTL     : 265 module bodies, 3377 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 10 \(3325/3377 registers resolved\).*VHDL-LENGTH-LOGIC.*built-in models used for vendor primitives: altddio_out, altdpram,.*Summary : 0 error\(s\).*CDC     : 591 crossing path\(s\), 52 synchronized, 539 unsynchronized.*109 unsynchronized path\(s\) covered by a timing exception"
 check u96_mpsoc.ocdc.json "Clocks  : 1 \(93/93 registers resolved\).*zynq_ultra_ps_e_0.pl_clk0  \[black-box\] alias=clk_pl_0 .*period=10ns.*zynq_ultra_ps_e:3.2\) modelled from its configuration: PL clocks pl_clk0.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 # MicroBlaze (simulation netlist: slice gates, SRLC16E), its debug module (FDC_1/FDRE_1), MMCM_ADV, an encrypted IP known by
 # its interface clocks; the camera interface drives pclk_out twice (an assignment and a BUFG): a real error

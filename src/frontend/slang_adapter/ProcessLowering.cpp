@@ -352,7 +352,7 @@ void BodyBuilder::execExpressionStatement(const sast::Expression& e, ProcState& 
             if (c.isSystemCall())
                 return; // $display, $finish, $readmemh ...: simulation only
             if (c.getSubroutineKind() == sast::SubroutineKind::Task) {
-                unsupported("IR-UNSUPPORTED-STMT", "task call '" + std::string(c.getSubroutineName()) + "'", l);
+                execTaskCall(c, st, l);
                 return;
             }
             break;
@@ -395,6 +395,12 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
     std::vector<SigSpec> conds;
     for (const auto& g : c.items)
         conds.push_back(itemCond(g));
+    // unique case / priority case: an item always matches (no match is a violation
+    // at run time); synthesis reads it as a full case: the last item takes the rest
+    // (unique0 makes no such promise)
+    if (!c.defaultCase && !conds.empty() &&
+        (c.check == sast::UniquePriorityCheck::Unique || c.check == sast::UniquePriorityCheck::Priority))
+        conds.back() = SigSpec::constant(1, 1);
 
     // without a default, the case is still complete when its constant items
     // list every value of a narrow selector (casez/casex: wildcard bits match
@@ -734,6 +740,86 @@ bool hasTiming(const sast::Statement& s) {
     return f.found;
 }
 } // namespace
+
+void BodyBuilder::execTaskCall(const sast::CallExpression& call, ProcState& st, slang::SourceLocation l) {
+    // a task without timing is synthesizable: inlined in the caller's process
+    // (FX68K: mySubber(a, b, cin, add, isByte, result, cout, ov)). Its body runs
+    // on the caller's state, so it reads the caller's current values and its
+    // writes to variables outside it (module variables) take effect as in the
+    // caller; its own locals and formals are dropped afterwards, the outputs
+    // copied to the actuals.
+    const auto* sub = std::get<0>(call.subroutine);
+    const std::string name(call.getSubroutineName());
+    auto refuse = [&](const std::string& why) {
+        unsupported("IR-UNSUPPORTED-STMT", "task call '" + name + "'" + (why.empty() ? "" : ": " + why), l);
+    };
+    if (!sub || hasTiming(sub->getBody()))
+        return refuse("it waits (delay, event control or wait)");
+    if (inlineDepth_ >= kMaxInlineDepth)
+        return refuse("calls nested deeper than " + std::to_string(kMaxInlineDepth));
+    const auto formals = sub->getArguments();
+    const auto actuals = call.arguments();
+    if (formals.size() != actuals.size())
+        return refuse("default arguments");
+    // the actual of an output argument: slang binds it as an assignment to the actual
+    auto outActual = [](const sast::Expression* a) -> const sast::Expression* {
+        return a->kind == sast::ExpressionKind::Assignment ? &a->as<sast::AssignmentExpression>().left() : a;
+    };
+    for (const auto* f : formals)
+        if (f->direction == sast::ArgumentDirection::Ref)
+            return refuse("ref argument '" + std::string(f->name) + "'");
+    // arguments are evaluated in the caller's state, before the body runs
+    std::vector<SigSpec> inputs(formals.size());
+    {
+        ProcGuard guard(proc_, &st);
+        for (std::size_t i = 0; i < formals.size(); ++i)
+            if (formals[i]->direction != sast::ArgumentDirection::Out)
+                inputs[i] = lower(*outActual(actuals[i])).resized(widthOf(*formals[i]), false);
+    }
+    ProcState fs = st;
+    const bool returned = fs.returned;
+    fs.returned = false;
+    for (std::size_t i = 0; i < formals.size(); ++i)
+        if (formals[i]->direction != sast::ArgumentDirection::Out)
+            fs.cur[formals[i]] = inputs[i];
+    ++inlineDepth_;
+    exec(sub->getBody(), fs);
+    --inlineDepth_;
+    std::vector<std::optional<SigSpec>> outputs(formals.size());
+    for (std::size_t i = 0; i < formals.size(); ++i)
+        if (formals[i]->direction == sast::ArgumentDirection::Out ||
+            formals[i]->direction == sast::ArgumentDirection::InOut)
+            if (const SigSpec* v = fs.cur.find(formals[i]))
+                outputs[i] = *v;
+    // the task's own locals and formals end with the call
+    auto inside = [&](const sast::ValueSymbol* v) {
+        for (const auto* sc = v->getParentScope(); sc; sc = sc->asSymbol().getParentScope())
+            if (&sc->asSymbol() == sub)
+                return true;
+        return false;
+    };
+    fs.cur.eraseIf(inside);
+    fs.nba.eraseIf(inside);
+    fs.any.eraseIf(inside);
+    fs.all.eraseIf(inside);
+    std::erase_if(fs.blockingWritten, inside);
+    std::erase_if(fs.nbaWritten, inside);
+    fs.returned = returned;
+    st = std::move(fs);
+    ProcGuard guard(proc_, &st); // the outputs are assigned in the caller's process
+    for (std::size_t i = 0; i < formals.size(); ++i) {
+        if (!outputs[i])
+            continue; // not an output, or never written
+        auto targets = lvalue(*outActual(actuals[i]));
+        if (!targets)
+            continue;
+        std::uint32_t tw = 0;
+        for (const auto& t : *targets)
+            tw += t.width;
+        assignTargets(*targets, outputs[i]->resized(tw, false), false, l);
+    }
+}
+
 
 void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
     using PK = sast::ProceduralBlockKind;

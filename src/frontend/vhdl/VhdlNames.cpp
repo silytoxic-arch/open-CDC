@@ -937,6 +937,7 @@ SVal Elaborator::callSubprogram(Symbol& sym, std::vector<SVal>& args, std::vecto
         o.type = pt;
         o.loc = l;
         o.initial = args[k].valid() ? args[k] : (pt ? initialValue(o, l) : SVal{});
+        o.formalSignal = out && p.cls == InterfaceDecl::Class::Signal;
         const int idx = addObject(std::move(o));
         outObjects[k] = idx;
         Symbol* s = newSymbol(SymKind::Variable, p.key, p.display, l);

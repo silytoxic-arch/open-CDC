@@ -39,6 +39,12 @@ public:
     [[nodiscard]] SigSpec passThroughMuxBits(const SigSpec& s) const;
     [[nodiscard]] const Cell* driverOf(NetId net) const;
 
+    /// True when the 1-bit value `cond` is 1 for every two-state value of the
+    /// signal bits it is computed from (its cells evaluated; at most `maxLeaves`
+    /// such bits): conditions that together cover every case, such as
+    /// (a and b) or (a and not b) or (not a). False when it is not, or cannot tell.
+    [[nodiscard]] bool alwaysTrue(const SigSpec& cond, unsigned maxLeaves = 12) const;
+
     /// Moves a synchronous reset (outermost "if (srst) q <= CONST") and a
     /// clock enable ("if (en) q <= d", other branch holds q) out of r.d.
     void extractControls(Register& r, const SourceLocation& origin);

@@ -1086,6 +1086,75 @@ TEST_CASE("VHDL: a selected assignment listing every value of an enumeration is 
     CHECK(r.count("IR-LATCH-INFERRED") == 1);
 }
 
+TEST_CASE("VHDL: a logical operator on arrays of different lengths is a warning (Quartus compiles it)",
+          "[vhdl][elab]") {
+    // Genesis_MiSTer T80: ioq := (ioq and x"7") xor ('0' & BusA);   (9 and 4 bits)
+    auto r = elaborate(lib("entity t is port (a : in std_logic_vector(8 downto 0); b : in std_logic_vector(7 downto 0);\n"
+                           "  q : out std_logic_vector(8 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (all) variable v : std_logic_vector(8 downto 0); begin\n"
+                           "    v := (a and x\"7\") xor ('0' & b);\n"
+                           "    q <= v;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-LENGTH-LOGIC") == 1);
+    // negative: an assignment of the wrong length is still an error
+    auto n = elaborate(lib("entity t is port (a : in std_logic_vector(8 downto 0); q : out std_logic_vector(3 downto 0));\n"
+                           "end;\narchitecture rtl of t is begin\n  q <= a;\nend;\n"),
+                       "t");
+    CHECK(n.errors() > 0);
+}
+
+TEST_CASE("VHDL: a concurrent procedure call with signal out parameters", "[vhdl][elab]") {
+    // Genesis_MiSTer T80_ALU: AddSub(BusA(3 downto 0), BusB(3 downto 0), ..., Q_v(3 downto 0), HalfCarry_v);
+    auto r = elaborate(lib("entity t is port (clk : in std_logic; a, b : in std_logic_vector(3 downto 0); sub : in std_logic;\n"
+                           "  q : out std_logic_vector(3 downto 0); co : out std_logic); end;\n"
+                           "architecture rtl of t is\n"
+                           "  procedure AddSub(A : std_logic_vector; B : std_logic_vector; Sub : std_logic;\n"
+                           "                   signal Res : out std_logic_vector; signal Carry : out std_logic) is\n"
+                           "    variable r : unsigned(A'length downto 0);\n"
+                           "  begin\n"
+                           "    if Sub = '1' then r := ('0' & unsigned(A)) - ('0' & unsigned(B));\n"
+                           "    else r := ('0' & unsigned(A)) + ('0' & unsigned(B)); end if;\n"
+                           "    Res <= std_logic_vector(r(A'length - 1 downto 0)); Carry <= r(A'length);\n"
+                           "  end;\n"
+                           "  signal s : std_logic_vector(3 downto 0); signal c : std_logic;\n"
+                           "begin\n"
+                           "  AddSub(a, b, sub, s, c);\n"
+                           "  q <= s when rising_edge(clk);\n"
+                           "  co <= c when rising_edge(clk);\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-STATEMENT") == 0);
+    CHECK(r.count("IR-LATCH-INFERRED") == 0);
+    CHECK(r.has("comb  s = "));
+    CHECK(r.has("comb  c = "));
+    CHECK(r.has("reg q <= s @(posedge clk)"));
+}
+
+TEST_CASE("VHDL: conditions that together cover every two-state value need no final else", "[vhdl][elab]") {
+    // Genesis_MiSTer vdp.vhd: OBJ_MAX_LINE <= ... when H40 = '1' and E = '0' else ... when H40 = '0' and E = '1';
+    auto r = elaborate(lib("entity t is port (h, e : in std_logic; a, b, c, d : in std_logic_vector(5 downto 0);\n"
+                           "  y, n : out std_logic_vector(5 downto 0)); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  y <= a when h = '1' and e = '0' else b when h = '1' and e = '1' else\n"
+                           "       c when h = '0' and e = '0' else d when h = '0' and e = '1';\n"
+                           // negative: h = '0' and e = '1' is missing
+                           "  n <= a when h = '1' and e = '0' else b when h = '1' and e = '1' else c when h = '0' and e = '0';\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK_FALSE(r.has("latch y "));
+    CHECK(r.has("latch n "));
+    CHECK(r.count("IR-LATCH-INFERRED") == 1);
+}
+
 TEST_CASE("VHDL negative: a clock edge that is not the last condition stays unsupported", "[vhdl][elab]") {
     auto r = elaborate(lib("entity t is port (clk, rst_n, d : in std_logic; q : out std_logic); end;\n"
                            "architecture rtl of t is begin\n"

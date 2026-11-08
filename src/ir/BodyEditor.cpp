@@ -1,4 +1,7 @@
 #include "ir/BodyEditor.h"
+#include <unordered_map>
+#include <unordered_set>
+#include <functional>
 
 #include "ir/ConstFold.h"
 #include "ir/Dump.h"
@@ -106,6 +109,92 @@ SigSpec BodyEditor::addUnique(Cell c) {
 const Cell* BodyEditor::driverOf(NetId net) const {
     auto it = driverCell_.find(net.value);
     return it == driverCell_.end() ? nullptr : &body_.cells[it->second];
+}
+
+bool BodyEditor::alwaysTrue(const SigSpec& cond, unsigned maxLeaves) const {
+    if (cond.width() != 1)
+        return false;
+    if (auto k = cond.asConst())
+        return k->isFullyDefined() && !k->isZero();
+    // leaves: bits of nets that no cell drives, reached through the cell cones
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> leaves; // (net, bit)
+    std::unordered_set<std::uint32_t> seenNets;
+    std::size_t visited = 0;
+    bool ok = true;
+    std::function<void(const SigSpec&)> collect = [&](const SigSpec& sig) {
+        for (const auto& c : sig.chunks()) {
+            if (!ok || c.isConst())
+                continue;
+            if (const Cell* cell = driverOf(c.net)) {
+                if (!seenNets.insert(c.net.value).second)
+                    continue;
+                if (++visited > 4096) {
+                    ok = false;
+                    return;
+                }
+                for (const auto& in : cell->inputs)
+                    collect(in);
+                continue;
+            }
+            for (std::uint32_t b = c.offset; b < c.offset + c.width; ++b)
+                if (std::ranges::find(leaves, std::pair{c.net.value, b}) == leaves.end()) {
+                    leaves.emplace_back(c.net.value, b);
+                    if (leaves.size() > maxLeaves) {
+                        ok = false;
+                        return;
+                    }
+                }
+        }
+    };
+    collect(cond);
+    if (!ok)
+        return false;
+    for (std::uint64_t m = 0; m < (std::uint64_t{1} << leaves.size()); ++m) {
+        std::unordered_map<std::uint32_t, ConstBits> cache; // net -> value of a cell output
+        std::function<std::optional<ConstBits>(const SigSpec&)> eval =
+            [&](const SigSpec& sig) -> std::optional<ConstBits> {
+            ConstBits out;
+            for (const auto& c : sig.chunks()) {
+                if (c.isConst()) {
+                    out.append(c.constant);
+                    continue;
+                }
+                if (const Cell* cell = driverOf(c.net)) {
+                    auto it = cache.find(c.net.value);
+                    if (it == cache.end()) {
+                        Cell copy = *cell;
+                        for (auto& in : copy.inputs) {
+                            auto v = eval(in);
+                            if (!v)
+                                return std::nullopt;
+                            in = SigSpec::constant(std::move(*v));
+                        }
+                        auto r = simplifyCell(copy);
+                        if (!r)
+                            return std::nullopt;
+                        auto rc = r->asConst();
+                        if (!rc)
+                            return std::nullopt;
+                        it = cache.emplace(c.net.value, std::move(*rc)).first;
+                    }
+                    out.append(it->second.extract(c.offset, c.width));
+                    continue;
+                }
+                for (std::uint32_t b = c.offset; b < c.offset + c.width; ++b) {
+                    const auto pos = static_cast<std::size_t>(
+                        std::ranges::find(leaves, std::pair{c.net.value, b}) - leaves.begin());
+                    if (pos >= leaves.size())
+                        return std::nullopt;
+                    out.append(ConstBits(1, ((m >> pos) & 1U) ? Logic::L1 : Logic::L0));
+                }
+            }
+            return out;
+        };
+        const auto v = eval(cond);
+        if (!v || !v->isFullyDefined() || v->isZero())
+            return false;
+    }
+    return true;
 }
 
 void BodyEditor::addLatch(Latch l, bool unintended) {

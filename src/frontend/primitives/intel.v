@@ -171,6 +171,59 @@ module altsyncram #(parameter address_aclr_a = "NONE", parameter address_aclr_b 
     assign eccstatus = 8'd0;
 endmodule
 
+// ---------------------------------------------------------------- altdpram
+// Dual-port RAM (MLAB or LUT RAM): written on inclock; the read address is
+// registered on inclock or outclock (rdaddress_reg), or not; the output is
+// registered on outclock or inclock (outdata_reg), or read asynchronously.
+module altdpram #(parameter width = 1, parameter widthad = 1, parameter numwords = 0,
+                  parameter byte_size = 8, parameter indata_aclr = "ON", parameter indata_reg = "INCLOCK",
+                  parameter intended_device_family = "", parameter lpm_file = "UNUSED",
+                  parameter lpm_hint = "UNUSED", parameter lpm_type = "altdpram", parameter maximum_depth = 0,
+                  parameter outdata_aclr = "ON", parameter outdata_reg = "UNREGISTERED",
+                  parameter outdata_sclr = "OFF", parameter power_up_uninitialized = "FALSE",
+                  parameter ram_block_type = "AUTO", parameter rdaddress_aclr = "ON",
+                  parameter rdaddress_reg = "OUTCLOCK", parameter rdcontrol_aclr = "ON",
+                  parameter rdcontrol_reg = "OUTCLOCK", parameter read_during_write_mode_mixed_ports = "DONT_CARE",
+                  parameter use_eab = "ON", parameter width_byteena = 1, parameter wraddress_aclr = "ON",
+                  parameter wraddress_reg = "INCLOCK", parameter wrcontrol_aclr = "ON",
+                  parameter wrcontrol_reg = "INCLOCK")
+                 (input aclr, input [width_byteena-1:0] byteena, input [width-1:0] data, input inclock,
+                  input inclocken, input outclock, input outclocken, output [width-1:0] q,
+                  input [widthad-1:0] rdaddress, input rdaddressstall, input rden, input sclr,
+                  input [widthad-1:0] wraddress, input wraddressstall, input wren);
+    reg [width-1:0] mem [0:(1 << widthad)-1];
+    always @(posedge inclock) if (wren) mem[wraddress] <= data;
+    // read address
+    wire [widthad-1:0] ra;
+    generate
+        if (rdaddress_reg == "INCLOCK") begin : g_ra_in
+            reg [widthad-1:0] r;
+            always @(posedge inclock) r <= rdaddress;
+            assign ra = r;
+        end else if (rdaddress_reg == "OUTCLOCK") begin : g_ra_out
+            reg [widthad-1:0] r;
+            always @(posedge outclock) r <= rdaddress;
+            assign ra = r;
+        end else begin : g_ra_async
+            assign ra = rdaddress;
+        end
+    endgenerate
+    // output
+    generate
+        if (outdata_reg == "OUTCLOCK") begin : g_q_out
+            reg [width-1:0] r;
+            always @(posedge outclock) r <= mem[ra];
+            assign q = r;
+        end else if (outdata_reg == "INCLOCK") begin : g_q_in
+            reg [width-1:0] r;
+            always @(posedge inclock) r <= mem[ra];
+            assign q = r;
+        end else begin : g_q_async
+            assign q = mem[ra];
+        end
+    endgenerate
+endmodule
+
 // ---------------------------------------------------------------- DDR I/O
 module altddio_in #(parameter intended_device_family = "", parameter invert_input_clocks = "OFF",
                     parameter lpm_hint = "UNUSED", parameter lpm_type = "altddio_in",

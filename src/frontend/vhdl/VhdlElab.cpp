@@ -541,9 +541,24 @@ void Elaborator::elaborateConcurrent(const std::vector<StmtPtr>& stmts, Scope& s
         switch (s.kind) {
             case StmtKind::Process: lowerProcess(s, scope); break;
             case StmtKind::ConcAssign: lowerConcurrentAssign(s, scope); break;
-            case StmtKind::ConcProcCall:
-                unsupported("IR-UNSUPPORTED-STATEMENT", "concurrent procedure call", s.loc);
+            case StmtKind::ConcProcCall: {
+                // [11.4] the equivalent process: sensitive to the signals the call
+                // reads (process (all)), its body the same call as a sequential
+                // statement (T80_ALU: AddSub(BusA(3 downto 0), ..., Q_v(3 downto 0), HalfCarry_v);)
+                Stmt proc;
+                proc.kind = StmtKind::Process;
+                proc.loc = s.loc;
+                proc.label = s.label;
+                proc.sensitivityAll = true;
+                auto call = std::make_unique<Stmt>();
+                call->kind = StmtKind::ProcCall;
+                call->loc = s.loc;
+                call->call.reset(s.call.get()); // non-owning view, released below
+                proc.body.push_back(std::move(call));
+                lowerProcess(proc, scope);
+                (void)proc.body.front()->call.release();
                 break;
+            }
             case StmtKind::Instance: elaborateInstance(s, scope); break;
             case StmtKind::Block: {
                 Scope* bsc = newScope(&scope, s.label.text);

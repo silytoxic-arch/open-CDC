@@ -55,6 +55,18 @@ public:
     [[nodiscard]] auto begin() const { return items_.begin(); }
     [[nodiscard]] auto end() const { return items_.end(); }
     [[nodiscard]] bool empty() const { return items_.empty(); }
+    /// Removes the entries whose key satisfies `pred` (the order of the rest is kept).
+    template <class Pred>
+    void eraseIf(Pred pred) {
+        std::vector<std::pair<Key, V>> kept;
+        for (auto& item : items_)
+            if (!pred(item.first))
+                kept.push_back(std::move(item));
+        items_ = std::move(kept);
+        index_.clear();
+        for (std::size_t i = 0; i < items_.size(); ++i)
+            index_.emplace(items_[i].first, i);
+    }
 
 private:
     std::vector<std::pair<Key, V>> items_;
@@ -185,6 +197,7 @@ private:
     void execExpressionStatement(const sast::Expression& e, ProcState& st);
     void execCase(const sast::Statement& s, ProcState& st);
     void execFor(const sast::Statement& s, ProcState& st);
+    void execTaskCall(const sast::CallExpression& call, ProcState& st, slang::SourceLocation l);
     void merge(const ir::SigSpec& cond, ProcState& thenSt, ProcState& elseSt, ProcState& out,
                slang::SourceLocation l);
     ir::SigSpec defaultValue(const sast::ValueSymbol& sym);

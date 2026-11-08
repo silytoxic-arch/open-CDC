@@ -83,7 +83,7 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
                           "IDELAYE3", "ODELAYE3", "IDELAYCTRL", "RAMB18E1", "RAMB36E1", "RAMB18E2", "RAMB36E2",
                           "xpm_memory_sdpram", "xpm_memory_tdpram", "xpm_memory_spram", "xpm_memory_dpdistram",
                           "altsyncram", "altddio_in", "altddio_out", "BUFGCE_DIV", "ISERDESE2", "OSERDESE2",
-                          "ISERDESE3", "OSERDESE3", "URAM288", "altera_syncram"})
+                          "ISERDESE3", "OSERDESE3", "URAM288", "altera_syncram", "altdpram"})
         CHECK(lib.find(n).has_value());
     CHECK(lib.find("fdre") == std::optional<std::string>("FDRE")); // VHDL spelling
     CHECK(lib.find("MMCME2_ADV").has_value()); // clock generators are generated on demand
@@ -553,6 +553,38 @@ TEST_CASE("Primitives: Intel altsyncram and DDR cells", "[primitives]") {
     CHECK(crosses(*run, "top.dual.mem_a", "top.dual.qb"));
     CHECK_FALSE(crosses(*run, "top.", "top.single."));
     CHECK(crosses(*run, "top.din.", "top.dout."));
+}
+
+TEST_CASE("Primitives: Intel altdpram (MLAB) from VHDL", "[primitives][vhdl]") {
+    // Genesis_MiSTer mlab.vhd: written on inclock, read address unregistered, output unregistered
+    auto run = analyze("t.vhd",
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "entity top is port (clk_a, clk_b : in std_logic; d : in std_logic_vector(7 downto 0);\n"
+                       "  a : in std_logic_vector(3 downto 0); q, q2 : out std_logic_vector(7 downto 0)); end;\n"
+                       "architecture rtl of top is\n"
+                       "  component altdpram generic (width : natural; widthad : natural; outdata_reg : string;\n"
+                       "    rdaddress_reg : string); port (data : in std_logic_vector(width-1 downto 0);\n"
+                       "    wraddress, rdaddress : in std_logic_vector(widthad-1 downto 0); wren, inclock, outclock : in std_logic;\n"
+                       "    q : out std_logic_vector(width-1 downto 0)); end component;\n"
+                       "  signal q0, q1, rq : std_logic_vector(7 downto 0);\n"
+                       "begin\n"
+                       "  m : altdpram generic map (width => 8, widthad => 4, outdata_reg => \"UNREGISTERED\",\n"
+                       "    rdaddress_reg => \"UNREGISTERED\") port map (data => d, wraddress => a, rdaddress => a,\n"
+                       "    wren => '1', inclock => clk_a, outclock => clk_b, q => q0);\n"
+                       "  r : altdpram generic map (width => 8, widthad => 4, outdata_reg => \"OUTCLOCK\",\n"
+                       "    rdaddress_reg => \"UNREGISTERED\") port map (data => d, wraddress => a, rdaddress => a,\n"
+                       "    wren => '1', inclock => clk_a, outclock => clk_b, q => q1);\n"
+                       "  process (clk_b) begin if rising_edge(clk_b) then rq <= q0; end if; end process;\n"
+                       "  q <= rq; q2 <= q1;\n"
+                       "end;\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("IR-UNRESOLVED-INSTANCE") == 0);
+    // the memory (clk_a) read asynchronously into a clk_b register, and into the
+    // output register on outclock (clk_b)
+    CHECK(crosses(*run, "top.m.mem", "top.rq"));
+    CHECK(crosses(*run, "top.r.mem", "top.r.g_q_out.r"));
 }
 
 TEST_CASE("Primitives: VHDL block RAM and XPM memory", "[primitives][vhdl]") {

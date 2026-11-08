@@ -138,6 +138,8 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
         return;
     const Target& t = targets.front();
     Object& o = object(t.object);
+    if (signal && o.formalSignal)
+        signal = false; // written in the procedure, copied to the signal actual at its end
     if (signal != o.isSignal) {
         error("VHDL-ASSIGN", std::string(signal ? "signal assignment (<=) to variable '" : "variable assignment (:=) to signal '") +
                                  o.name + "'",
@@ -511,6 +513,16 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
             else {
                 for (const auto& a : s.alts)
                     conds.push_back(a.cond ? bitsOf(condBit(*a.cond), a.loc) : one());
+                // conditions that together cover every two-state value (H40 = '1' and
+                // e = '0' ... H40 = '0' and e = '1'): the last one takes the rest, as
+                // synthesis reads it (no latch)
+                if (conds.size() > 1 && s.alts.back().cond && !s.alts.back().unaffected && body && body->ed) {
+                    ir::SigSpec any = conds.front();
+                    for (std::size_t k = 1; k < conds.size(); ++k)
+                        any = ops.orB(any, conds[k]);
+                    if (body->ed->alwaysTrue(any))
+                        conds.back() = one();
+                }
             }
             // fold from the last alternative: v = c0 ? v0 : (c1 ? v1 : ... hold)
             ProcState saved = st;
