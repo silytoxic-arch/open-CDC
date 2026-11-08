@@ -101,7 +101,9 @@ always @* case (s) 0: y = a; 1: y = b; 2: y = c; 3: y = d; endcase   // s 是 2 
 - 本地 Linux GCC Debug：587 个测试全部通过（新增 5 个测试用例）。
 - SV 语料 24 个项目全部匹配（Template_MiSTer、NES_MiSTer 的期望值已更新为新结果），VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
-- Windows（GitHub Actions）结果见交付说明。
+- GitHub Actions Windows x64 / VS2022（提交 40326ac，运行 42454176282）：
+  - Release：587/587 通过，生成 `OpenCDC-0.62.0-windows-x64.zip` 与 `.exe`；
+  - Debug：587/587 通过。
 
 ## 5. 已知限制
 
