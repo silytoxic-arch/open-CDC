@@ -14,6 +14,7 @@
 
 #include "ir/ConstFold.h"
 
+#include <slang/ast/ASTVisitor.h>
 #include <slang/ast/TimingControl.h>
 #include <slang/ast/expressions/AssignmentExpressions.h>
 #include <slang/ast/expressions/CallExpression.h>
@@ -390,17 +391,52 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
     // list every value of a narrow selector (casez/casex: wildcard bits match
     // both values): the last item then needs no condition, so the uncovered
     // rest does not become a latch
-    if (!c.defaultCase && !c.items.empty() && sel.width() > 0 && sel.width() <= 12) {
-        const std::uint32_t w = sel.width();
+    // The selector is extended to the width of the widest item (case (s) 0: ...
+    // compares s as 32 bits): its constant-zero upper bits do not vary, only the
+    // bits below them count; an item with a 1 there never matches.
+    // A sign-extended selector (case ($signed(s)) -1: ...): its upper bits are
+    // copies of the sign bit; an item matches only if its upper bits are too.
+    std::uint32_t w = sel.width();
+    while (w > 0) {
+        const auto top = sel.extract(w - 1, 1).asConst();
+        if (!top || (*top)[0] != ir::Logic::L0)
+            break;
+        --w;
+    }
+    bool signExtended = false;
+    if (w == sel.width())
+        while (w > 1 && !sel.extract(w - 1, 1).asConst() && sel.extract(w - 1, 1) == sel.extract(w - 2, 1)) {
+            --w;
+            signExtended = true;
+        }
+    if (!c.defaultCase && !c.items.empty() && w > 0 && w <= 12) {
         std::vector<bool> seen(std::size_t{1} << w, false);
         bool constant = true;
         for (const auto& g : c.items)
             for (const auto* ie : g.expressions) {
-                const auto vc = lower(*ie).resized(w, false).asConst();
-                if (!vc) {
+                const auto full = lower(*ie).resized(sel.width(), false).asConst();
+                if (!full) {
                     constant = false;
                     break;
                 }
+                bool never = false; // a 1 (or, in a plain case, x/z) where the selector is 0
+                for (std::uint32_t i = w; i < sel.width(); ++i) {
+                    const auto b = (*full)[i];
+                    if (signExtended) { // the selector's bit here equals its bit w - 1
+                        if (b != (*full)[w - 1])
+                            never = true;
+                        continue;
+                    }
+                    const bool wild = b != ir::Logic::L0 && b != ir::Logic::L1 &&
+                                      (c.condition == sast::CaseStatementCondition::WildcardXOrZ ||
+                                       (c.condition == sast::CaseStatementCondition::WildcardJustZ &&
+                                        b == ir::Logic::Z));
+                    if (b != ir::Logic::L0 && !wild)
+                        never = true;
+                }
+                if (never)
+                    continue;
+                const auto vc = std::optional<ir::ConstBits>(full->extract(0, w));
                 std::uint64_t fixed = 0;
                 std::vector<std::uint32_t> dc; // don't-care bit positions
                 for (std::uint32_t i = 0; i < w && constant; ++i) {
@@ -608,6 +644,38 @@ bool onlyAssertions(const sast::Statement& s) {
         default: return false;
     }
 }
+/// True when the statement waits or is otherwise not hardware: a delay or event
+/// control, wait, an event trigger, forever, disable, or a task call (which may
+/// wait). Such an always block without an event control is a testbench process.
+struct TimingFinder : sast::ASTVisitor<TimingFinder, sast::VisitFlags::Statements | sast::VisitFlags::Expressions> {
+    bool found = false;
+    void handle(const sast::TimedStatement&) { found = true; }
+    void handle(const sast::WaitStatement&) { found = true; }
+    void handle(const sast::WaitForkStatement&) { found = true; }
+    void handle(const sast::WaitOrderStatement&) { found = true; }
+    void handle(const sast::EventTriggerStatement&) { found = true; }
+    void handle(const sast::ForeverLoopStatement&) { found = true; }
+    void handle(const sast::DisableStatement&) { found = true; }
+    void handle(const sast::DisableForkStatement&) { found = true; }
+    void handle(const sast::AssignmentExpression& e) {
+        if (e.timingControl)
+            found = true;
+        else
+            visitDefault(e);
+    }
+    void handle(const sast::CallExpression& e) {
+        if (!e.isSystemCall() && e.getSubroutineKind() == sast::SubroutineKind::Task)
+            found = true;
+        else
+            visitDefault(e);
+    }
+};
+
+bool hasTiming(const sast::Statement& s) {
+    TimingFinder f;
+    s.visit(f);
+    return f.found;
+}
 } // namespace
 
 void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
@@ -627,6 +695,16 @@ void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
     // blocks: verification code, no hardware
     if (onlyAssertions(body))
         return;
+    if (body.kind != sast::StatementKind::Timed && !hasTiming(body)) {
+        // 'always begin ... end' without an event control: Quartus and Vivado
+        // synthesize it as combinational logic (as always @*)
+        warn("IR-ALWAYS-NO-EVENT", Severity::Warning,
+             "always block without an event control: read as combinational logic (always @*), as synthesis "
+             "tools do (use always @* or always_comb)",
+             l);
+        lowerComb(body, false, l);
+        return;
+    }
     if (body.kind != sast::StatementKind::Timed) {
         unsupported("IR-UNSUPPORTED-PROCESS",
                     "always block without an event control (" + std::string(sast::toString(body.kind)) + ")", l);

@@ -84,12 +84,69 @@ ConstBits fromSVInt(const slang::SVInt& v, std::uint32_t width) {
     return ConstBits(std::move(bits));
 }
 
+/// An unpacked type stored as a flat vector: integral, or fixed-size unpacked
+/// arrays and unpacked structs of such types. Arrays keep the left element most
+/// significant; an unpacked struct keeps its first field at bit 0 (slang's
+/// FieldSymbol::bitOffset).
+bool flatUnpacked(const slang::ast::Type& type) {
+    const auto& t = type.getCanonicalType();
+    if (t.isIntegral())
+        return true;
+    if (t.isUnpackedArray() && t.isFixedSize())
+        return t.getArrayElementType() && flatUnpacked(*t.getArrayElementType());
+    if (t.isUnpackedStruct()) {
+        const auto& st = t.as<slang::ast::UnpackedStructType>();
+        return !st.fields.empty() && std::ranges::all_of(st.fields, [](const slang::ast::FieldSymbol* f) {
+            return flatUnpacked(f->getType());
+        });
+    }
+    return false;
+}
+
 std::uint32_t typeWidth(const slang::ast::Type& t) {
     if (t.isIntegral())
         return t.getBitWidth();
-    if (t.isFixedSize() && t.isUnpackedArray())
+    if (flatUnpacked(t))
         return static_cast<std::uint32_t>(t.getBitstreamWidth());
     return 0;
+}
+
+/// A constant of a flat unpacked type (a localparam table) in the storage
+/// layout of flatUnpacked().
+std::optional<ConstBits> flatConstant(const slang::ConstantValue& cv, const slang::ast::Type& type) {
+    const auto& t = type.getCanonicalType();
+    if (t.isIntegral()) {
+        if (!cv.isInteger())
+            return std::nullopt;
+        return fromSVInt(cv.integer(), t.getBitWidth());
+    }
+    if (!cv.isUnpacked() || !flatUnpacked(t))
+        return std::nullopt;
+    const auto elems = cv.elements();
+    ConstBits out;
+    if (t.isUnpackedArray()) {
+        const auto* et = t.getArrayElementType();
+        for (auto it = elems.rbegin(); it != elems.rend(); ++it) { // first (left) element most significant
+            auto b = flatConstant(*it, *et);
+            if (!b)
+                return std::nullopt;
+            out.append(*b);
+        }
+    }
+    else {
+        const auto& fields = t.as<slang::ast::UnpackedStructType>().fields;
+        if (fields.size() != elems.size())
+            return std::nullopt;
+        for (std::size_t i = 0; i < fields.size(); ++i) { // first field at bit 0
+            auto b = flatConstant(elems[i], fields[i]->getType());
+            if (!b)
+                return std::nullopt;
+            out.append(*b);
+        }
+    }
+    if (out.width() != typeWidth(t))
+        return std::nullopt;
+    return out;
 }
 
 std::uint32_t exprWidth(const slang::ast::Expression& e) {
@@ -394,7 +451,7 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
         const auto* inner = elem;
         while (inner && inner->getCanonicalType().isUnpackedArray() && inner->getCanonicalType().isFixedSize())
             inner = inner->getCanonicalType().getArrayElementType();
-        if (!elem || !inner || !inner->isIntegral()) {
+        if (!elem || !inner || !flatUnpacked(*inner)) {
             unsupported("IR-UNSUPPORTED-TYPE",
                         "array '" + std::string(s.name) + "' with non-integral or multi-dimensional elements",
                         s.location);
@@ -406,6 +463,11 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
         n.width = n.elemWidth * n.arrayDepth;
         n.msb = r.left;
         n.lsb = r.right;
+    }
+    else if (t.isUnpackedStruct() && flatUnpacked(t)) {
+        n.width = typeWidth(t);
+        n.msb = static_cast<std::int32_t>(n.width) - 1;
+        n.lsb = 0;
     }
     else {
         unsupported("IR-UNSUPPORTED-TYPE",
@@ -1063,6 +1125,8 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
                     auto cv = e.eval(ctx);
                     if (cv.isInteger())
                         return SigSpec::constant(fromSVInt(cv.integer(), w));
+                    if (auto bits = flatConstant(cv, *e.type)) // localparam table
+                        return SigSpec::constant(std::move(*bits));
                     return opaque(e, "reference to '" + std::string(s.name) + "'");
                 }
             }
@@ -1100,6 +1164,42 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
             if (!n)
                 return opaque(e, "replication with non-constant count");
             return lower(r.concat()).repeated(static_cast<std::uint32_t>(*n));
+        }
+        case EK::SimpleAssignmentPattern:
+        case EK::StructuredAssignmentPattern:
+        case EK::ReplicatedAssignmentPattern: {
+            // '{a, b, c}: the elements in declaration order, the first one at the
+            // left index; arrays and packed structs are stored with the left element
+            // most significant, as a concatenation ('{default: 0} and '{n{...}}
+            // resolved by slang into the element list)
+            if (w == 0)
+                return opaque(e, "assignment pattern of type '" + e.type->toString() + "'");
+            std::uint64_t repl = 1;
+            if (e.kind == EK::ReplicatedAssignmentPattern) {
+                auto count = lower(e.as<sast::ReplicatedAssignmentPatternExpression>().count()).asConst();
+                auto n = count ? count->toUint() : std::nullopt;
+                if (!n)
+                    return opaque(e, "assignment pattern with non-constant replication count");
+                repl = *n;
+            }
+            const auto elems = static_cast<const sast::AssignmentPatternExpressionBase&>(e).elements();
+            std::vector<SigSpec> parts;
+            for (const auto* x : elems)
+                parts.push_back(lower(*x));
+            SigSpec out;
+            const bool structOrder = e.type->getCanonicalType().isUnpackedStruct(); // first field at bit 0
+            for (std::uint64_t r = 0; r < repl; ++r) {
+                if (structOrder)
+                    for (const auto& p : parts)
+                        out.append(p);
+                else
+                    for (auto it = parts.rbegin(); it != parts.rend(); ++it) // last element = least significant
+                        out.append(*it);
+            }
+            if (out.width() != w)
+                return opaque(e, "assignment pattern of " + std::to_string(out.width()) + " bit(s) for '" +
+                                     e.type->toString() + "'");
+            return out;
         }
         case EK::ElementSelect:
         case EK::RangeSelect:
@@ -1229,7 +1329,7 @@ SigSpec BodyBuilder::lowerSelect(const sast::Expression& e) {
 
     if (e.kind == sast::ExpressionKind::MemberAccess) {
         const auto& ma = e.as<sast::MemberAccessExpression>();
-        if (ma.member.kind != sast::SymbolKind::Field || !ma.value().type->isIntegral())
+        if (ma.member.kind != sast::SymbolKind::Field || !flatUnpacked(*ma.value().type))
             return opaque(e, "member access on a non-packed type");
         const auto off = ma.member.as<sast::FieldSymbol>().bitOffset;
         SigSpec base = lower(ma.value());
@@ -1382,7 +1482,7 @@ bool BodyBuilder::lvalueInto(const sast::Expression& e, std::vector<LTarget>& ou
         case EK::Conversion: return lvalueInto(e.as<sast::ConversionExpression>().operand(), out);
         case EK::MemberAccess: {
             const auto& ma = e.as<sast::MemberAccessExpression>();
-            if (ma.member.kind != sast::SymbolKind::Field || !ma.value().type->isIntegral())
+            if (ma.member.kind != sast::SymbolKind::Field || !flatUnpacked(*ma.value().type))
                 return false;
             std::vector<LTarget> inner;
             if (!lvalueInto(ma.value(), inner) || inner.size() != 1 || inner[0].dynamic)

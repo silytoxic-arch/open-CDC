@@ -929,3 +929,92 @@ TEST_CASE("Multi-dimensional unpacked arrays are flattened", "[extract][array]")
                      LanguageStd::SystemVerilog2017);
     CHECK(r.countCode("IR-UNSUPPORTED-TYPE") >= 1);
 }
+
+TEST_CASE("IR: always without an event control is combinational logic, as synthesis tools read it",
+          "[ir][process]") {
+    auto e = extract("module t(input [1:0] sel, input r, output reg m);\n"
+                     "  always begin\n"
+                     "    case (sel) 2'b00: m = r; default: m = 1'b0; endcase\n"
+                     "  end\nendmodule\n");
+    CHECK(e.countCode("IR-ALWAYS-NO-EVENT") == 1);
+    CHECK(e.countCode("IR-UNSUPPORTED-PROCESS") == 0);
+    CHECK(e.has("cell $mux$1 [1] = mux(A=1'b0, B=r, S=$eq$0)"));
+    CHECK(e.has("comb  m = $mux$1"));
+}
+
+TEST_CASE("IR negative: always blocks that wait stay unsupported", "[ir][process]") {
+    auto e = extract("module t(input x, output reg a, output reg b, output reg c, output reg d);\n"
+                     "  task automatic pulse; begin #1 c = 1; end endtask\n"
+                     "  always begin #5 a = ~a; end\n"
+                     "  always begin wait (x); b = 1; end\n"
+                     "  always begin pulse; end\n"
+                     "  always begin d = #2 x; end\n"
+                     "endmodule\n");
+    CHECK(e.countCode("IR-ALWAYS-NO-EVENT") == 0);
+    CHECK(e.countCode("IR-UNSUPPORTED-PROCESS") == 4);
+}
+
+TEST_CASE("IR: assignment patterns", "[ir][pattern]") {
+    auto e = extract("module t(input [7:0] r, output [7:0] o);\n"
+                     "  wire [7:0] rom [0:3] = '{8'h11, 8'h22, 8'h33, 8'h44};\n" // ascending: rom[0] on the left
+                     "  wire [7:0] arr [3:0] = '{r, 8'h00, 8'h00, 8'h00};\n"     // descending: arr[3] = r
+                     "  wire [7:0] one [1] = '{r};\n"
+                     "  wire [7:0] dflt [0:1] = '{default: 8'hA5};\n"
+                     "  wire [3:0][3:0] rep = '{4{4'h3}};\n"
+                     "  assign o = rom[1] ^ arr[3] ^ one[0] ^ dflt[0] ^ rep[3];\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 0);
+    CHECK(e.has("assign rom = 32'b00010001001000100011001101000100"));
+    CHECK(e.has("assign arr = {r, 24'b000000000000000000000000}"));
+    CHECK(e.has("assign one = r"));
+    CHECK(e.has("assign dflt = 16'b1010010110100101"));
+    CHECK(e.has("assign rep = 16'b0011001100110011"));
+}
+
+TEST_CASE("IR: unpacked structs and their arrays", "[ir][struct]") {
+    auto e = extract("typedef struct { logic [7:0] y; logic [3:0] c; logic b; } ph_t;\n"
+                     "module t(input clk, input [7:0] d, output reg [7:0] q, output reg [3:0] qc, output reg qb);\n"
+                     "  ph_t p[3];\n"
+                     "  ph_t s;\n"
+                     "  localparam ph_t K = '{8'h01, 4'h2, 1'b1};\n"
+                     "  localparam logic [7:0] LUT [4] = '{8'h10, 8'h20, 8'h30, 8'h40};\n"
+                     "  always @(posedge clk) begin\n"
+                     "    p[0].y <= d; p[0].c <= 4'h5; p[1] <= p[0];\n"
+                     "    s <= '{8'h00, 4'h9, 1'b1};\n"
+                     "    q <= p[1].y ^ K.y ^ LUT[d[1:0]]; qc <= s.c; qb <= s.b;\n"
+                     "  end\nendmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(e.countCode("IR-UNSUPPORTED-TYPE") == 0);
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 0);
+    CHECK(e.countCode("IR-UNSUPPORTED-LVALUE") == 0);
+    // first field at bit 0: y [7:0], c [11:8], b [12]
+    CHECK(e.has("var [13 x 3] p"));
+    CHECK(e.has("reg s <= 13'b1100100000000 @(posedge clk)"));
+    CHECK(e.has("reg p{13+:25} <= {4'b0101, d, p{26+:13}} @(posedge clk)"));
+    CHECK(e.has("reg qc <= s[11:8] @(posedge clk)"));
+    CHECK(e.has("reg qb <= s[12] @(posedge clk)"));
+    CHECK(e.contains("8'b00000001")); // K.y
+    CHECK(e.contains("A=32'b00010000001000000011000001000000")); // the table, LUT[0] on the left
+}
+
+TEST_CASE("IR: a case listing every value of its selector with integer labels is complete", "[ir][case]") {
+    auto e = extract("module t(input [1:0] s, input [3:0] a, b, c, d,\n"
+                     "         output reg [3:0] y, output reg [3:0] x, output reg [3:0] v,\n"
+                     "         output reg [3:0] n1, output reg [3:0] n2, output reg [3:0] n3);\n"
+                     "  always @* case (s) 0: y = a; 1: y = b; 2: y = c; 3: y = d; endcase\n"
+                     "  always @* case (s) 2'd0: x = a; 32'h1: x = b; 2: x = c; 3'd3: x = d; endcase\n"
+                     "  always @* case ($signed(s)) -2: v = a; -1: v = b; 0: v = c; 1: v = d; endcase\n"
+                     // negative: a value missing, a label the selector never reaches, signed too
+                     "  always @* case (s) 0: n1 = a; 1: n1 = b; 2: n1 = c; endcase\n"
+                     "  always @* case (s) 0: n2 = a; 1: n2 = b; 2: n2 = c; 4: n2 = d; endcase\n"
+                     "  always @* case ($signed(s)) -2: n3 = a; -1: n3 = b; 0: n3 = c; 2: n3 = d; endcase\n"
+                     "endmodule\n");
+    CHECK_FALSE(e.contains("latch y "));
+    CHECK_FALSE(e.contains("latch x "));
+    CHECK_FALSE(e.contains("latch v "));
+    CHECK(e.contains("latch n1 "));
+    CHECK(e.contains("latch n2 "));
+    CHECK(e.contains("latch n3 "));
+    CHECK(e.countCode("IR-LATCH-INFERRED") == 3);
+}
