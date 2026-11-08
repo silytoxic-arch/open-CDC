@@ -25,6 +25,8 @@ struct HtmlReportOptions {
 [[nodiscard]] std::string toHtmlReport(const AnalysisResult& result, const HtmlReportOptions& options = {});
 
 /// CSV (RFC 4180, UTF-8 with BOM for spreadsheet programs) of all CDC paths.
+/// A path's timing exception in short: "set_false_path sys_top.sdc:34".
+[[nodiscard]] std::string shortException(const std::string& timingException);
 [[nodiscard]] std::string pathsCsv(const AnalysisResult& result);
 /// CSV of all rule hits (one row per hit, waived ones included with their waiver).
 [[nodiscard]] std::string violationsCsv(const AnalysisResult& result);

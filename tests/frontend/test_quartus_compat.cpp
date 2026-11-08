@@ -5,6 +5,7 @@
 #include "core/Progress.h"
 #include "engine/AnalysisSession.h"
 #include "engine/ProjectConfig.h"
+#include "engine/Report.h"
 
 #include "../TestUtil.h"
 
@@ -345,6 +346,13 @@ TEST_CASE("Quartus SDC: plain names are keeper collections; a false path on a cr
         CHECK(exceptionOf(a, "top.other").empty()); // not covered
         // still a crossing without synchronizer: the exception is shown, not applied
         CHECK(a.crosses("top.cfg", "top.q"));
+        // reports: a CSV column, an HTML column and detail row
+        const std::string csv = engine::pathsCsv(*a.r);
+        CHECK(csv.find("destination_line,timing_exception") != std::string::npos);
+        CHECK(csv.find("set_false_path (") != std::string::npos);
+        const std::string html = engine::toHtmlReport(*a.r);
+        CHECK(html.find("<th>Timing exception</th>") != std::string::npos);
+        CHECK(html.find("set_false_path c.sdc:") != std::string::npos);
     }
     SECTION("a Quartus hierarchical name ('|') is read so in any constraints") {
         test::TempDir dir;
@@ -359,5 +367,56 @@ TEST_CASE("Quartus SDC: plain names are keeper collections; a false path on a cr
         REQUIRE(a.r->cdc);
         CHECK(a.has("CON-IGNORED", "set_false_path x1"));
         CHECK(exceptionOf(a, "top.cfg").empty());
+    }
+}
+
+TEST_CASE("Waivers selecting crossings by the timing exception that covers them", "[frontend][quartus][sdc][waiver]") {
+    test::TempDir dir;
+    dir.write("top.sv", "module top (input clk_a, input clk_b, input [3:0] d, output reg [3:0] q, output reg [3:0] q2);\n"
+                        "  reg [3:0] cfg; reg [3:0] other;\n"
+                        "  always @(posedge clk_a) begin cfg <= d; other <= ~d; end\n"
+                        "  always @(posedge clk_b) begin q <= cfg; q2 <= other; end\n"
+                        "endmodule\n");
+    dir.write("c.sdc", "derive_pll_clocks\n"
+                       "create_clock -name clk_a -period 10 [get_ports clk_a]\n"
+                       "create_clock -name clk_b -period 7 [get_ports clk_b]\n"
+                       "set_clock_groups -asynchronous -group clk_a -group clk_b\n"
+                       "set_false_path -from {cfg[*]}\n");
+    auto run = [&](const std::string& selector) {
+        dir.write("w.json", "{\"format\": \"opencdc-waivers\", \"version\": 1, \"waivers\": [{\"id\": \"W-QS\", "
+                            "\"timingException\": \"" + selector + "\", \"reason\": \"quasi-static\"}]}");
+        const auto p = dir.write("p.ocdc.json",
+                                 "{\"format\": \"opencdc-project\", \"version\": 1, \"name\": \"p\", \"top\": \"top\", "
+                                 "\"sources\": [\"top.sv\"], \"constraints\": [\"c.sdc\"], \"waivers\": [\"w.json\"]}");
+        auto cfg = engine::loadProjectFile(p);
+        REQUIRE(cfg);
+        engine::AnalysisSession session;
+        NullProgressSink progress;
+        CancellationToken cancel;
+        Analysis a{session.run(cfg.value(), progress, cancel)};
+        REQUIRE(a.r);
+        REQUIRE(a.r->cdc);
+        for (const auto& d : a.r->diagnostics)
+            UNSCOPED_INFO(format(d));
+        return a;
+    };
+    auto waived = [](const Analysis& a, std::string_view src) {
+        for (const auto& p : a.r->cdc->paths)
+            if (p.srcName.starts_with(src))
+                return p.waived;
+        return false;
+    };
+    SECTION("any timing exception") {
+        const auto a = run("*");
+        CHECK(a.count("WAIVER-INVALID") == 0);
+        CHECK(waived(a, "top.cfg"));
+        CHECK_FALSE(waived(a, "top.other")); // no exception covers it
+        REQUIRE(a.r->cdc->waivers.size() == 1);
+        CHECK(a.r->cdc->waivers[0].uses > 0);
+    }
+    SECTION("negative: another constraint file") {
+        const auto a = run("*other.sdc*");
+        CHECK_FALSE(waived(a, "top.cfg"));
+        CHECK(a.r->cdc->waivers[0].uses == 0);
     }
 }

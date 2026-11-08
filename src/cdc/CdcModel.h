@@ -197,6 +197,9 @@ struct WaiverRecord {
     std::string fingerprint; ///< path fingerprint ("" = any)
     std::string source;      ///< glob on the source name ("" = any)
     std::string destination; ///< glob on the destination name ("" = any)
+    /// glob on the timing exception covering the path ("" = any path; otherwise
+    /// only paths a set_false_path / set_max_delay covers: "*", "*sys_top.sdc:34*")
+    std::string timingException;
     std::string reason;
     std::string author;
     std::string expires;     ///< YYYY-MM-DD, "" = never

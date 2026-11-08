@@ -40,6 +40,8 @@ bool covers(const WaiverRecord& w, const CdcPath& p, const RuleHit& hit) {
         return false;
     if (!w.destination.empty() && !globMatch(w.destination, p.dstName))
         return false;
+    if (!w.timingException.empty() && (p.timingException.empty() || !globMatch(w.timingException, p.timingException)))
+        return false;
     return true;
 }
 
@@ -140,7 +142,8 @@ void applyWaivers(std::vector<WaiverRecord> waivers, CdcResult& result, std::str
     for (auto& o : result.outputs) {
         o.waiver.clear();
         for (auto& w : waivers) {
-            if (w.expired || (!w.rule.empty() && !globMatch(w.rule, "CDC-OUTPUT-CLOCK")) ||
+            // a timing-exception selector only covers crossings
+            if (w.expired || !w.timingException.empty() || (!w.rule.empty() && !globMatch(w.rule, "CDC-OUTPUT-CLOCK")) ||
                 (!w.fingerprint.empty() && w.fingerprint != o.fingerprint) ||
                 (!w.source.empty() &&
                  std::ranges::none_of(o.sources, [&](const std::string& n) { return globMatch(w.source, n); })) ||

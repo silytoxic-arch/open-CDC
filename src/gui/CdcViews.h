@@ -45,6 +45,7 @@ public:
     /// Paths in the table (all of them, filtered or not).
     [[nodiscard]] int rowCount() const;
     [[nodiscard]] QComboBox* syncFilter() const { return syncFilter_; }
+    [[nodiscard]] QComboBox* exceptionFilter() const { return exceptionFilter_; }
 
     /// Sets the text filter (matches source, destination or crossing signal).
     void setTextFilter(const QString& text);
@@ -68,6 +69,7 @@ private:
     QComboBox* clockFilter_;
     QComboBox* statusFilter_;
     QComboBox* syncFilter_;
+    QComboBox* exceptionFilter_;
     QLineEdit* textFilter_;
     QLabel* countLabel_;
     detail::PathModel* model_;
@@ -94,6 +96,7 @@ public:
     [[nodiscard]] QComboBox* ruleFilter() const { return ruleFilter_; }
     [[nodiscard]] QComboBox* severityFilter() const { return severityFilter_; }
     [[nodiscard]] QComboBox* waiverFilter() const { return waiverFilter_; }
+    [[nodiscard]] QComboBox* exceptionFilter() const { return exceptionFilter_; }
     /// The selected rule hit (path id, hit index), if any.
     [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> currentHit() const;
     /// "Waive...": enabled for a selected hit that no waiver covers.
@@ -115,6 +118,7 @@ private:
     QComboBox* statusFilter_;
     QComboBox* clockFilter_;
     QComboBox* waiverFilter_;
+    QComboBox* exceptionFilter_;
     QPushButton* waiveButton_;
     QLabel* countLabel_;
     detail::HitModel* model_;

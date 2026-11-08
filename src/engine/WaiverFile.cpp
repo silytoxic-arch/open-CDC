@@ -71,6 +71,7 @@ void readWaiverFile(const std::filesystem::path& file, std::vector<cdc::WaiverRe
         r.fingerprint = str("fingerprint");
         r.source = str("source");
         r.destination = str("destination");
+        r.timingException = str("timingException");
         r.reason = str("reason");
         r.author = str("author");
         r.expires = str("expires");
@@ -81,7 +82,7 @@ void readWaiverFile(const std::filesystem::path& file, std::vector<cdc::WaiverRe
         };
         for (const auto& [key, value] : w.items())
             if (key != "id" && key != "rule" && key != "fingerprint" && key != "source" && key != "destination" &&
-                key != "reason" && key != "author" && key != "expires" && key != "comment")
+                key != "timingException" && key != "reason" && key != "author" && key != "expires" && key != "comment")
                 sink.report({"WAIVER-SCHEMA", Severity::Warning,
                              "waiver '" + r.id + "': unknown field '" + key + "' ignored", r.loc, {}});
         if (r.id.empty()) {
@@ -96,8 +97,10 @@ void readWaiverFile(const std::filesystem::path& file, std::vector<cdc::WaiverRe
             invalid("a 'reason' is required");
             continue;
         }
-        if (r.rule.empty() && r.fingerprint.empty() && r.source.empty() && r.destination.empty()) {
-            invalid("it would cover every rule hit: give at least one of rule, fingerprint, source, destination");
+        if (r.rule.empty() && r.fingerprint.empty() && r.source.empty() && r.destination.empty() &&
+            r.timingException.empty()) {
+            invalid("it would cover every rule hit: give at least one of rule, fingerprint, source, destination, "
+                    "timingException");
             continue;
         }
         if (!r.expires.empty() && !std::regex_match(r.expires, date)) {
@@ -116,8 +119,10 @@ std::string waiverProblem(const cdc::WaiverRecord& w, const std::vector<std::str
         return "a waiver with id '" + w.id + "' already exists";
     if (w.reason.empty())
         return "a reason is required";
-    if (w.rule.empty() && w.fingerprint.empty() && w.source.empty() && w.destination.empty())
-        return "it would cover every rule hit: give at least one of rule, fingerprint, source, destination";
+    if (w.rule.empty() && w.fingerprint.empty() && w.source.empty() && w.destination.empty() &&
+        w.timingException.empty())
+        return "it would cover every rule hit: give at least one of rule, fingerprint, source, destination, "
+               "timingException";
     if (!w.expires.empty() && !std::regex_match(w.expires, date))
         return "the expiry date must be YYYY-MM-DD";
     return {};
@@ -181,6 +186,7 @@ void setFields(nlohmann::ordered_json& e, const cdc::WaiverRecord& w) {
                                      {"fingerprint", &w.fingerprint},
                                      {"source", &w.source},
                                      {"destination", &w.destination},
+                                     {"timingException", &w.timingException},
                                      {"reason", &w.reason},
                                      {"author", &w.author},
                                      {"expires", &w.expires}}) {

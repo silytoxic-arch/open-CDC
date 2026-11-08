@@ -1,10 +1,13 @@
 #include "gui/CdcViews.h"
+
+#include "engine/Report.h"
 #include "gui/ColumnSizing.h"
 
 #include "rules/RuleEngine.h"
 #include "rules/Waiver.h"
 
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -72,6 +75,23 @@ QString locText(const SourceLocation& l) {
 
 namespace detail {
 
+/// Exception filter: "" (all), "covered", "uncovered" by a timing exception.
+bool exceptionAccepts(const QString& filter, const cdc::CdcPath& p) {
+    if (filter == QLatin1String("covered"))
+        return !p.timingException.empty();
+    if (filter == QLatin1String("uncovered"))
+        return p.timingException.empty();
+    return true;
+}
+
+void addExceptionItems(QComboBox* c) {
+    c->addItem(QCoreApplication::translate("CdcViews", "Covered by a timing exception"), QStringLiteral("covered"));
+    c->addItem(QCoreApplication::translate("CdcViews", "Not covered by a timing exception"), QStringLiteral("uncovered"));
+    c->setToolTip(QCoreApplication::translate(
+        "CdcViews", "Crossings that a set_false_path / set_max_delay of the constraints covers: declared quasi-static "
+                    "by the designer, still checked"));
+}
+
 /// Re-runs a proxy's row filter (the API changed in Qt 6.10).
 template <typename Proxy>
 void refilter(Proxy* proxy) {
@@ -97,7 +117,7 @@ public:
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override {
         return parent.isValid() || !result_ || !result_->cdc ? 0 : static_cast<int>(result_->cdc->paths.size());
     }
-    [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 12; }
+    [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 13; }
 
     [[nodiscard]] QVariant headerData(int section, Qt::Orientation o, int role) const override {
         static const QStringList kHeaders{CdcPathView::tr("#"),           CdcPathView::tr("Status"),
@@ -105,7 +125,8 @@ public:
                                           CdcPathView::tr("Source"),       CdcPathView::tr("Destination"),
                                           CdcPathView::tr("Crossing signal"), CdcPathView::tr("Width"),
                                           CdcPathView::tr("Pin"),          CdcPathView::tr("Synchronizer"),
-                                          CdcPathView::tr("Sync status"),  CdcPathView::tr("Rules")};
+                                          CdcPathView::tr("Sync status"),  CdcPathView::tr("Rules"),
+                                          CdcPathView::tr("Timing exception")};
         if (o == Qt::Horizontal && role == Qt::DisplayRole && section >= 0 && section < kHeaders.size())
             return kHeaders[section];
         return {};
@@ -153,6 +174,7 @@ private:
                     rules << qs(h.ruleId);
                 return rules.join(QLatin1String(", "));
             }
+            case 12: return qs(engine::shortException(p.timingException));
             default: return {};
         }
     }
@@ -166,11 +188,12 @@ public:
         setSourceModel(model);
         setSortRole(kSortRole);
     }
-    void set(QString clock, QString status, QString sync, QString text) {
+    void set(QString clock, QString status, QString sync, QString text, QString exception) {
         clock_ = std::move(clock);
         status_ = std::move(status);
         sync_ = std::move(sync);
         text_ = std::move(text);
+        exception_ = std::move(exception);
         refilter(this);
     }
     friend void refilter<PathFilter>(PathFilter*);
@@ -184,6 +207,8 @@ protected:
             return false;
         if (!sync_.isEmpty() && qs(cdc::toString(p.syncType)) != sync_)
             return false;
+        if (!exceptionAccepts(exception_, p))
+            return false;
         return text_.isEmpty() || qs(p.srcName).contains(text_, Qt::CaseInsensitive) ||
                qs(p.dstName).contains(text_, Qt::CaseInsensitive) ||
                qs(p.crossingSignal).contains(text_, Qt::CaseInsensitive);
@@ -191,7 +216,7 @@ protected:
 
 private:
     PathModel* model_;
-    QString clock_, status_, sync_, text_;
+    QString clock_, status_, sync_, text_, exception_;
 };
 
 class HitModel final : public QAbstractTableModel {
@@ -219,14 +244,14 @@ public:
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override {
         return parent.isValid() ? 0 : static_cast<int>(rows_.size());
     }
-    [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 9; }
+    [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 10; }
 
     [[nodiscard]] QVariant headerData(int section, Qt::Orientation o, int role) const override {
         static const QStringList kHeaders{ViolationView::tr("Rule"),         ViolationView::tr("Severity"),
                                           ViolationView::tr("Status"),       ViolationView::tr("Message"),
                                           ViolationView::tr("Source clock"), ViolationView::tr("Dest. clock"),
                                           ViolationView::tr("Destination"),  ViolationView::tr("Location"),
-                                          ViolationView::tr("Waiver")};
+                                          ViolationView::tr("Waiver"),       ViolationView::tr("Timing exception")};
         if (o == Qt::Horizontal && role == Qt::DisplayRole && section >= 0 && section < kHeaders.size())
             return kHeaders[section];
         return {};
@@ -266,6 +291,7 @@ private:
             case 6: return qs(p.dstName);
             case 7: return locText(p.dstLoc);
             case 8: return qs(h.waiver);
+            case 9: return qs(engine::shortException(p.timingException));
             default: return {};
         }
     }
@@ -280,12 +306,13 @@ public:
         setSourceModel(model);
         setSortRole(kSortRole);
     }
-    void set(QString rule, QString severity, QString status, QString clock, QString waiver) {
+    void set(QString rule, QString severity, QString status, QString clock, QString waiver, QString exception) {
         rule_ = std::move(rule);
         severity_ = std::move(severity);
         status_ = std::move(status);
         clock_ = std::move(clock);
         waiver_ = std::move(waiver);
+        exception_ = std::move(exception);
         refilter(this);
     }
     friend void refilter<HitFilter>(HitFilter*);
@@ -298,6 +325,8 @@ protected:
             return false;
         if (waiver_ == QLatin1String("waived") && h.waiver.empty())
             return false;
+        if (!exceptionAccepts(exception_, p))
+            return false;
         return (rule_.isEmpty() || qs(h.ruleId) == rule_) &&
                (severity_.isEmpty() || qs(toString(h.severity)) == severity_) &&
                (status_.isEmpty() || qs(cdc::toString(h.status)) == status_) &&
@@ -306,7 +335,7 @@ protected:
 
 private:
     HitModel* model_;
-    QString rule_, severity_, status_, clock_, waiver_;
+    QString rule_, severity_, status_, clock_, waiver_, exception_;
 };
 
 } // namespace detail
@@ -330,7 +359,8 @@ void setupTable(QTableView* t) {
 
 CdcPathView::CdcPathView(QWidget* parent)
     : QWidget(parent), clockFilter_(combo(this, tr("All clocks"))), statusFilter_(combo(this, tr("All statuses"))),
-      syncFilter_(combo(this, tr("All synchronizers"))), textFilter_(new QLineEdit(this)), countLabel_(new QLabel(this)),
+      syncFilter_(combo(this, tr("All synchronizers"))), exceptionFilter_(combo(this, tr("With or without timing exception"))),
+      textFilter_(new QLineEdit(this)), countLabel_(new QLabel(this)),
       model_(new detail::PathModel(this)), filter_(new detail::PathFilter(model_, this)), table_(new QTableView(this)),
       details_(new QTextBrowser(this)) {
     auto* layout = new QVBoxLayout(this);
@@ -348,6 +378,8 @@ CdcPathView::CdcPathView(QWidget* parent)
     bar->addWidget(clockFilter_);
     bar->addWidget(statusFilter_);
     bar->addWidget(syncFilter_);
+    detail::addExceptionItems(exceptionFilter_);
+    bar->addWidget(exceptionFilter_);
     bar->addWidget(textFilter_, 1);
     bar->addWidget(countLabel_);
     layout->addLayout(bar);
@@ -368,6 +400,7 @@ CdcPathView::CdcPathView(QWidget* parent)
     connect(clockFilter_, &QComboBox::currentIndexChanged, this, &CdcPathView::applyFilter);
     connect(statusFilter_, &QComboBox::currentIndexChanged, this, &CdcPathView::applyFilter);
     connect(syncFilter_, &QComboBox::currentIndexChanged, this, &CdcPathView::applyFilter);
+    connect(exceptionFilter_, &QComboBox::currentIndexChanged, this, &CdcPathView::applyFilter);
     connect(textFilter_, &QLineEdit::textChanged, this, &CdcPathView::applyFilter);
     connect(table_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
             [this](const QModelIndex& current) {
@@ -454,7 +487,8 @@ void CdcPathView::applyFilter() {
     if (!result_ || !result_->cdc)
         return;
     filter_->set(clockFilter_->currentData().toString(), statusFilter_->currentData().toString(),
-                 syncFilter_->currentData().toString(), textFilter_->text().trimmed());
+                 syncFilter_->currentData().toString(), textFilter_->text().trimmed(),
+                 exceptionFilter_->currentData().toString());
     countLabel_->setText(tr("%1 of %2 paths").arg(filter_->rowCount()).arg(model_->rowCount()));
 }
 
@@ -637,7 +671,9 @@ void CdcPathView::showDetails(std::size_t id) {
 ViolationView::ViolationView(QWidget* parent)
     : QWidget(parent), ruleFilter_(combo(this, tr("All rules"))), severityFilter_(combo(this, tr("All severities"))),
       statusFilter_(combo(this, tr("All statuses"))), clockFilter_(combo(this, tr("All clocks"))),
-      waiverFilter_(combo(this, tr("Waived and not waived"))), waiveButton_(new QPushButton(tr("Waive..."), this)),
+      waiverFilter_(combo(this, tr("Waived and not waived"))),
+      exceptionFilter_(combo(this, tr("With or without timing exception"))),
+      waiveButton_(new QPushButton(tr("Waive..."), this)),
       countLabel_(new QLabel(this)), model_(new detail::HitModel(this)), filter_(new detail::HitFilter(model_, this)), table_(new QTableView(this)),
       ruleInfo_(new QTextBrowser(this)) {
     auto* layout = new QVBoxLayout(this);
@@ -658,6 +694,8 @@ ViolationView::ViolationView(QWidget* parent)
     waiverFilter_->addItem(tr("Not waived"), QStringLiteral("open"));
     waiverFilter_->addItem(tr("Waived"), QStringLiteral("waived"));
     bar->addWidget(waiverFilter_);
+    detail::addExceptionItems(exceptionFilter_);
+    bar->addWidget(exceptionFilter_);
     waiveButton_->setToolTip(tr("Add a waiver for the selected rule hit (its rule and the path fingerprint) to the "
                                 "project's waiver file"));
     waiveButton_->setEnabled(false);
@@ -677,7 +715,7 @@ ViolationView::ViolationView(QWidget* parent)
     split->setStretchFactor(1, 1);
     layout->addWidget(split, 1);
 
-    for (auto* c : {ruleFilter_, severityFilter_, statusFilter_, clockFilter_, waiverFilter_})
+    for (auto* c : {ruleFilter_, severityFilter_, statusFilter_, clockFilter_, waiverFilter_, exceptionFilter_})
         connect(c, &QComboBox::currentIndexChanged, this, &ViolationView::applyFilter);
     connect(table_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
             [this](const QModelIndex& current) {
@@ -760,7 +798,7 @@ void ViolationView::applyFilter() {
         return;
     filter_->set(ruleFilter_->currentData().toString(), severityFilter_->currentData().toString(),
                  statusFilter_->currentData().toString(), clockFilter_->currentData().toString(),
-                 waiverFilter_->currentData().toString());
+                 waiverFilter_->currentData().toString(), exceptionFilter_->currentData().toString());
     countLabel_->setText(tr("%1 of %2 hits").arg(filter_->rowCount()).arg(model_->rowCount()));
 }
 
@@ -1040,6 +1078,8 @@ void WaiverView::setResult(std::shared_ptr<const engine::AnalysisResult> result)
             sel << tr("source %1").arg(qs(w.source));
         if (!w.destination.empty())
             sel << tr("destination %1").arg(qs(w.destination));
+        if (!w.timingException.empty())
+            sel << tr("timing exception %1").arg(qs(w.timingException));
         const QString state = stateOf(w);
         const QStringList cells{qs(w.id),     state,          QString::number(w.uses), qs(w.rule),
                                 sel.join(QStringLiteral("; ")), qs(w.reason), qs(w.author),

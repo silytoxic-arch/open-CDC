@@ -374,6 +374,7 @@ json cdcSmall(const cdc::CdcResult& c) {
                            {"fingerprint", w.fingerprint},
                            {"source", w.source},
                            {"destination", w.destination},
+                           {"timingException", w.timingException},
                            {"reason", w.reason},
                            {"author", w.author},
                            {"expires", w.expires},

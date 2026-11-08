@@ -512,6 +512,7 @@ int runWaiverAudit(const AuditArgs& args) {
         add("fingerprint", w.fingerprint);
         add("source", w.source);
         add("destination", w.destination);
+        add("timingException", w.timingException);
         std::cout << "  " << w.id << " [" << rules::waiverState(w) << "] uses=" << w.uses << " " << sel;
         if (!w.expires.empty())
             std::cout << " expires=" << w.expires;
@@ -532,6 +533,7 @@ int runWaiverAudit(const AuditArgs& args) {
                                     {"fingerprint", w.fingerprint},
                                     {"source", w.source},
                                     {"destination", w.destination},
+                                    {"timingException", w.timingException},
                                     {"reason", w.reason},
                                     {"author", w.author},
                                     {"expires", w.expires},
@@ -613,6 +615,9 @@ int main(int argc, char** argv) {
     waiveCmd->add_option("--rule", waive.w.rule, "Rule id or glob (e.g. CDC-007, CDC-OUTPUT-CLOCK)");
     waiveCmd->add_option("--source", waive.w.source, "Glob on the source name");
     waiveCmd->add_option("--destination", waive.w.destination, "Glob on the destination name");
+    waiveCmd->add_option("--timing-exception", waive.w.timingException,
+                         "Glob on the timing exception that covers the crossing ('*': any set_false_path / "
+                         "set_max_delay of the constraints; '*sys_top.sdc:34*': that one)");
     waiveCmd->add_option("--reason", waive.w.reason, "Why the hit is acceptable (required to add a waiver)");
     waiveCmd->add_option("--author", waive.w.author, "Who waived it");
     waiveCmd->add_option("--expires", waive.w.expires, "Expiry date YYYY-MM-DD");

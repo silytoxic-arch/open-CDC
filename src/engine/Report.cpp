@@ -278,7 +278,7 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
         };
         o << "<h2 id=\"paths\">CDC paths</h2>\n<table><tr><th>#</th><th>Status</th><th>Source clock</th>"
              "<th>Dest. clock</th><th>Source</th><th>Destination</th><th>Width</th><th>Synchronizer</th>"
-             "<th>Rules</th></tr>\n";
+             "<th>Rules</th><th>Timing exception</th></tr>\n";
         for (const auto* pp : shown) {
             const auto& p = *pp;
             std::string rulesText;
@@ -289,9 +289,11 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
               << esc(p.srcName) << "</td><td class=\"mono\">" << esc(p.dstName)
               << (p.pin == Pin::Data ? "" : " (" + std::string(toString(p.pin)) + ")") << "</td><td>" << p.width
               << "</td><td>" << toString(p.syncType) << " / " << toString(p.syncStatus) << "</td><td>" << rulesText
-              << "</td></tr>\n";
+              << "</td><td class=\"mono\">" << esc(shortException(p.timingException)) << "</td></tr>\n";
         }
-        o << "</table>\n<p class=\"meta\">&#8224; waived</p>\n";
+        o << "</table>\n<p class=\"meta\">&#8224; waived. Timing exception: a set_false_path / set_max_delay of "
+             "the constraints covers the crossing (declared quasi-static by the designer); the crossing is still "
+             "checked.</p>\n";
 
         // ---- Structures ----
         if (!c.structures.empty()) {
@@ -362,6 +364,8 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
             if (p.structure < c.structures.size())
                 row("Structure", "S" + std::to_string(p.structure) + " " +
                                      std::string(toString(c.structures[p.structure].type)));
+            if (!p.timingException.empty())
+                row("Timing exception", "<span class=\"mono\">" + esc(p.timingException) + "</span>");
             row("Fingerprint", "<span class=\"mono\">" + esc(p.fingerprint) + "</span>");
             o << "</table>\n<ol class=\"steps\">";
             for (const auto& s : p.steps) {
@@ -426,7 +430,9 @@ std::string toHtmlReport(const AnalysisResult& r, const HtmlReportOptions& opt) 
                 if (!w.source.empty())
                     sel += "source=" + esc(w.source) + "<br>";
                 if (!w.destination.empty())
-                    sel += "destination=" + esc(w.destination);
+                    sel += "destination=" + esc(w.destination) + "<br>";
+                if (!w.timingException.empty())
+                    sel += "timingException=" + esc(w.timingException);
                 o << "<tr><td>" << esc(w.id) << "</td><td" << (state == "active" ? "" : " class=\"fail\"") << ">"
                   << state << "</td><td>" << esc(w.rule) << "</td><td class=\"mono\">" << sel
                   << "</td><td>" << esc(w.reason) << "</td><td>" << esc(w.author) << "</td><td>" << esc(w.expires)
@@ -517,12 +523,23 @@ private:
 
 } // namespace
 
+/// "set_false_path (/a/b/sys_top.sdc:34)" -> "set_false_path sys_top.sdc:34"
+std::string shortException(const std::string& e) {
+    const auto open = e.find(" (");
+    if (open == std::string::npos || e.back() != ')')
+        return e;
+    std::string where = e.substr(open + 2, e.size() - open - 3);
+    if (const auto slash = where.find_last_of("/\\"); slash != std::string::npos)
+        where = where.substr(slash + 1);
+    return e.substr(0, open) + " " + where;
+}
+
 std::string pathsCsv(const AnalysisResult& r) {
     Csv csv;
     for (const char* h : {"id", "status", "waived", "source_clock", "destination_clock", "relation", "source",
                           "destination", "pin", "width", "class", "sync_type", "sync_stages", "sync_status", "rules",
                           "waived_rules", "structure", "group_size", "fingerprint", "source_file", "source_line",
-                          "destination_file", "destination_line"})
+                          "destination_file", "destination_line", "timing_exception"})
         csv.field(h);
     csv.endRow();
     if (!r.cdc)
@@ -555,7 +572,8 @@ std::string pathsCsv(const AnalysisResult& r) {
             .field(p.srcLoc.file)
             .field(std::size_t{p.srcLoc.line})
             .field(p.dstLoc.file)
-            .field(std::size_t{p.dstLoc.line});
+            .field(std::size_t{p.dstLoc.line})
+            .field(p.timingException);
         csv.endRow();
     }
     return csv.str();
@@ -592,7 +610,7 @@ std::string violationsCsv(const AnalysisResult& r) {
 std::string waiversCsv(const AnalysisResult& r) {
     Csv csv;
     for (const char* h : {"id", "state", "uses", "rule", "fingerprint", "source", "destination", "reason", "author",
-                          "expires", "expires_in_days", "file", "line"})
+                          "expires", "expires_in_days", "file", "line", "timing_exception"})
         csv.field(h);
     csv.endRow();
     if (!r.cdc)
@@ -610,7 +628,8 @@ std::string waiversCsv(const AnalysisResult& r) {
             .field(w.expires)
             .field(w.expiresInDays >= 0 ? std::to_string(w.expiresInDays) : std::string())
             .field(w.loc.file)
-            .field(std::size_t{w.loc.line});
+            .field(std::size_t{w.loc.line})
+            .field(w.timingException);
         csv.endRow();
     }
     return csv.str();
