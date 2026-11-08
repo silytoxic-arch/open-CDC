@@ -2,15 +2,16 @@
 
 [![CI](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/silytoxic-arch/open-CDC/actions/workflows/ci.yml)
 
-FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 59, Vivado projects (`.xpr`) analyzed directly or imported**.
+FPGA clock-domain-crossing (CDC) static analysis tool for Verilog, VHDL and mixed designs. Current status is **stage 60, Quartus projects (`.qpf`/`.qsf`) analyzed directly or imported, Quartus' leniencies, Cyclone V HPS**.
 
 The architecture is described in [docs/architecture.md](docs/architecture.md).
 
-## What works today (stages 1–59)
+## What works today (stages 1–60)
 
 | Feature | Status |
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
+| Quartus projects (`.qpf`, `.qsf`): analyzed directly or imported (`opencdc import`): the revision's settings evaluated as Quartus does (sourced scripts, IP file lists `.qip` with `$::quartus(qip_path)`, Platform Designer systems by their generated `.qip`), design files with their VHDL libraries, include directories, macros, top parameters, SystemVerilog mode, SDC files; what is not read is reported. Constructs that are errors in (System)Verilog but that Quartus accepts are read as Quartus does, with a warning each: nets assigned in procedural blocks, names of a generate block used in its module. Verified with the MiSTer framework (Template_MiSTer: Cyclone V with its HPS, three PLLs, 414 crossings) | ✅ |
 | Vivado projects (`.xpr`): analyzed directly (CLI, GUI) or imported into an OpenCDC project (`opencdc import`): the sources, IP and block designs, VHDL libraries, Verilog headers, defines, generics, top and constraints (with their module scopes) of the current synthesis run; disabled, simulation-only, missing and unreadable files reported. Verified with the Vivado projects of ArtyS7-RPU-SoC, the Loongson chiplab SoC, the Fuxi SoC and five Zynq-7000 block design projects (same results as their hand-written projects) | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
 | SystemVerilog interfaces: interface instances (with their own logic), modport/generic interface ports, interface arrays, ports passed down the hierarchy; verified on PULP `axi_cdc_intf` | ✅ |
@@ -144,6 +145,7 @@ opencdc analyze my.ocdc.json -q --suggest-sdc suggested.sdc    # constraints for
 opencdc analyze examples/primitives/primitives.ocdc.json --vivado-clocks examples/primitives/vivado_clocks.rpt   # compare periods with Vivado
 opencdc analyze examples/vivado_project/demo.xpr             # a Vivado project, as it is
 opencdc import examples/vivado_project/demo.xpr -o demo.ocdc.json   # ... or as an OpenCDC project to edit and keep
+opencdc analyze examples/quartus_project/demo.qpf            # a Quartus project (its first revision)
 python3 tools/bench/gen_bench.py soc --domains 8 --blocks 1250 --out bench/soc_100k   # benchmark design
 opencdc-gui examples/smoke/smoke.ocdc.json
 ```
@@ -273,6 +275,21 @@ A Vivado project (`.xpr`) can be given wherever a project is expected (`opencdc 
 * the project's IP repositories.
 
 What is left out is reported: missing files (`PRJ-XPR-MISSING`, warning), netlists (`PRJ-XPR-NETLIST`, warning: OpenCDC reads HDL), disabled sources (`PRJ-XPR-DISABLED`), and memory initialization, simulation-only and other files (`PRJ-XPR-SKIPPED`). Paths use Vivado's variables (`$PPRDIR`, `$PSRCDIR`, `$PGENDIR`, `$PIPUSERFILESDIR`, ...), resolved against the `.xpr`'s directory. Files that a build script adds to the project after it is opened (as in Loongson's chiplab, which adds the CPU) are not in the `.xpr`: import the project and add them to the OpenCDC project.
+
+#### Quartus projects
+
+A Quartus project (`.qpf`: its first revision; or a revision's `.qsf`) can be given wherever a project is expected, as a Vivado project; `opencdc import` writes it as an OpenCDC project. The revision's settings are a Tcl script: they are evaluated with the commands Quartus' settings files use (`set`, `source`, `file join`, `join`, `list`, `regexp`, `string`, ...), with `$::quartus(qip_path)` (the directory of the IP file list being read, with a trailing `/`) and `$quartus(version)` (from `LAST_QUARTUS_VERSION` or the `.qpf`). Bus indices such as `-to SDRAM_A[0]` are names, as in Quartus. The import takes:
+* the design files (`VERILOG_FILE`, `SYSTEMVERILOG_FILE`, `VHDL_FILE` with its `-library`) in order, through IP file lists (`QIP_FILE`); a Platform Designer system (`QSYS_FILE`) or IP variation (`IP_FILE`) by the `.qip` Quartus generated for it (`<name>/synthesis/<name>.qip`); one that is not generated is reported (`PRJ-QSF-NOT-GENERATED`);
+* include directories (`SEARCH_PATH`, the directories of `VERILOG_INCLUDE_FILE`s), macros (`VERILOG_MACRO`), top-level parameters (`set_parameter` without `-to`), the top (`TOP_LEVEL_ENTITY`); SystemVerilog mode when a file is read as SystemVerilog (`SYSTEMVERILOG_FILE`, also for a `.v` file) or `VERILOG_INPUT_VERSION` says so;
+* the timing constraints (`SDC_FILE`).
+
+Reported: missing files (`PRJ-QSF-MISSING`), AHDL, schematics and netlists (`PRJ-QSF-UNSUPPORTED-FILE`), memory initialization and other files (`PRJ-QSF-SKIPPED`), Tcl commands not evaluated (`PRJ-QSF-TCL`), a script run before compilation that may generate files (`PRJ-QSF-PRE-FLOW`, e.g. MiSTer's `build_id.v`: compile once in Quartus, or run the script, before the analysis), the other revisions (`PRJ-QSF-REVISION`).
+
+Quartus accepts some constructs that (System)Verilog does not; OpenCDC reads them as Quartus does, with a warning each, and analyzes the design:
+* a net assigned in a procedural block (`wire x; always_comb x = ...`, or an output port without a type, `output [7:0] q` assigned in `always`): read as a variable (`FE-NET-PROCEDURAL-ASSIGN`); an `inout reg` port assigned procedurally is read as an output;
+* a name declared in a generate block and used outside it in the module: its declaration is read in the module (`FE-GENERATE-SCOPE`).
+
+Quartus' `set_clock_groups -exclusive` (an old alias of `-logically_exclusive`, used to cut paths between unrelated clocks; Quartus' Timing Analyzer treats all clock groups alike) is read as `-asynchronous` (`CON-EXCLUSIVE-AS-ASYNC`), so that the crossings between the groups are checked.
 
 #### VHDL and mixed designs
 

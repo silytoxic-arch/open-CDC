@@ -1,0 +1,4 @@
+# Quartus project: the revision 'demo' (demo.qsf)
+QUARTUS_VERSION = "18.1"
+DATE = "12:00:00  November 08, 2026"
+PROJECT_REVISION = "demo"

@@ -2397,11 +2397,25 @@ private:
     Value setClockGroups(const Command& cmd) {
         Args a = parseArgs(cmd, "set_clock_groups",
                            {{"-name", true}, {"-group", true}, {"-asynchronous", false}, {"-logically_exclusive", false},
-                            {"-physically_exclusive", false}, {"-allow_paths", false}, {"-comment", true}});
+                            {"-physically_exclusive", false}, {"-exclusive", false}, {"-allow_paths", false},
+                            {"-comment", true}});
         ClockGroups g;
         g.loc = {file_, cmd.line, 0};
         if (a.opts.contains("-name"))
             g.name = a.opts["-name"].back().text;
+        if (a.flags.contains("-exclusive")) {
+            // Quartus' -exclusive: documented as an alias of -logically_exclusive, kept for old
+            // scripts, and used to cut paths between unrelated clocks (Quartus' Timing Analyzer
+            // treats all clock groups alike). Read as -asynchronous, so that the crossings between
+            // the groups are still checked rather than hidden as exclusive.
+            diag("CON-EXCLUSIVE-AS-ASYNC", Severity::Info,
+                 "set_clock_groups -exclusive (Quartus) is read as -asynchronous: the crossings between the groups "
+                 "are checked; use -logically_exclusive or -physically_exclusive for clocks that are never active "
+                 "together",
+                 cmd.line);
+            if (!a.flags.contains("-logically_exclusive") && !a.flags.contains("-physically_exclusive"))
+                a.flags.insert("-asynchronous");
+        }
         const int kinds = static_cast<int>(a.flags.contains("-asynchronous")) +
                           static_cast<int>(a.flags.contains("-logically_exclusive")) +
                           static_cast<int>(a.flags.contains("-physically_exclusive"));

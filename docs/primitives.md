@@ -92,8 +92,16 @@ Sources:
 | `dcfifo` | Asynchronous FIFO with Gray pointers synchronized in both directions (`rdsync_delaypipe` − 2 stages, at least 2) |
 | `altsyncram`, `altera_syncram` | Port A on `clock0`; port B on `clock1` when `address_reg_b` or `outdata_reg_b` is `"CLOCK1"`, otherwise on `clock0`; per-port write arrays as for block RAM |
 | `altddio_in`, `altddio_out` | DDR input (falling-edge capture) and output registers |
-| `altpll` | `clk[n]` are clocks derived from `inclk[0]`, period = input period × `clkN_divide_by` / `clkN_multiply_by`; the input period comes from the input clock or from `inclk0_input_frequency` (ps); `locked` has no clock domain |
-| `altera_pll` | `outclk[n]` derived from `refclk`; period ratio = `reference_clock_frequency` / `output_clock_frequencyN` (strings such as `"125.000000 MHz"`); `locked` has no clock domain |
+| `altpll` | `clk[n]` are clocks derived from `inclk[0]`, period = input period × `clkN_divide_by` / `clkN_multiply_by`; the input period comes from the input clock or from `inclk0_input_frequency` (ps); `locked` has no clock domain. Each clock also has Quartus' name `<instance path>|auto_generated|pll1|clk[n]` |
+| `altera_pll` | `outclk[n]` derived from `refclk`; period ratio = `reference_clock_frequency` / `output_clock_frequencyN` (strings such as `"125.000000 MHz"`); `locked` has no clock domain. Each clock also has Quartus' name (`derive_pll_clocks`) `<instance path>|general[n].gpll~PLL_OUTPUT_COUNTER|divclk`, the path below the top with `|`, so SDC such as `get_clocks {*|pll|pll_inst|altera_pll_i|*[*].*|divclk}` matches |
+| `cyclonev_clkselect` | Clock multiplexer (`inclk[3:0]`, `clkselect`): the output carries every input clock |
+| `cyclonev_lcell_comb`, `lcell`, `soft`, `carry`, `carry_sum`, `cascade`, `opndrn`, `alt_inbuf`, `alt_outbuf`, `alt_outbuf_tri`, `alt_iobuf` | Combinational, buffers |
+| `dff`, `dffe`, `dffea` | Flip-flops with active-low asynchronous clear (`clrn`) and preset (`prn`) |
+| `cyclonev_hps_interface_clocks_resets` | The HPS's clocks to the FPGA `h2f_user0..2_clk` are clocks of their own (their frequency is set in Platform Designer: constrain them with `create_clock`); `h2f_rst_n` and the other resets have no clock domain |
+| `cyclonev_hps_interface_hps2fpga`, `cyclonev_hps_interface_hps2fpga_light_weight`, `cyclonev_hps_interface_fpga2hps` | AXI bridges: every port in `clk` |
+| `cyclonev_hps_interface_fpga2sdram` | Command ports in `cmd_port_clk_N`, read data in `rd_clk_N`, write data in `wr_clk_N` |
+| `cyclonev_hps_interface_peripheral_spi_master`, `cyclonev_hps_interface_peripheral_i2c` | `sclk_out` and `out_clk` are clocks of their own; the other outputs have no clock domain |
+| `cyclonev_hps_interface_mpu_general_purpose`, `cyclonev_hps_interface_interrupts`, `cyclonev_hps_interface_peripheral_uart`, `cyclonev_hps_interface_dbg_apb`, `cyclonev_hps_interface_tpiu_trace`, `cyclonev_hps_interface_boot_from_fpga` | Registers and peripherals of the processor: outputs without a clock domain, inputs not checked |
 
 ## Lattice
 

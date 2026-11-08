@@ -891,10 +891,21 @@ SVal Elaborator::callBuiltin(Builtin b, const Symbol& sym, std::vector<SVal>& ar
         case Builtin::RotateRight:
         case Builtin::NumRol:
         case Builtin::NumRor: {
-            const SVal& a = args[0];
-            ir::SigSpec v = bitsOf(a, l);
+            const SVal& a0 = args[0];
+            ir::SigSpec v = bitsOf(a0, l);
             const std::uint32_t w = v.width();
-            const bool sg = vecSigned(a);
+            const bool sg = vecSigned(a0);
+            // numeric_std shift_left/right, rotate_left/right and std_logic_arith SHL/SHR return
+            // (ARG'LENGTH-1 downto 0), whatever the argument's range (a slice of the result such
+            // as SHL("00" & x, n)(9 downto 2) relies on it)
+            SVal a = a0;
+            if (a0.type->isArray() && (b == Builtin::Shl || b == Builtin::Shr || b == Builtin::ShiftLeft ||
+                                       b == Builtin::ShiftRight || b == Builtin::RotateLeft ||
+                                       b == Builtin::RotateRight))
+                a.type = vecOf(a0.type->baseTag() == TypeTag::StdUlogicVector && a0.type != &a0.type->baseType()
+                                   ? std_.stdLogicVector
+                                   : &a0.type->baseType(),
+                               w);
             bool left = b == Builtin::ShiftLeft || b == Builtin::NumSll || b == Builtin::NumSla || b == Builtin::Shl ||
                         b == Builtin::RotateLeft || b == Builtin::NumRol;
             const bool rotate = b == Builtin::RotateLeft || b == Builtin::RotateRight || b == Builtin::NumRol ||

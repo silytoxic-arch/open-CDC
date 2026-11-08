@@ -1,4 +1,4 @@
-# opencdc import end to end, on a copy of the Vivado project example (the
+# opencdc import end to end, on copies of the Vivado and Quartus project examples (the
 # example itself is never written): the project is written next to the .xpr,
 # an existing project is not replaced without --force, the written project
 # analyzes as the .xpr does, and a Vivado project is refused where an OpenCDC
@@ -38,6 +38,21 @@ run(0 "OpenCDC project written" import "${xpr}" --force)
 run(0 "CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized" analyze "${WORK}/demo.ocdc.json" -q)
 run(0 "Vivado project imported.*CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized" analyze "${xpr}" -q)
 # negatives: waivers need an OpenCDC project; the output must not be a .xpr; the input must be one
-run(2 "is a Vivado project: waivers belong to an OpenCDC project" waive "${xpr}" --fingerprint 0 --rule CDC-003 --reason x)
+run(2 "is a Vivado or Quartus project: waivers belong to an OpenCDC project" waive "${xpr}" --fingerprint 0 --rule CDC-003 --reason x)
 run(2 "must be an OpenCDC project" import "${xpr}" -o "${WORK}/other.xpr")
-run(2 "not a Vivado project" import "${WORK}/demo.ocdc.json" -o "${WORK}/x.ocdc.json")
+run(2 "not a Vivado \\(.xpr\\) or Quartus" import "${WORK}/demo.ocdc.json" -o "${WORK}/x.ocdc.json")
+
+# a Quartus project: its first revision, written next to the .qpf
+file(COPY "${QEXAMPLE_DIR}/" DESTINATION "${WORK}/q")
+run(0 "Quartus project imported: 3 source\\(s\\), 1 constraint file\\(s\\), top 'demo_top' \\(revision 'demo', 1 IP file list\\(s\\)\\).*OpenCDC project written: .*demo.ocdc.json"
+    import "${WORK}/q/demo.qpf")
+file(READ "${WORK}/q/demo.ocdc.json" qj)
+string(REGEX REPLACE "[ \r\n]+" " " qj "${qj}")
+if(NOT qj MATCHES "\"ip/pll/demo_pll.v\"" OR NOT qj MATCHES "\"library\": \"demo_lib\"" OR NOT qj MATCHES "\"DEMO_WIDTH\": \"8\""
+   OR NOT qj MATCHES "systemverilog-2017")
+    message(FATAL_ERROR "unexpected project:\n${qj}")
+endif()
+run(3 "CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized" analyze "${WORK}/q/demo.ocdc.json" -q)
+# negative: waivers need an OpenCDC project; a .qsf is not an output
+run(2 "is a Vivado or Quartus project" waive "${WORK}/q/demo.qsf" --fingerprint 0 --rule CDC-003 --reason x)
+run(2 "must be an OpenCDC project" import "${WORK}/q/demo.qpf" -o "${WORK}/q/other.qsf")

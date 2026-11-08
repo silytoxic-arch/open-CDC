@@ -457,8 +457,16 @@ public:
                         o.excludeTops.insert(lower(c.definition));
             vhdl::Elaborator elab(files_, rs, o);
 
+            // the bodies in use (slang can leave bodies the design does not use, e.g. a module
+            // before its defparams were applied: their parameters have no values)
+            std::vector<bool> inUse(design->bodies.size(), false);
+            for (const auto& node : design->instances)
+                if (node.body.valid() && node.body.index() < inUse.size())
+                    inUse[node.body.index()] = true;
             // Verilog -> VHDL
             for (std::size_t b = 0; b < slangBodies; ++b) {
+                if (!inUse[b])
+                    continue;
                 for (std::size_t ci = 0; ci < design->bodies[b].children.size(); ++ci) {
                     const ir::ChildInstance c = design->bodies[b].children[ci];
                     if (c.body.valid() || !vhdlEntities.contains(lower(c.definition)))

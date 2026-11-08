@@ -287,6 +287,9 @@ public:
 
         if (constrs)
             addConstraints(cfg, filesOf(constrs));
+        // SystemVerilog sources (or headers) select IEEE 1800-2017, as for an OpenCDC project
+        if (sv_ || std::ranges::any_of(cfg.sources, [](const auto& f) { return extensionOf(f) == ".sv"; }))
+            cfg.language = frontend::LanguageStd::SystemVerilog2017;
 
         for (const auto& repo : values(projOpts, "IPRepoPath")) {
             const auto p = expand(repo);
@@ -430,6 +433,7 @@ private:
                 return; // the other files of an IP's own file set are its output products
             const bool globalInclude = f.one("IsGlobalInclude") == "1";
             if (headers.contains(ext) || globalInclude) {
+                sv_ = sv_ || ext == ".svh";
                 if (exists(f))
                     addIncludeDir(cfg, f.path.parent_path());
                 seen.insert(f.path);
@@ -493,6 +497,7 @@ private:
     std::filesystem::path xpr_, dir_;
     std::string name_;
     std::string defaultLib_;
+    bool sv_ = false;
     std::map<std::string, std::string> vars_;
     std::vector<Diagnostic> notes_;
     std::vector<std::string> skipped_;

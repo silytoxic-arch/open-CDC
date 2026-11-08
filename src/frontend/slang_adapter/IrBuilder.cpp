@@ -856,7 +856,14 @@ void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
             sast::ASTContext actx(*scope, sast::LookupLocation::after(u));
             const auto& e = sast::Expression::bind(*psyn, actx);
             sast::EvalContext ctx(actx);
-            const auto cv = e.eval(ctx);
+            auto cv = e.eval(ctx);
+            // a parameter of the enclosing module set by a defparam: its value (binding its
+            // name again does not see the override)
+            if (!cv && psyn->kind == slang::syntax::SyntaxKind::IdentifierName) {
+                const auto* sym = scope->find(psyn->as<slang::syntax::IdentifierNameSyntax>().identifier.valueText());
+                if (sym && sym->kind == sast::SymbolKind::Parameter)
+                    cv = sym->as<sast::ParameterSymbol>().getValue();
+            }
             if (cv.isInteger()) {
                 ip.bits = fromSVInt(cv.integer(), static_cast<std::uint32_t>(cv.integer().getBitWidth()));
                 ip.isSigned = cv.integer().isSigned();

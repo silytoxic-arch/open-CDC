@@ -25,8 +25,10 @@ add_executable(opencdc_tests
     engine/test_vivado_clocks.cpp
     engine/test_clock_pairs.cpp
     engine/test_vivado_project.cpp
+    engine/test_quartus_project.cpp
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
+    frontend/test_quartus_compat.cpp
     frontend/test_sv_interfaces.cpp
     frontend/test_encoding.cpp
     frontend/test_xci.cpp
@@ -101,6 +103,9 @@ opencdc_cli_test(suggest_sdc 3
     "Suggested SDC: .*suggested.sdc \\(0 clock\\(s\\), 0 clock group\\(s\\), 0 TODO period\\(s\\); resolves 0 unknown"
     analyze ${PROJECT_SOURCE_DIR}/examples/primitives/primitives.ocdc.json -q
     --suggest-sdc ${CMAKE_CURRENT_BINARY_DIR}/suggested.sdc)
+opencdc_cli_test(analyze_quartus_project 3
+    "Language: systemverilog-2017 \\+ vhdl.*alias=pll\\|altera_pll_i\\|general\\[1\\].gpll~PLL_OUTPUT_COUNTER\\|divclk.*PRJ-QSF-SKIPPED.*table.mif.*Quartus project imported: 3 source\\(s\\).*CON-EXCLUSIVE-AS-ASYNC.*CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized"
+    analyze ${PROJECT_SOURCE_DIR}/examples/quartus_project/demo.qpf)
 opencdc_cli_test(analyze_vivado_project 0
     "Language: verilog-2001 \\+ vhdl.*Hierarchy:.*u_sync \\(demo_lib_sync\\).*PRJ-XPR-DISABLED.*PRJ-XPR-SKIPPED.*init.coe.*Vivado project imported: 2 source\\(s\\), 2 constraint file\\(s\\), top 'demo_top'.*CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized"
     analyze ${PROJECT_SOURCE_DIR}/examples/vivado_project/demo.xpr)
@@ -117,6 +122,7 @@ add_test(NAME cli.import_vivado
     COMMAND ${CMAKE_COMMAND}
         "-DEXE=$<TARGET_FILE:opencdc>"
         "-DEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/vivado_project"
+        "-DQEXAMPLE_DIR=${PROJECT_SOURCE_DIR}/examples/quartus_project"
         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/import_work"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cli/RunImport.cmake")
 add_test(NAME cli.waiver_audit
@@ -199,6 +205,9 @@ if(TARGET opencdc-gui)
     add_test(NAME gui.vhdl_mixed
         COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/mixed/cdc_advanced/cdc_advanced_mixed.ocdc.json)
     set_tests_properties(gui.vhdl_mixed PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME gui.quartus_project
+        COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/quartus_project/demo.qpf)
+    set_tests_properties(gui.quartus_project PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_test(NAME gui.vivado_project
         COMMAND opencdc-gui --smoke-test ${PROJECT_SOURCE_DIR}/examples/vivado_project/demo.xpr)
     set_tests_properties(gui.vivado_project PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

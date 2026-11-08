@@ -1,0 +1,3 @@
+set_global_assignment -entity "demo_pll" -library "demo_pll" -name IP_TOOL_NAME "altera_pll"
+set_global_assignment -entity "demo_pll" -library "demo_pll" -name IP_TOOL_VERSION "18.1"
+set_global_assignment -library "demo_pll" -name VERILOG_FILE [file join $::quartus(qip_path) "demo_pll.v"]

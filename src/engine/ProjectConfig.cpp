@@ -1,6 +1,7 @@
 #include "engine/ProjectConfig.h"
 
 #include "core/PathUtil.h"
+#include "engine/QuartusProject.h"
 #include "engine/VivadoProject.h"
 
 #include <nlohmann/json.hpp>
@@ -271,9 +272,15 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
     return cfg;
 }
 
+bool isVendorProjectFile(const std::filesystem::path& file) {
+    return isVivadoProjectFile(file) || isQuartusProjectFile(file);
+}
+
 Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file) {
     if (isVivadoProjectFile(file))
         return projectFromXprFile(file);
+    if (isQuartusProjectFile(file))
+        return projectFromQuartusFile(file);
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return projectError("PRJ-OPEN", "cannot open project file", file);

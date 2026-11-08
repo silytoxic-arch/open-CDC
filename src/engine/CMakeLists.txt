@@ -14,6 +14,8 @@ add_library(opencdc_engine STATIC
     ClockPairs.h
     VivadoClocks.cpp
     VivadoClocks.h
+    QuartusProject.cpp
+    QuartusProject.h
     VivadoProject.cpp
     VivadoProject.h
     WaiverFile.cpp

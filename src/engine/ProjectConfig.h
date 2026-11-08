@@ -66,10 +66,11 @@ struct AnalysisOptions {
 /// }
 struct ProjectConfig {
     std::filesystem::path projectFile; ///< absolute path of the .ocdc.json, empty if built in memory or imported
-    /// The vendor project this configuration was imported from (a Vivado .xpr), absolute; empty otherwise.
+    /// The vendor project this configuration was imported from (a Vivado .xpr, a Quartus .qpf/.qsf),
+    /// absolute; empty otherwise.
     /// An imported project has no projectFile: it is saved as a new .ocdc.json, never over the vendor project.
     std::filesystem::path importedFrom;
-    /// What the import found (PRJ-XPR-*), reported with the analysis' diagnostics.
+    /// What the import found (PRJ-XPR-*, PRJ-QSF-*), reported with the analysis' diagnostics.
     std::vector<Diagnostic> importNotes;
     std::string name;
     std::string top;
@@ -104,8 +105,12 @@ struct ProjectConfig {
 inline constexpr const char* kProjectFormatName = "opencdc-project";
 inline constexpr int kProjectFormatVersion = 1;
 
+/// A Vivado (.xpr) or Quartus (.qpf, .qsf) project, which loadProjectFile imports.
+[[nodiscard]] bool isVendorProjectFile(const std::filesystem::path& file);
+
 /// Reads and validates a project file. Errors carry codes PRJ-*. A Vivado
-/// project (.xpr) is imported (engine/VivadoProject.h).
+/// project (.xpr) or Quartus project (.qpf, .qsf) is imported
+/// (engine/VivadoProject.h, engine/QuartusProject.h).
 [[nodiscard]] Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file);
 
 /// Parses project JSON text; `baseDir` resolves relative paths.

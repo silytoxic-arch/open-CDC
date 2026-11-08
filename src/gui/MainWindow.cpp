@@ -418,7 +418,7 @@ bool MainWindow::openProject(const QString& path) {
     setProject(std::move(loaded).value());
     statusLabel_->setText(project_->importedFrom.empty()
                               ? tr("Project '%1' loaded").arg(qs(project_->name))
-                              : tr("Vivado project '%1' imported (Save As writes it as an OpenCDC project)")
+                              : tr("Vendor project '%1' imported (Save As writes it as an OpenCDC project)")
                                     .arg(qs(project_->name)));
     return true;
 }
@@ -691,8 +691,8 @@ void MainWindow::runAnalysis() {
 void MainWindow::onOpenProject() {
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open Project"), QString(),
-        tr("OpenCDC and Vivado projects (*.ocdc.json *.json *.xpr);;OpenCDC projects (*.ocdc.json *.json);;"
-           "Vivado projects (*.xpr)"));
+        tr("OpenCDC, Vivado and Quartus projects (*.ocdc.json *.json *.xpr *.qpf *.qsf);;"
+           "OpenCDC projects (*.ocdc.json *.json);;Vivado projects (*.xpr);;Quartus projects (*.qpf *.qsf)"));
     if (!path.isEmpty() && openProject(path))
         runAnalysis();
 }

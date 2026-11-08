@@ -644,7 +644,8 @@ OpenCDC/
 │   │   ├── CMakeLists.txt
 │   │   ├── AnalysisSession.h/.cpp  # 阶段 1: 加载工程 + 调用前端冒烟; 其余阶段返回 "NOT_IMPLEMENTED" 诊断
 │   │   ├── ProjectConfig.h/.cpp    # .ocdc.json 读取
-│   │   └── VivadoProject.h/.cpp    # Vivado 工程（.xpr）导入：当前综合运行的源文件集与约束集
+│   │   ├── VivadoProject.h/.cpp    # Vivado 工程（.xpr）导入：当前综合运行的源文件集与约束集
+│   │   └── QuartusProject.h/.cpp   # Quartus 工程（.qpf/.qsf）导入：以 Tcl 子集求值设置脚本与 .qip
 │   ├── cli/main.cpp                # opencdc --version | opencdc analyze <proj.ocdc.json> [--json out]
 │   └── gui/
 │       ├── CMakeLists.txt

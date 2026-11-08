@@ -880,3 +880,20 @@ TEST_CASE("Filters see one flip-flop per bit, as Vivado names them", "[constrain
     auto n = parse("set x [get_cells -hier -filter {NAME =~ *sc_reg[0]}]\n", r);
     CHECK(n.countCode("CON-UNMATCHED") == 1);
 }
+
+TEST_CASE("Quartus' set_clock_groups -exclusive is read as -asynchronous", "[constraints][quartus]") {
+    FakeResolver r;
+    auto p = parse("set_clock_groups -exclusive -group {a} -group [get_clocks {b}]\n"
+                   "set_clock_groups -exclusive -physically_exclusive -group a -group b\n",
+                   r);
+    REQUIRE(p.set.groups.size() == 2);
+    CHECK(p.set.groups[0].kind == GroupKind::Asynchronous);
+    CHECK(p.set.groups[0].groups == std::vector<std::vector<std::string>>{{"a"}, {"b"}});
+    CHECK(std::ranges::any_of(p.diags, [](const Diagnostic& d) { return d.code == "CON-EXCLUSIVE-AS-ASYNC"; }));
+    // negative: an explicit kind stays as given
+    CHECK(p.set.groups[1].kind == GroupKind::PhysicallyExclusive);
+    // negative: no kind at all is still an error
+    auto none = parse("set_clock_groups -group a -group b\n", r);
+    CHECK(none.set.groups.empty());
+    CHECK(std::ranges::any_of(none.diags, [](const Diagnostic& d) { return d.code == "CON-PARSE"; }));
+}

@@ -1,0 +1,14 @@
+# Settings of the revision 'demo' (Cyclone V)
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY demo_top
+set_global_assignment -name LAST_QUARTUS_VERSION "18.1.0 Standard Edition"
+set_global_assignment -name VERILOG_MACRO "DEMO_WIDTH=8"
+set_global_assignment -name QIP_FILE ip/pll/demo_pll.qip
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/demo_top.sv
+set_global_assignment -name VHDL_FILE rtl/demo_sync.vhd -library demo_lib
+set_global_assignment -name SDC_FILE demo.sdc
+set_global_assignment -name MIF_FILE rtl/table.mif
+set_location_assignment PIN_V11 -to clk_50
+set_location_assignment PIN_W8 -to count_b[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to count_b[*]

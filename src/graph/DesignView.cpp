@@ -22,6 +22,12 @@ const char* toString(DriverKind k) noexcept {
 
 DesignView::DesignView(const Design& design) : design_(design) {
     bodies_.resize(design.bodies.size());
+    // inout ports: driven from inside where the body (or a child, through its own
+    // inout port) drives the bit, from outside otherwise (resolved below)
+    struct InoutBinding {
+        std::size_t body, child, port;
+    };
+    std::vector<InoutBinding> inoutBindings;
     for (std::size_t b = 0; b < design.bodies.size(); ++b) {
         const ModuleBody& body = design.bodies[b];
         auto& idx = bodies_[b].drivers;
@@ -44,16 +50,74 @@ DesignView::DesignView(const Design& design) : design_(design) {
         for (std::size_t i = 0; i < body.cells.size(); ++i)
             addSig(body.netSig(body.cells[i].output), EntryKind::Cell, static_cast<std::uint32_t>(i), 0);
         for (const auto& p : body.ports)
-            if (p.dir == PortDir::In || p.dir == PortDir::InOut)
+            if (p.dir == PortDir::In)
                 addSig(body.netSig(p.net), EntryKind::InPort, 0, 0);
         for (std::size_t c = 0; c < body.children.size(); ++c) {
             const auto& ch = body.children[c];
-            for (std::size_t p = 0; p < ch.ports.size(); ++p)
+            for (std::size_t p = 0; p < ch.ports.size(); ++p) {
                 if (ch.ports[p].dir == PortDir::Out)
                     addSig(ch.ports[p].actual, EntryKind::ChildOut, static_cast<std::uint32_t>(c),
                            static_cast<std::uint32_t>(p));
+                else if (ch.ports[p].dir == PortDir::InOut && ch.body.valid() && ch.ports[p].childNet.valid())
+                    inoutBindings.push_back({b, c, p});
+            }
         }
-        for (auto& v : idx) {
+    }
+    // is bit `bit` of `net` in body `b` driven from inside (no InPort entry for inout ports yet)?
+    const auto drivenInside = [&](std::size_t b, NetId net, std::uint32_t bit) {
+        for (const auto& e : bodies_[b].drivers[net.index()])
+            if (bit >= e.lo && bit < e.hi)
+                return true;
+        return false;
+    };
+    // a child's inout port drives the parent's bits that the child drives inside; up the
+    // hierarchy until nothing changes (one level per round)
+    std::vector<std::vector<bool>> added(inoutBindings.size());
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t k = 0; k < inoutBindings.size(); ++k) {
+            const auto& ib = inoutBindings[k];
+            const auto& ch = design.bodies[ib.body].children[ib.child];
+            const auto& pb = ch.ports[ib.port];
+            auto& done = added[k];
+            done.resize(pb.actual.width(), false);
+            std::uint32_t pos = 0;
+            for (const auto& c : pb.actual.chunks()) {
+                for (std::uint32_t i = 0; i < c.width; ++i, ++pos) {
+                    if (c.isConst() || done[pos] || !drivenInside(ch.body.index(), pb.childNet, pos))
+                        continue;
+                    done[pos] = true;
+                    changed = true;
+                    bodies_[ib.body].drivers[c.net.index()].push_back({c.offset + i, c.offset + i + 1,
+                                                                       EntryKind::ChildOut,
+                                                                       static_cast<std::uint32_t>(ib.child),
+                                                                       static_cast<std::uint32_t>(ib.port), pos, 0});
+                }
+            }
+        }
+    }
+    // the other bits of inout ports come from outside
+    for (std::size_t b = 0; b < design.bodies.size(); ++b) {
+        const ModuleBody& body = design.bodies[b];
+        for (const auto& p : body.ports) {
+            if (p.dir != PortDir::InOut)
+                continue;
+            const auto width = body.net(p.net).width;
+            std::vector<Entry> outside;
+            for (std::uint32_t bit = 0; bit < width; ++bit) {
+                if (drivenInside(b, p.net, bit))
+                    continue;
+                if (!outside.empty() && outside.back().hi == bit)
+                    ++outside.back().hi;
+                else
+                    outside.push_back({bit, bit + 1, EntryKind::InPort, 0, 0, bit, 0});
+            }
+            auto& v = bodies_[b].drivers[p.net.index()];
+            v.insert(v.end(), outside.begin(), outside.end());
+        }
+    }
+    for (auto& body : bodies_)
+        for (auto& v : body.drivers) {
             std::ranges::sort(v, {}, &Entry::lo);
             std::uint32_t running = 0;
             for (auto& e : v) {
@@ -61,7 +125,6 @@ DesignView::DesignView(const Design& design) : design_(design) {
                 e.maxHi = running;
             }
         }
-    }
 
     children_.resize(design.instances.size());
     for (std::size_t i = 0; i < design.instances.size(); ++i) {

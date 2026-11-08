@@ -1,0 +1,5 @@
+DEPTH = 4;
+WIDTH = 8;
+CONTENT BEGIN
+0 : 00;
+END;

@@ -267,15 +267,15 @@ module altpll #(parameter bandwidth_type = "AUTO", parameter compensate_clock = 
     wire ref = inclk[0];
     localparam real INP = inclk0_input_frequency / 1000.0;
     (* OPENCDC_CLOCK_PIN = "clk[0]", OPENCDC_CLOCK_RATIO = (1.0 * clk0_divide_by) / clk0_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c0 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[0]" *) reg c0 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[1]", OPENCDC_CLOCK_RATIO = (1.0 * clk1_divide_by) / clk1_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c1 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[1]" *) reg c1 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[2]", OPENCDC_CLOCK_RATIO = (1.0 * clk2_divide_by) / clk2_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c2 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[2]" *) reg c2 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[3]", OPENCDC_CLOCK_RATIO = (1.0 * clk3_divide_by) / clk3_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c3 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[3]" *) reg c3 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[4]", OPENCDC_CLOCK_RATIO = (1.0 * clk4_divide_by) / clk4_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c4 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[4]" *) reg c4 = 1'b0;
     always @(posedge ref) begin c0 <= ~c0; c1 <= ~c1; c2 <= ~c2; c3 <= ~c3; c4 <= ~c4; end
     wire [4:0] all = {c4, c3, c2, c1, c0};
     assign clk = all[width_clock-1:0];
@@ -298,21 +298,29 @@ module altera_pll #(parameter fractional_vco_multiplier = "false",
                    (input refclk, input rst, input fbclk, output [number_of_clocks-1:0] outclk, output locked,
                     output fboutclk);
     (* OPENCDC_CLOCK_PIN = "outclk[0]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency0 *) reg o0 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency0,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[0].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o0 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[1]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency1 *) reg o1 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency1,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[1].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o1 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[2]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency2 *) reg o2 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency2,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[2].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o2 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[3]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency3 *) reg o3 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency3,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[3].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o3 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[4]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency4 *) reg o4 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency4,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[4].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o4 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[5]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency5 *) reg o5 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency5,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[5].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o5 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[6]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency6 *) reg o6 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency6,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[6].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o6 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[7]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
-       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency7 *) reg o7 = 1'b0;
+       OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency7,
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[7].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o7 = 1'b0;
     always @(posedge refclk) begin
         o0 <= ~o0; o1 <= ~o1; o2 <= ~o2; o3 <= ~o3; o4 <= ~o4; o5 <= ~o5; o6 <= ~o6; o7 <= ~o7;
     end
@@ -320,4 +328,707 @@ module altera_pll #(parameter fractional_vco_multiplier = "false",
     assign outclk = all[number_of_clocks-1:0];
     opencdc_async_source u_locked (locked);
     assign fboutclk = refclk;
+endmodule
+
+// ---- Cyclone V atoms ----
+
+// clock multiplexer: the output carries every input clock
+module cyclonev_clkselect #(parameter lpm_type = "cyclonev_clkselect", parameter test_cff = "low")
+                          (input [3:0] inclk, input [1:0] clkselect, output outclk);
+    assign outclk = clkselect[1] ? (clkselect[0] ? inclk[3] : inclk[2]) : (clkselect[0] ? inclk[1] : inclk[0]);
+endmodule
+
+// LUT: combinational
+module cyclonev_lcell_comb #(parameter lut_mask = 64'h0, parameter shared_arith = "off",
+                             parameter extended_lut = "off", parameter dont_touch = "off",
+                             parameter lpm_type = "cyclonev_lcell_comb")
+                           (input dataa, input datab, input datac, input datad, input datae, input dataf,
+                            input datag, input cin, input sharein, output combout, output sumout, output cout,
+                            output shareout);
+    wire x = ^{dataa, datab, datac, datad, datae, dataf, datag};
+    assign combout = x;
+    assign sumout = x ^ cin ^ sharein;
+    assign cout = x & cin;
+    assign shareout = x;
+endmodule
+
+// ---- Cyclone V hard processor system (HPS) atoms: the FPGA side of the HPS ----
+// Signals of HPS peripherals (registers written by the processor, interrupts,
+// UART, SPI, I2C, debug, boot) have no fabric clock domain.
+
+// the HPS's clocks to the FPGA (h2f_user0..2_clk: their frequencies are set in
+// Platform Designer, constrain them with create_clock) and its reset
+module cyclonev_hps_interface_clocks_resets (output h2f_user0_clk, output h2f_user1_clk, output h2f_user2_clk,
+                                             output h2f_rst_n, output h2f_cold_rst_n, output h2f_pending_rst_req_n,
+                                             input f2h_cold_rst_req_n, input f2h_warm_rst_req_n,
+                                             input f2h_dbg_rst_req_n, input f2h_pending_rst_ack,
+                                             input f2h_periph_ref_clk, input f2h_sdram_ref_clk);
+    (* OPENCDC_CLOCK_PIN = "h2f_user0_clk" *) wire user0_src;
+    opencdc_async_source u_user0 (user0_src);
+    (* OPENCDC_CLOCK_PIN = "h2f_user1_clk" *) wire user1_src;
+    opencdc_async_source u_user1 (user1_src);
+    (* OPENCDC_CLOCK_PIN = "h2f_user2_clk" *) wire user2_src;
+    opencdc_async_source u_user2 (user2_src);
+    assign h2f_user0_clk = user0_src;
+    assign h2f_user1_clk = user1_src;
+    assign h2f_user2_clk = user2_src;
+    opencdc_async_source u_rst (h2f_rst_n);
+    opencdc_async_source u_cold (h2f_cold_rst_n);
+    opencdc_async_source u_pending (h2f_pending_rst_req_n);
+endmodule
+
+// general-purpose registers between the processor and the FPGA
+module cyclonev_hps_interface_mpu_general_purpose (input [31:0] gp_in, output [31:0] gp_out);
+    wire s;
+    opencdc_async_source u_gp (s);
+    assign gp_out = {32{s}};
+endmodule
+
+// FPGA-to-HPS interrupts: read by the processor
+module cyclonev_hps_interface_interrupts (input [63:0] irq, output h2f_gic_cnt);
+    opencdc_async_source u_cnt (h2f_gic_cnt);
+endmodule
+
+module cyclonev_hps_interface_peripheral_uart (input ri, input dsr, input dcd, input cts, input rxd,
+                                               output dtr, output rts, output txd, output out1_n, output out2_n);
+    opencdc_async_source u_dtr (dtr);
+    opencdc_async_source u_rts (rts);
+    opencdc_async_source u_txd (txd);
+    opencdc_async_source u_out1 (out1_n);
+    opencdc_async_source u_out2 (out2_n);
+endmodule
+
+// SPI master: sclk_out is a clock (the HPS's SPI clock)
+module cyclonev_hps_interface_peripheral_spi_master (input rxd, input ss_in_n, output sclk_out, output txd,
+                                                     output ss_0_n, output ss_1_n, output ss_2_n, output ss_3_n,
+                                                     output ssi_oe_n);
+    (* OPENCDC_CLOCK_PIN = "sclk_out" *) wire sclk_src;
+    opencdc_async_source u_sclk (sclk_src);
+    assign sclk_out = sclk_src;
+    opencdc_async_source u_txd (txd);
+    opencdc_async_source u_ss0 (ss_0_n);
+    opencdc_async_source u_ss1 (ss_1_n);
+    opencdc_async_source u_ss2 (ss_2_n);
+    opencdc_async_source u_ss3 (ss_3_n);
+    opencdc_async_source u_oe (ssi_oe_n);
+endmodule
+
+// I2C: out_clk drives SCL (a clock), out_data drives SDA
+module cyclonev_hps_interface_peripheral_i2c (input scl, input sda, output out_clk, output out_data);
+    (* OPENCDC_CLOCK_PIN = "out_clk" *) wire scl_src;
+    opencdc_async_source u_scl (scl_src);
+    assign out_clk = scl_src;
+    opencdc_async_source u_sda (out_data);
+endmodule
+
+module cyclonev_hps_interface_dbg_apb (input DBG_APB_DISABLE, input P_CLK_EN, input P_CLK, input P_RESET_N,
+                                       input [31:0] P_RDATA, input P_READY, input P_SLV_ERR, output [17:0] P_ADDR,
+                                       output P_ADDR_31, output P_SEL, output P_ENABLE, output P_WRITE,
+                                       output [31:0] P_WDATA);
+    wire s;
+    opencdc_async_source u_s (s);
+    assign P_ADDR = {18{s}};
+    assign P_ADDR_31 = s;
+    assign P_SEL = s;
+    assign P_ENABLE = s;
+    assign P_WRITE = s;
+    assign P_WDATA = {32{s}};
+endmodule
+
+module cyclonev_hps_interface_tpiu_trace (input traceclk_ctl, input traceclkin, output [31:0] trace_data);
+    wire s;
+    opencdc_async_source u_s (s);
+    assign trace_data = {32{s}};
+endmodule
+
+module cyclonev_hps_interface_boot_from_fpga (input boot_from_fpga_ready, input boot_from_fpga_on_failure,
+                                              input bsel_en, input csel_en, input [1:0] csel, input [2:0] bsel);
+endmodule
+
+// HPS-to-FPGA bridge (the HPS is the AXI master): every port in clk
+module cyclonev_hps_interface_hps2fpga (
+    input clk,
+    output [11:0] awid,
+    output [29:0] awaddr,
+    output [3:0] awlen,
+    output [2:0] awsize,
+    output [1:0] awburst,
+    output [1:0] awlock,
+    output [3:0] awcache,
+    output [2:0] awprot,
+    output awvalid,
+    input awready,
+    output [11:0] arid,
+    output [29:0] araddr,
+    output [3:0] arlen,
+    output [2:0] arsize,
+    output [1:0] arburst,
+    output [1:0] arlock,
+    output [3:0] arcache,
+    output [2:0] arprot,
+    output arvalid,
+    input arready,
+    output [11:0] wid,
+    output [127:0] wdata,
+    output [15:0] wstrb,
+    output wlast,
+    output wvalid,
+    input wready,
+    input [11:0] bid,
+    input [1:0] bresp,
+    input bvalid,
+    output bready,
+    input [11:0] rid,
+    input [127:0] rdata,
+    input [1:0] rresp,
+    input rlast,
+    input rvalid,
+    output rready,
+    input [1:0] port_size_config);
+    reg d0;
+    always @(posedge clk) d0 <= ^{awready, arready, wready, bid, bresp, bvalid, rid, rdata, rresp, rlast, rvalid};
+    reg [11:0] awid_q;
+    always @(posedge clk) awid_q <= {12{d0}};
+    assign awid = awid_q;
+    reg [29:0] awaddr_q;
+    always @(posedge clk) awaddr_q <= {30{d0}};
+    assign awaddr = awaddr_q;
+    reg [3:0] awlen_q;
+    always @(posedge clk) awlen_q <= {4{d0}};
+    assign awlen = awlen_q;
+    reg [2:0] awsize_q;
+    always @(posedge clk) awsize_q <= {3{d0}};
+    assign awsize = awsize_q;
+    reg [1:0] awburst_q;
+    always @(posedge clk) awburst_q <= {2{d0}};
+    assign awburst = awburst_q;
+    reg [1:0] awlock_q;
+    always @(posedge clk) awlock_q <= {2{d0}};
+    assign awlock = awlock_q;
+    reg [3:0] awcache_q;
+    always @(posedge clk) awcache_q <= {4{d0}};
+    assign awcache = awcache_q;
+    reg [2:0] awprot_q;
+    always @(posedge clk) awprot_q <= {3{d0}};
+    assign awprot = awprot_q;
+    reg [0:0] awvalid_q;
+    always @(posedge clk) awvalid_q <= {1{d0}};
+    assign awvalid = awvalid_q;
+    reg [11:0] arid_q;
+    always @(posedge clk) arid_q <= {12{d0}};
+    assign arid = arid_q;
+    reg [29:0] araddr_q;
+    always @(posedge clk) araddr_q <= {30{d0}};
+    assign araddr = araddr_q;
+    reg [3:0] arlen_q;
+    always @(posedge clk) arlen_q <= {4{d0}};
+    assign arlen = arlen_q;
+    reg [2:0] arsize_q;
+    always @(posedge clk) arsize_q <= {3{d0}};
+    assign arsize = arsize_q;
+    reg [1:0] arburst_q;
+    always @(posedge clk) arburst_q <= {2{d0}};
+    assign arburst = arburst_q;
+    reg [1:0] arlock_q;
+    always @(posedge clk) arlock_q <= {2{d0}};
+    assign arlock = arlock_q;
+    reg [3:0] arcache_q;
+    always @(posedge clk) arcache_q <= {4{d0}};
+    assign arcache = arcache_q;
+    reg [2:0] arprot_q;
+    always @(posedge clk) arprot_q <= {3{d0}};
+    assign arprot = arprot_q;
+    reg [0:0] arvalid_q;
+    always @(posedge clk) arvalid_q <= {1{d0}};
+    assign arvalid = arvalid_q;
+    reg [11:0] wid_q;
+    always @(posedge clk) wid_q <= {12{d0}};
+    assign wid = wid_q;
+    reg [127:0] wdata_q;
+    always @(posedge clk) wdata_q <= {128{d0}};
+    assign wdata = wdata_q;
+    reg [15:0] wstrb_q;
+    always @(posedge clk) wstrb_q <= {16{d0}};
+    assign wstrb = wstrb_q;
+    reg [0:0] wlast_q;
+    always @(posedge clk) wlast_q <= {1{d0}};
+    assign wlast = wlast_q;
+    reg [0:0] wvalid_q;
+    always @(posedge clk) wvalid_q <= {1{d0}};
+    assign wvalid = wvalid_q;
+    reg [0:0] bready_q;
+    always @(posedge clk) bready_q <= {1{d0}};
+    assign bready = bready_q;
+    reg [0:0] rready_q;
+    always @(posedge clk) rready_q <= {1{d0}};
+    assign rready = rready_q;
+endmodule
+
+// lightweight HPS-to-FPGA bridge: every port in clk
+module cyclonev_hps_interface_hps2fpga_light_weight (
+    input clk,
+    output [11:0] awid,
+    output [20:0] awaddr,
+    output [3:0] awlen,
+    output [2:0] awsize,
+    output [1:0] awburst,
+    output [1:0] awlock,
+    output [3:0] awcache,
+    output [2:0] awprot,
+    output awvalid,
+    input awready,
+    output [11:0] arid,
+    output [20:0] araddr,
+    output [3:0] arlen,
+    output [2:0] arsize,
+    output [1:0] arburst,
+    output [1:0] arlock,
+    output [3:0] arcache,
+    output [2:0] arprot,
+    output arvalid,
+    input arready,
+    output [11:0] wid,
+    output [31:0] wdata,
+    output [3:0] wstrb,
+    output wlast,
+    output wvalid,
+    input wready,
+    input [11:0] bid,
+    input [1:0] bresp,
+    input bvalid,
+    output bready,
+    input [11:0] rid,
+    input [31:0] rdata,
+    input [1:0] rresp,
+    input rlast,
+    input rvalid,
+    output rready);
+    reg d0;
+    always @(posedge clk) d0 <= ^{awready, arready, wready, bid, bresp, bvalid, rid, rdata, rresp, rlast, rvalid};
+    reg [11:0] awid_q;
+    always @(posedge clk) awid_q <= {12{d0}};
+    assign awid = awid_q;
+    reg [20:0] awaddr_q;
+    always @(posedge clk) awaddr_q <= {21{d0}};
+    assign awaddr = awaddr_q;
+    reg [3:0] awlen_q;
+    always @(posedge clk) awlen_q <= {4{d0}};
+    assign awlen = awlen_q;
+    reg [2:0] awsize_q;
+    always @(posedge clk) awsize_q <= {3{d0}};
+    assign awsize = awsize_q;
+    reg [1:0] awburst_q;
+    always @(posedge clk) awburst_q <= {2{d0}};
+    assign awburst = awburst_q;
+    reg [1:0] awlock_q;
+    always @(posedge clk) awlock_q <= {2{d0}};
+    assign awlock = awlock_q;
+    reg [3:0] awcache_q;
+    always @(posedge clk) awcache_q <= {4{d0}};
+    assign awcache = awcache_q;
+    reg [2:0] awprot_q;
+    always @(posedge clk) awprot_q <= {3{d0}};
+    assign awprot = awprot_q;
+    reg [0:0] awvalid_q;
+    always @(posedge clk) awvalid_q <= {1{d0}};
+    assign awvalid = awvalid_q;
+    reg [11:0] arid_q;
+    always @(posedge clk) arid_q <= {12{d0}};
+    assign arid = arid_q;
+    reg [20:0] araddr_q;
+    always @(posedge clk) araddr_q <= {21{d0}};
+    assign araddr = araddr_q;
+    reg [3:0] arlen_q;
+    always @(posedge clk) arlen_q <= {4{d0}};
+    assign arlen = arlen_q;
+    reg [2:0] arsize_q;
+    always @(posedge clk) arsize_q <= {3{d0}};
+    assign arsize = arsize_q;
+    reg [1:0] arburst_q;
+    always @(posedge clk) arburst_q <= {2{d0}};
+    assign arburst = arburst_q;
+    reg [1:0] arlock_q;
+    always @(posedge clk) arlock_q <= {2{d0}};
+    assign arlock = arlock_q;
+    reg [3:0] arcache_q;
+    always @(posedge clk) arcache_q <= {4{d0}};
+    assign arcache = arcache_q;
+    reg [2:0] arprot_q;
+    always @(posedge clk) arprot_q <= {3{d0}};
+    assign arprot = arprot_q;
+    reg [0:0] arvalid_q;
+    always @(posedge clk) arvalid_q <= {1{d0}};
+    assign arvalid = arvalid_q;
+    reg [11:0] wid_q;
+    always @(posedge clk) wid_q <= {12{d0}};
+    assign wid = wid_q;
+    reg [31:0] wdata_q;
+    always @(posedge clk) wdata_q <= {32{d0}};
+    assign wdata = wdata_q;
+    reg [3:0] wstrb_q;
+    always @(posedge clk) wstrb_q <= {4{d0}};
+    assign wstrb = wstrb_q;
+    reg [0:0] wlast_q;
+    always @(posedge clk) wlast_q <= {1{d0}};
+    assign wlast = wlast_q;
+    reg [0:0] wvalid_q;
+    always @(posedge clk) wvalid_q <= {1{d0}};
+    assign wvalid = wvalid_q;
+    reg [0:0] bready_q;
+    always @(posedge clk) bready_q <= {1{d0}};
+    assign bready = bready_q;
+    reg [0:0] rready_q;
+    always @(posedge clk) rready_q <= {1{d0}};
+    assign rready = rready_q;
+endmodule
+
+// FPGA-to-HPS bridge (the FPGA is the AXI master): every port in clk
+module cyclonev_hps_interface_fpga2hps (
+    input clk,
+    input [7:0] awid,
+    input [31:0] awaddr,
+    input [3:0] awlen,
+    input [2:0] awsize,
+    input [1:0] awburst,
+    input [1:0] awlock,
+    input [3:0] awcache,
+    input [2:0] awprot,
+    input awvalid,
+    output awready,
+    input [4:0] awuser,
+    input [7:0] arid,
+    input [31:0] araddr,
+    input [3:0] arlen,
+    input [2:0] arsize,
+    input [1:0] arburst,
+    input [1:0] arlock,
+    input [3:0] arcache,
+    input [2:0] arprot,
+    input arvalid,
+    output arready,
+    input [4:0] aruser,
+    input [7:0] wid,
+    input [127:0] wdata,
+    input [15:0] wstrb,
+    input wlast,
+    input wvalid,
+    output wready,
+    output [7:0] bid,
+    output [1:0] bresp,
+    output bvalid,
+    input bready,
+    output [7:0] rid,
+    output [127:0] rdata,
+    output [1:0] rresp,
+    output rlast,
+    output rvalid,
+    input rready,
+    input [1:0] port_size_config);
+    reg d0;
+    always @(posedge clk) d0 <= ^{awid, awaddr, awlen, awsize, awburst, awlock, awcache, awprot, awvalid, awuser, arid, araddr, arlen, arsize, arburst, arlock, arcache, arprot, arvalid, aruser, wid, wdata, wstrb, wlast, wvalid, bready, rready};
+    reg [0:0] awready_q;
+    always @(posedge clk) awready_q <= {1{d0}};
+    assign awready = awready_q;
+    reg [0:0] arready_q;
+    always @(posedge clk) arready_q <= {1{d0}};
+    assign arready = arready_q;
+    reg [0:0] wready_q;
+    always @(posedge clk) wready_q <= {1{d0}};
+    assign wready = wready_q;
+    reg [7:0] bid_q;
+    always @(posedge clk) bid_q <= {8{d0}};
+    assign bid = bid_q;
+    reg [1:0] bresp_q;
+    always @(posedge clk) bresp_q <= {2{d0}};
+    assign bresp = bresp_q;
+    reg [0:0] bvalid_q;
+    always @(posedge clk) bvalid_q <= {1{d0}};
+    assign bvalid = bvalid_q;
+    reg [7:0] rid_q;
+    always @(posedge clk) rid_q <= {8{d0}};
+    assign rid = rid_q;
+    reg [127:0] rdata_q;
+    always @(posedge clk) rdata_q <= {128{d0}};
+    assign rdata = rdata_q;
+    reg [1:0] rresp_q;
+    always @(posedge clk) rresp_q <= {2{d0}};
+    assign rresp = rresp_q;
+    reg [0:0] rlast_q;
+    always @(posedge clk) rlast_q <= {1{d0}};
+    assign rlast = rlast_q;
+    reg [0:0] rvalid_q;
+    always @(posedge clk) rvalid_q <= {1{d0}};
+    assign rvalid = rvalid_q;
+endmodule
+
+// FPGA-to-SDRAM ports: command ports in cmd_port_clk_N, read data in rd_clk_N, write data in wr_clk_N
+module cyclonev_hps_interface_fpga2sdram (
+    input cmd_port_clk_0,
+    input cmd_port_clk_1,
+    input cmd_port_clk_2,
+    input cmd_port_clk_3,
+    input cmd_port_clk_4,
+    input cmd_port_clk_5,
+    input rd_clk_0,
+    input wr_clk_0,
+    input rd_clk_1,
+    input wr_clk_1,
+    input rd_clk_2,
+    input wr_clk_2,
+    input rd_clk_3,
+    input wr_clk_3,
+    input [59:0] cmd_data_0,
+    input cmd_valid_0,
+    output cmd_ready_0,
+    input wrack_ready_0,
+    output wrack_valid_0,
+    output [7:0] wrack_data_0,
+    input [59:0] cmd_data_1,
+    input cmd_valid_1,
+    output cmd_ready_1,
+    input wrack_ready_1,
+    output wrack_valid_1,
+    output [7:0] wrack_data_1,
+    input [59:0] cmd_data_2,
+    input cmd_valid_2,
+    output cmd_ready_2,
+    input wrack_ready_2,
+    output wrack_valid_2,
+    output [7:0] wrack_data_2,
+    input [59:0] cmd_data_3,
+    input cmd_valid_3,
+    output cmd_ready_3,
+    input wrack_ready_3,
+    output wrack_valid_3,
+    output [7:0] wrack_data_3,
+    input [59:0] cmd_data_4,
+    input cmd_valid_4,
+    output cmd_ready_4,
+    input wrack_ready_4,
+    output wrack_valid_4,
+    output [7:0] wrack_data_4,
+    input [59:0] cmd_data_5,
+    input cmd_valid_5,
+    output cmd_ready_5,
+    input wrack_ready_5,
+    output wrack_valid_5,
+    output [7:0] wrack_data_5,
+    input rd_ready_0,
+    output [63:0] rd_data_0,
+    output rd_valid_0,
+    input [89:0] wr_data_0,
+    input wr_valid_0,
+    output wr_ready_0,
+    input rd_ready_1,
+    output [63:0] rd_data_1,
+    output rd_valid_1,
+    input [89:0] wr_data_1,
+    input wr_valid_1,
+    output wr_ready_1,
+    input rd_ready_2,
+    output [63:0] rd_data_2,
+    output rd_valid_2,
+    input [89:0] wr_data_2,
+    input wr_valid_2,
+    output wr_ready_2,
+    input rd_ready_3,
+    output [63:0] rd_data_3,
+    output rd_valid_3,
+    input [89:0] wr_data_3,
+    input wr_valid_3,
+    output wr_ready_3,
+    input [15:0] cfg_rfifo_cport_map,
+    input [15:0] cfg_wfifo_cport_map,
+    input [11:0] cfg_port_width,
+    input [5:0] cfg_axi_mm_select,
+    input [17:0] cfg_cport_rfifo_map,
+    input [11:0] cfg_cport_type,
+    input [17:0] cfg_cport_wfifo_map);
+    reg d0;
+    always @(posedge cmd_port_clk_0) d0 <= ^{cmd_data_0, cmd_valid_0, wrack_ready_0};
+    reg [0:0] cmd_ready_0_q;
+    always @(posedge cmd_port_clk_0) cmd_ready_0_q <= {1{d0}};
+    assign cmd_ready_0 = cmd_ready_0_q;
+    reg [0:0] wrack_valid_0_q;
+    always @(posedge cmd_port_clk_0) wrack_valid_0_q <= {1{d0}};
+    assign wrack_valid_0 = wrack_valid_0_q;
+    reg [7:0] wrack_data_0_q;
+    always @(posedge cmd_port_clk_0) wrack_data_0_q <= {8{d0}};
+    assign wrack_data_0 = wrack_data_0_q;
+    reg d1;
+    always @(posedge cmd_port_clk_1) d1 <= ^{cmd_data_1, cmd_valid_1, wrack_ready_1};
+    reg [0:0] cmd_ready_1_q;
+    always @(posedge cmd_port_clk_1) cmd_ready_1_q <= {1{d1}};
+    assign cmd_ready_1 = cmd_ready_1_q;
+    reg [0:0] wrack_valid_1_q;
+    always @(posedge cmd_port_clk_1) wrack_valid_1_q <= {1{d1}};
+    assign wrack_valid_1 = wrack_valid_1_q;
+    reg [7:0] wrack_data_1_q;
+    always @(posedge cmd_port_clk_1) wrack_data_1_q <= {8{d1}};
+    assign wrack_data_1 = wrack_data_1_q;
+    reg d2;
+    always @(posedge cmd_port_clk_2) d2 <= ^{cmd_data_2, cmd_valid_2, wrack_ready_2};
+    reg [0:0] cmd_ready_2_q;
+    always @(posedge cmd_port_clk_2) cmd_ready_2_q <= {1{d2}};
+    assign cmd_ready_2 = cmd_ready_2_q;
+    reg [0:0] wrack_valid_2_q;
+    always @(posedge cmd_port_clk_2) wrack_valid_2_q <= {1{d2}};
+    assign wrack_valid_2 = wrack_valid_2_q;
+    reg [7:0] wrack_data_2_q;
+    always @(posedge cmd_port_clk_2) wrack_data_2_q <= {8{d2}};
+    assign wrack_data_2 = wrack_data_2_q;
+    reg d3;
+    always @(posedge cmd_port_clk_3) d3 <= ^{cmd_data_3, cmd_valid_3, wrack_ready_3};
+    reg [0:0] cmd_ready_3_q;
+    always @(posedge cmd_port_clk_3) cmd_ready_3_q <= {1{d3}};
+    assign cmd_ready_3 = cmd_ready_3_q;
+    reg [0:0] wrack_valid_3_q;
+    always @(posedge cmd_port_clk_3) wrack_valid_3_q <= {1{d3}};
+    assign wrack_valid_3 = wrack_valid_3_q;
+    reg [7:0] wrack_data_3_q;
+    always @(posedge cmd_port_clk_3) wrack_data_3_q <= {8{d3}};
+    assign wrack_data_3 = wrack_data_3_q;
+    reg d4;
+    always @(posedge cmd_port_clk_4) d4 <= ^{cmd_data_4, cmd_valid_4, wrack_ready_4};
+    reg [0:0] cmd_ready_4_q;
+    always @(posedge cmd_port_clk_4) cmd_ready_4_q <= {1{d4}};
+    assign cmd_ready_4 = cmd_ready_4_q;
+    reg [0:0] wrack_valid_4_q;
+    always @(posedge cmd_port_clk_4) wrack_valid_4_q <= {1{d4}};
+    assign wrack_valid_4 = wrack_valid_4_q;
+    reg [7:0] wrack_data_4_q;
+    always @(posedge cmd_port_clk_4) wrack_data_4_q <= {8{d4}};
+    assign wrack_data_4 = wrack_data_4_q;
+    reg d5;
+    always @(posedge cmd_port_clk_5) d5 <= ^{cmd_data_5, cmd_valid_5, wrack_ready_5};
+    reg [0:0] cmd_ready_5_q;
+    always @(posedge cmd_port_clk_5) cmd_ready_5_q <= {1{d5}};
+    assign cmd_ready_5 = cmd_ready_5_q;
+    reg [0:0] wrack_valid_5_q;
+    always @(posedge cmd_port_clk_5) wrack_valid_5_q <= {1{d5}};
+    assign wrack_valid_5 = wrack_valid_5_q;
+    reg [7:0] wrack_data_5_q;
+    always @(posedge cmd_port_clk_5) wrack_data_5_q <= {8{d5}};
+    assign wrack_data_5 = wrack_data_5_q;
+    reg d6;
+    always @(posedge rd_clk_0) d6 <= ^{rd_ready_0};
+    reg [63:0] rd_data_0_q;
+    always @(posedge rd_clk_0) rd_data_0_q <= {64{d6}};
+    assign rd_data_0 = rd_data_0_q;
+    reg [0:0] rd_valid_0_q;
+    always @(posedge rd_clk_0) rd_valid_0_q <= {1{d6}};
+    assign rd_valid_0 = rd_valid_0_q;
+    reg d7;
+    always @(posedge wr_clk_0) d7 <= ^{wr_data_0, wr_valid_0};
+    reg [0:0] wr_ready_0_q;
+    always @(posedge wr_clk_0) wr_ready_0_q <= {1{d7}};
+    assign wr_ready_0 = wr_ready_0_q;
+    reg d8;
+    always @(posedge rd_clk_1) d8 <= ^{rd_ready_1};
+    reg [63:0] rd_data_1_q;
+    always @(posedge rd_clk_1) rd_data_1_q <= {64{d8}};
+    assign rd_data_1 = rd_data_1_q;
+    reg [0:0] rd_valid_1_q;
+    always @(posedge rd_clk_1) rd_valid_1_q <= {1{d8}};
+    assign rd_valid_1 = rd_valid_1_q;
+    reg d9;
+    always @(posedge wr_clk_1) d9 <= ^{wr_data_1, wr_valid_1};
+    reg [0:0] wr_ready_1_q;
+    always @(posedge wr_clk_1) wr_ready_1_q <= {1{d9}};
+    assign wr_ready_1 = wr_ready_1_q;
+    reg d10;
+    always @(posedge rd_clk_2) d10 <= ^{rd_ready_2};
+    reg [63:0] rd_data_2_q;
+    always @(posedge rd_clk_2) rd_data_2_q <= {64{d10}};
+    assign rd_data_2 = rd_data_2_q;
+    reg [0:0] rd_valid_2_q;
+    always @(posedge rd_clk_2) rd_valid_2_q <= {1{d10}};
+    assign rd_valid_2 = rd_valid_2_q;
+    reg d11;
+    always @(posedge wr_clk_2) d11 <= ^{wr_data_2, wr_valid_2};
+    reg [0:0] wr_ready_2_q;
+    always @(posedge wr_clk_2) wr_ready_2_q <= {1{d11}};
+    assign wr_ready_2 = wr_ready_2_q;
+    reg d12;
+    always @(posedge rd_clk_3) d12 <= ^{rd_ready_3};
+    reg [63:0] rd_data_3_q;
+    always @(posedge rd_clk_3) rd_data_3_q <= {64{d12}};
+    assign rd_data_3 = rd_data_3_q;
+    reg [0:0] rd_valid_3_q;
+    always @(posedge rd_clk_3) rd_valid_3_q <= {1{d12}};
+    assign rd_valid_3 = rd_valid_3_q;
+    reg d13;
+    always @(posedge wr_clk_3) d13 <= ^{wr_data_3, wr_valid_3};
+    reg [0:0] wr_ready_3_q;
+    always @(posedge wr_clk_3) wr_ready_3_q <= {1{d13}};
+    assign wr_ready_3 = wr_ready_3_q;
+endmodule
+
+// ---- Quartus primitives (buffers and simple storage, as in Quartus' primitive library) ----
+
+module lcell (input in, output out);
+    assign out = in;
+endmodule
+
+
+module soft (input in, output out);
+    assign out = in;
+endmodule
+
+
+module carry (input in, output out);
+    assign out = in;
+endmodule
+
+module carry_sum (input sin, input cin, output sout, output cout);
+    assign sout = sin;
+    assign cout = cin;
+endmodule
+
+module cascade (input in, output out);
+    assign out = in;
+endmodule
+
+module opndrn (input in, output out);
+    assign out = in ? 1'bz : 1'b0;
+endmodule
+
+
+module alt_inbuf (input i, output o);
+    assign o = i;
+endmodule
+
+module alt_outbuf (input i, output o);
+    assign o = i;
+endmodule
+
+module alt_outbuf_tri (input i, input oe, output o);
+    assign o = oe ? i : 1'bz;
+endmodule
+
+module alt_iobuf (input i, input oe, output o, inout io);
+    assign io = oe ? i : 1'bz;
+    assign o = io;
+endmodule
+
+// flip-flops with active-low asynchronous clear and preset
+module dff (input d, input clk, input clrn, input prn, output reg q);
+    always @(posedge clk or negedge clrn or negedge prn)
+        if (!clrn) q <= 1'b0;
+        else if (!prn) q <= 1'b1;
+        else q <= d;
+endmodule
+
+module dffe (input d, input clk, input clrn, input prn, input ena, output reg q);
+    always @(posedge clk or negedge clrn or negedge prn)
+        if (!clrn) q <= 1'b0;
+        else if (!prn) q <= 1'b1;
+        else if (ena) q <= d;
+endmodule
+
+module dffea (input d, input clk, input clrn, input prn, input ena, input adata, input aload, output reg q);
+    always @(posedge clk or negedge clrn or negedge prn)
+        if (!clrn) q <= 1'b0;
+        else if (!prn) q <= 1'b1;
+        else if (ena) q <= d;
 endmodule

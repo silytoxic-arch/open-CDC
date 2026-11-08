@@ -17,8 +17,10 @@
 #include <slang/diagnostics/Diagnostics.h>
 #include <slang/diagnostics/ExpressionsDiags.h>
 #include <slang/diagnostics/LexerDiags.h>
+#include <slang/diagnostics/LookupDiags.h>
 #include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Preprocessor.h>
+#include <slang/syntax/AllSyntax.h>
 #include <slang/syntax/SyntaxTree.h>
 #include <slang/text/SourceManager.h>
 #include <slang/util/String.h>
@@ -30,6 +32,8 @@
 #include <algorithm>
 #include <cctype>
 #include <exception>
+#include <functional>
+#include <memory>
 #include <set>
 #include <system_error>
 #include <utility>
@@ -106,6 +110,12 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
         // Vivado's simulation netlists write cell paths with '\' into attribute strings
         // ("\AXI_LITE_REG_INTERFACE_I/..."): not a problem of the design
         if (diag.code == slang::diag::UnknownEscapeCode && out.location.file.ends_with("_sim_netlist.v"))
+            continue;
+        // a Verilog file (.v) compiled as SystemVerilog: its procedural declarations with
+        // initializers are static, as Verilog-2001 defines them (Quartus and Vivado read them so)
+        if (diag.code == slang::diag::StaticInitializerMustBeExplicit &&
+            (out.location.file.ends_with(".v") || out.location.file.ends_with(".vh") ||
+             out.location.file.ends_with(".V")))
             continue;
         if (lenientModules && diag.code == slang::diag::PortDoesNotExist) {
             // port 'X' does not exist in 'FDRE'
@@ -195,7 +205,8 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
 /// decoded text instead of warning about every comment.
 void preloadNonUtf8(const std::vector<std::string>& paths, const std::vector<std::filesystem::path>& includeDirs,
                     slang::SourceManager& sm, DiagnosticSink& sink,
-                    std::map<std::string, std::string>* includedBy = nullptr) {
+                    std::map<std::string, std::string>* includedBy = nullptr,
+                    const std::map<std::string, std::string>* overrides = nullptr) {
     static const std::regex includeRe(R"re(`include\s*"([^"]+)")re");
     std::set<std::string> visited;
     std::vector<std::filesystem::path> work;
@@ -212,8 +223,18 @@ void preloadNonUtf8(const std::vector<std::string>& paths, const std::vector<std
         auto text = readSourceText(file);
         if (!text)
             continue;
-        if (text->transcoded()) {
+        if (overrides) {
+            if (const auto it = overrides->find(key); it != overrides->end()) {
+                // the text with its corrections (below: nets assigned procedurally)
+                text->utf8 = it->second;
+                sm.assignText(key, text->utf8);
+            }
+            else if (text->transcoded())
+                sm.assignText(key, text->utf8);
+        }
+        else if (text->transcoded())
             sm.assignText(key, text->utf8);
+        if (text->transcoded() && !(overrides && overrides->contains(key))) {
             sink.report({"FE-ENCODING", Severity::Info,
                          "file is not UTF-8: read as " + text->encoding + " (and converted to UTF-8)",
                          {key, 0, 0}, {}});
@@ -234,6 +255,275 @@ void preloadNonUtf8(const std::vector<std::string>& paths, const std::vector<std
                 }
         }
     }
+}
+
+/// Corrections of constructs that are errors in (System)Verilog but that Quartus
+/// accepts, so that designs built with Quartus can be analyzed (MiSTer's
+/// framework relies on both):
+/// - a net assigned in a procedural block is read as a variable: its `wire`
+///   keyword becomes `reg ` (same length), a port without a type gets `reg`;
+/// - a name declared in a generate block and used outside it in the enclosing
+///   module (an undeclared identifier): its declaration is moved before the
+///   generate construct (on the same line).
+/// The edits are applied to the source text and the design compiled again.
+struct SourceEdit {
+    std::string file; ///< the buffer's canonical path (as preloadNonUtf8 keys it)
+    std::size_t offset = 0;
+    std::size_t remove = 0;
+    std::string insert;
+    std::string code, message, note;
+    SourceLocation where;
+};
+
+std::string bufferKey(const slang::SourceManager& sm, slang::BufferID b) {
+    std::error_code ec;
+    const std::filesystem::path full = sm.getFullPath(b);
+    const auto canonical = std::filesystem::weakly_canonical(full, ec);
+    return slang::getU8Str(ec ? full : canonical);
+}
+
+/// The identifier at a location.
+std::string identifierAt(const slang::SourceManager& sm, slang::SourceLocation loc) {
+    const auto text = sm.getSourceText(loc.buffer());
+    std::size_t e = loc.offset();
+    while (e < text.size() && (std::isalnum(static_cast<unsigned char>(text[e])) || text[e] == '_' || text[e] == '$'))
+        ++e;
+    return std::string(text.substr(loc.offset(), e - loc.offset()));
+}
+
+std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, const slang::syntax::SyntaxTree& tree,
+                                           const slang::SourceManager& sm, const sast::RootSymbol& root) {
+    using namespace slang::syntax;
+    std::vector<SourceEdit> edits;
+    // ---- nets assigned in procedural blocks ----
+    std::map<std::uint32_t, std::vector<std::pair<std::size_t, std::string>>> netUses;
+    std::vector<std::pair<slang::SourceLocation, std::string>> undeclared;
+    for (const auto& d : diags) {
+        const auto loc = sm.getFullyOriginalLoc(d.location);
+        if (d.code == slang::diag::AssignToNet) {
+            if (auto id = identifierAt(sm, loc); !id.empty())
+                netUses[loc.buffer().getId()].emplace_back(loc.offset(), std::move(id));
+        }
+        else if (d.code == slang::diag::UndeclaredIdentifier || d.code == slang::diag::TypoIdentifier) {
+            if (auto id = identifierAt(sm, loc); !id.empty())
+                undeclared.emplace_back(loc, std::move(id));
+        }
+    }
+    if (!netUses.empty()) {
+        struct Decl {
+            std::uint32_t buffer;
+            std::size_t declOffset;
+            std::string name;
+            slang::SourceLocation loc;
+            std::size_t editOffset, remove;
+            std::string insert;
+            bool inout = false;
+        };
+        std::vector<Decl> decls;
+        const auto text = [&](slang::BufferID b) { return sm.getSourceText(b); };
+        // `wire` -> `reg `
+        const auto addWire = [&](slang::parsing::Token netType, const DeclaratorSyntax& d) {
+            if (netType.kind != slang::parsing::TokenKind::WireKeyword || d.initializer)
+                return;
+            const auto k = sm.getFullyOriginalLoc(netType.location());
+            const auto n = sm.getFullyOriginalLoc(d.name.location());
+            if (k.buffer() == n.buffer())
+                decls.push_back({n.buffer().getId(), n.offset(), std::string(d.name.valueText()), n, k.offset(), 4,
+                                 "reg "});
+        };
+        // `output [7:0] x` (a net) -> `output reg [7:0] x`; `inout reg x` -> `output reg x`
+        const auto addImplicit = [&](const VariablePortHeaderSyntax& h, const DeclaratorSyntax& d) {
+            if (h.direction.kind == slang::parsing::TokenKind::InOutKeyword) {
+                const auto k = sm.getFullyOriginalLoc(h.direction.location());
+                const auto n = sm.getFullyOriginalLoc(d.name.location());
+                if (k.buffer() != n.buffer())
+                    return;
+                const auto t = text(k.buffer());
+                const std::size_t after = k.offset() + 5;
+                const bool twoSpaces = after + 1 < t.size() && (t[after] == ' ' || t[after] == '\t') &&
+                                       (t[after + 1] == ' ' || t[after + 1] == '\t');
+                decls.push_back({n.buffer().getId(), n.offset(), std::string(d.name.valueText()), n, k.offset(),
+                                 twoSpaces ? 6u : 5u, "output", true});
+                return;
+            }
+            if (h.varKeyword || h.dataType->kind != SyntaxKind::ImplicitType || !h.direction)
+                return;
+            const auto k = sm.getFullyOriginalLoc(h.direction.location());
+            const auto n = sm.getFullyOriginalLoc(d.name.location());
+            if (k.buffer() != n.buffer())
+                return;
+            const auto t = text(k.buffer());
+            const std::size_t after = k.offset() + h.direction.rawText().size();
+            std::size_t ws = 0;
+            while (after + ws < t.size() && (t[after + ws] == ' ' || t[after + ws] == '\t'))
+                ++ws;
+            if (ws >= 5) // "output     x" -> "output reg  x": the same length
+                decls.push_back({n.buffer().getId(), n.offset(), std::string(d.name.valueText()), n, after + 1, 4,
+                                 "reg "});
+            else
+                decls.push_back({n.buffer().getId(), n.offset(), std::string(d.name.valueText()), n, after, 0,
+                                 " reg"});
+        };
+        std::function<void(const SyntaxNode&)> walk = [&](const SyntaxNode& node) {
+            if (node.kind == SyntaxKind::NetDeclaration) {
+                const auto& nd = node.as<NetDeclarationSyntax>();
+                if (!nd.strength && !nd.delay)
+                    for (const auto* d : nd.declarators)
+                        addWire(nd.netType, *d);
+            }
+            else if (node.kind == SyntaxKind::ImplicitAnsiPort) {
+                const auto& ip = node.as<ImplicitAnsiPortSyntax>();
+                if (ip.header->kind == SyntaxKind::NetPortHeader)
+                    addWire(ip.header->as<NetPortHeaderSyntax>().netType, *ip.declarator);
+                else if (ip.header->kind == SyntaxKind::VariablePortHeader)
+                    addImplicit(ip.header->as<VariablePortHeaderSyntax>(), *ip.declarator);
+            }
+            else if (node.kind == SyntaxKind::PortDeclaration) {
+                const auto& pd = node.as<PortDeclarationSyntax>();
+                if (pd.header->kind == SyntaxKind::NetPortHeader)
+                    for (const auto* d : pd.declarators)
+                        addWire(pd.header->as<NetPortHeaderSyntax>().netType, *d);
+            }
+            for (std::size_t i = 0; i < node.getChildCount(); ++i)
+                if (const auto* c = node.childNode(i))
+                    walk(*c);
+        };
+        walk(tree.root());
+        std::set<std::pair<std::uint32_t, std::size_t>> done;
+        for (const auto& [buffer, list] : netUses)
+            for (const auto& [offset, name] : list) {
+                // the nearest declaration of the name before the use, else after it (a use before
+                // the declaration is accepted, as by Quartus and Vivado)
+                const Decl* best = nullptr;
+                for (const auto& d : decls)
+                    if (d.buffer == buffer && d.name == name && d.declOffset < offset &&
+                        (!best || d.declOffset > best->declOffset))
+                        best = &d;
+                if (!best)
+                    for (const auto& d : decls)
+                        if (d.buffer == buffer && d.name == name && d.declOffset > offset &&
+                            (!best || d.declOffset < best->declOffset))
+                            best = &d;
+                if (!best) {
+                    // declared in a file included by the use's file (ports in an included header)
+                    for (const auto& d : decls)
+                        if (d.name == name && sm.getIncludedFrom(d.loc.buffer()).buffer().getId() == buffer) {
+                            best = &d;
+                            break;
+                        }
+                }
+                if (!best || !done.emplace(buffer, best->editOffset).second)
+                    continue;
+                if (best->inout)
+                    edits.push_back({bufferKey(sm, best->loc.buffer()), best->editOffset, best->remove,
+                                     best->insert, "FE-NET-PROCEDURAL-ASSIGN",
+                                     "inout port '" + name + "' is assigned in a procedural block, which "
+                                     "(System)Verilog does not allow: read as an output driven by the module, as "
+                                     "Quartus drives it (its value from outside is not analyzed)",
+                                     "drive the port with a continuous assignment from a variable to make the "
+                                     "design portable",
+                                     convertLocation(sm, best->loc)});
+                else
+                    edits.push_back({bufferKey(sm, best->loc.buffer()), best->editOffset, best->remove,
+                                     best->insert, "FE-NET-PROCEDURAL-ASSIGN",
+                                     "net '" + name + "' is assigned in a procedural block, which (System)Verilog "
+                                                      "does not allow: read as a variable, as Quartus does",
+                                     "declare it as a variable (logic or reg) to make the design portable",
+                                     convertLocation(sm, best->loc)});
+            }
+    }
+    // ---- names of generate blocks used in the enclosing module: their declarations are moved out ----
+    if (!undeclared.empty()) {
+        // the module bodies (one per definition and parameterization is enough: syntax is shared)
+        std::vector<const sast::InstanceBodySymbol*> bodies;
+        std::set<const sast::InstanceBodySymbol*> seenBodies;
+        std::function<void(const sast::Symbol&, int)> visit = [&](const sast::Symbol& sym, int depth) {
+            if (depth > 256)
+                return;
+            if (sym.kind == sast::SymbolKind::Instance) {
+                const auto& body = sym.as<sast::InstanceSymbol>().body;
+                if (seenBodies.insert(&body).second)
+                    bodies.push_back(&body);
+                for (const auto& m : body.members())
+                    visit(m, depth + 1);
+            }
+            else if (sym.kind == sast::SymbolKind::GenerateBlock) {
+                const auto& g = sym.as<sast::GenerateBlockSymbol>();
+                if (!g.isUninstantiated)
+                    for (const auto& m : g.members())
+                        visit(m, depth + 1);
+            }
+            else if (sym.kind == sast::SymbolKind::GenerateBlockArray) {
+                for (const auto* e : sym.as<sast::GenerateBlockArraySymbol>().entries)
+                    visit(*e, depth + 1);
+            }
+        };
+        for (const auto* top : root.topInstances)
+            visit(*top, 0);
+        std::set<const SyntaxNode*> hoisted;
+        for (const auto& [loc, name] : undeclared) {
+            for (const auto* body : bodies) {
+                const auto* syn = body->getDefinition().getSyntax();
+                if (!syn)
+                    continue;
+                const auto r = syn->sourceRange();
+                const auto b = sm.getFullyOriginalLoc(r.start());
+                const auto e = sm.getFullyOriginalLoc(r.end());
+                if (b.buffer() != loc.buffer() || loc.offset() < b.offset() || loc.offset() > e.offset())
+                    continue;
+                // the declarations of the name in generate blocks directly in the module (either branch)
+                std::vector<const sast::Symbol*> found;
+                for (const auto& m : body->members())
+                    if (m.kind == sast::SymbolKind::GenerateBlock)
+                        if (const auto* d = m.as<sast::GenerateBlockSymbol>().find(name))
+                            found.push_back(d);
+                if (found.size() != 1 || !found.front()->getSyntax())
+                    break;
+                // the whole declaration (`reg [7:0] a, b;`) and the module item that holds the generate block
+                const SyntaxNode* decl = found.front()->getSyntax()->parent;
+                if (!decl || (decl->kind != SyntaxKind::DataDeclaration && decl->kind != SyntaxKind::NetDeclaration))
+                    break;
+                const SyntaxNode* item = decl;
+                while (item->parent && item->parent->kind != SyntaxKind::ModuleDeclaration)
+                    item = item->parent;
+                if (!item->parent || !hoisted.insert(decl).second)
+                    break;
+                const auto dr = decl->sourceRange();
+                const auto db = sm.getFullyOriginalLoc(dr.start());
+                const auto de = sm.getFullyOriginalLoc(dr.end());
+                const auto ib = sm.getFullyOriginalLoc(item->sourceRange().start());
+                if (db.buffer() != loc.buffer() || de.buffer() != loc.buffer() || ib.buffer() != loc.buffer())
+                    break;
+                const auto t = sm.getSourceText(loc.buffer());
+                std::string declText(t.substr(db.offset(), de.offset() - db.offset()));
+                std::string blank = declText;
+                for (auto& c : blank)
+                    if (c != '\n' && c != '\r')
+                        c = ' ';
+                for (auto& c : declText)
+                    if (c == '\n' || c == '\r')
+                        c = ' ';
+                const auto key = bufferKey(sm, loc.buffer());
+                std::string names;
+                const auto addNames = [&](const auto& declarators) {
+                    for (const auto* d : declarators)
+                        names += (names.empty() ? "" : ", ") + std::string(d->name.valueText());
+                };
+                if (decl->kind == SyntaxKind::DataDeclaration)
+                    addNames(decl->as<DataDeclarationSyntax>().declarators);
+                else
+                    addNames(decl->as<NetDeclarationSyntax>().declarators);
+                edits.push_back({key, db.offset(), blank.size(), blank, "", "", "", {}});
+                edits.push_back({key, ib.offset(), 0, declText + " ", "FE-GENERATE-SCOPE",
+                                 "'" + name + "' is used in the module but declared in a generate block: its "
+                                              "declaration (" + names + ") is read in the module, as Quartus does",
+                                 "declare it outside the generate block to make the design portable",
+                                 convertLocation(sm, db)});
+                break;
+            }
+        }
+    }
+    return edits;
 }
 
 class InstanceCollector {
@@ -358,6 +648,8 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     // Vivado and Quartus accept a net used before its declaration (implicit
     // forward reference, common in vendor IP such as ADI's axi_ad9361)
     compOptions.flags |= sast::CompilationFlags::AllowUseBeforeDeclare;
+    // every error is reported (and corrected by quartusCompatEdits), not only the first 64
+    compOptions.errorLimit = 100000;
     for (const auto& def : input.defines)
         ppOptions.predefines.push_back(def.value ? def.name + "=" + *def.value : def.name);
     for (const auto& dir : input.includeDirs)
@@ -402,9 +694,20 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     for (const auto& [name, value] : input.topParameters)
         compOptions.paramOverrides.push_back(name + "=" + value);
 
-    slang::SourceManager sourceManager;
+    // compiled once, or again with the corrections of quartusCompatEdits
+    std::map<std::string, std::string> overrides;
+    std::vector<SourceEdit> appliedEdits;
+    const auto basePpOptions = ppOptions;
+    std::unique_ptr<slang::SourceManager> sourceManagerOwner;
+    std::unique_ptr<sast::Compilation> compilationOwner;
+    for (int pass = 0;; ++pass) {
+    ppOptions = basePpOptions;
+    sourceManagerOwner = std::make_unique<slang::SourceManager>();
+    auto& sourceManager = *sourceManagerOwner;
+    CollectingDiagnosticSink silent;
     std::map<std::string, std::string> includedBy;
-    preloadNonUtf8(paths, input.includeDirs, sourceManager, sink, svKeywordMapping ? &includedBy : nullptr);
+    preloadNonUtf8(paths, input.includeDirs, sourceManager, pass ? silent : sink,
+                   svKeywordMapping ? &includedBy : nullptr, &overrides);
     if (svKeywordMapping) {
         std::map<std::string, slang::parsing::KeywordVersion> version;
         for (const auto& p : keywordPatterns)
@@ -439,9 +742,45 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
                           "cannot read '" + std::string(path) + "': " + ec.message(), {}, {}};
     }
 
-    sast::Compilation compilation(options);
-    compilation.addSyntaxTree(*treeOrError);
+    compilationOwner = std::make_unique<sast::Compilation>(options);
+    compilationOwner->addSyntaxTree(*treeOrError);
+    (void)compilationOwner->getRoot();
+    if (pass < 3) {
+        auto edits = quartusCompatEdits(compilationOwner->getAllDiagnostics(), **treeOrError, sourceManager,
+                                        compilationOwner->getRoot());
+        // per file, from the end: earlier offsets stay valid
+        std::ranges::sort(edits, [](const SourceEdit& x, const SourceEdit& y) {
+            return x.file != y.file ? x.file < y.file : x.offset > y.offset;
+        });
+        bool changed = false;
+        for (const auto& e : edits) {
+            auto it = overrides.find(e.file);
+            if (it == overrides.end())
+                for (auto buf : sourceManager.getAllBuffers())
+                    if (bufferKey(sourceManager, buf) == e.file) {
+                        auto t = std::string(sourceManager.getSourceText(buf));
+                        while (!t.empty() && t.back() == '\0')
+                            t.pop_back();
+                        it = overrides.emplace(e.file, std::move(t)).first;
+                        break;
+                    }
+            if (it == overrides.end() || e.offset + e.remove > it->second.size())
+                continue;
+            it->second.replace(e.offset, e.remove, e.insert);
+            appliedEdits.push_back(e);
+            changed = true;
+        }
+        if (changed)
+            continue;
+    }
+    break;
+    }
+    auto& sourceManager = *sourceManagerOwner;
+    auto& compilation = *compilationOwner;
     const auto& root = compilation.getRoot();
+    for (const auto& e : appliedEdits)
+        if (!e.code.empty())
+            sink.report({e.code, Severity::Warning, e.message, e.where, {e.note}});
 
     const auto& slangDiags = compilation.getAllDiagnostics();
     std::vector<UnusedRange> unused;

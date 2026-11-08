@@ -281,6 +281,21 @@ private:
                         }
             }
         }
+        // Quartus' name of the clock (derive_pll_clocks): the instance path below the top
+        // with '|' separators, then the model's suffix ("general[0].gpll~PLL_OUTPUT_COUNTER|divclk")
+        if (const auto* qs = net.findAttr("OPENCDC_CLOCK_QUARTUS_SUFFIX")) {
+            std::string v = qs->value;
+            std::erase(v, '"');
+            const auto& path = view_.design().instance(d.bit.inst).hierPath;
+            const auto dot = path.find('.');
+            if (!v.empty() && dot != std::string::npos) {
+                std::string q = path.substr(dot + 1);
+                std::ranges::replace(q, '.', '|');
+                q += "|" + v;
+                if (std::ranges::find(c.aliases, q) == c.aliases.end())
+                    c.aliases.push_back(q);
+            }
+        }
         // further names (an IP's own clock net, e.g. the memory interface's clk_pll_i)
         if (const auto* al = net.findAttr("OPENCDC_CLOCK_ALIAS")) {
             std::string v = al->value;
