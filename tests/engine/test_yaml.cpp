@@ -72,6 +72,23 @@ TEST_CASE("YAML: anchors, aliases and merge keys", "[engine][yaml]") {
     CHECK(d->get("copy")->items.size() == 2);
 }
 
+TEST_CASE("YAML: implicit pairs in flow sequences, spaces before colons", "[engine][yaml]") {
+    // SERV's servant.core
+    const auto d = parse("name : award-winning:serv:servant:1.4.0\n"
+                         "tinyfpga_bx: {files: [data/tinyfpga_bx.pcf : {file_type : PCF}, x.v]}\n"
+                         "generate: [ice40pll: {freq_in : 12, freq_out : 32}]\n");
+    CHECK(d->str("name") == "award-winning:serv:servant:1.4.0");
+    const auto* files = d->get("tinyfpga_bx")->get("files");
+    REQUIRE(files->items.size() == 2);
+    REQUIRE(files->items[0]->isMap());
+    CHECK(files->items[0]->entries.front().first == "data/tinyfpga_bx.pcf");
+    CHECK(files->items[0]->entries.front().second->str("file_type") == "PCF");
+    CHECK(files->items[1]->scalar == "x.v");
+    const auto* g = d->get("generate");
+    REQUIRE(g->items.size() == 1);
+    CHECK(g->items[0]->entries.front().second->str("freq_out") == "32");
+}
+
 TEST_CASE("YAML negative: unsupported or malformed documents", "[engine][yaml]") {
     std::string err;
     CHECK_FALSE(parseYaml("a: *nope\n", err)); // unknown alias

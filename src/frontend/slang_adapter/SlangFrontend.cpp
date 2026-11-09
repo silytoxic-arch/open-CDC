@@ -412,10 +412,13 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
     std::map<std::uint32_t, std::vector<std::pair<std::size_t, std::string>>> netUses;
     std::vector<std::pair<slang::SourceLocation, std::string>> undeclared;
     std::vector<slang::SourceLocation> forwardDefparams;
+    std::vector<slang::SourceLocation> portDefaults;
     for (const auto& d : diags) {
         const auto loc = sm.getFullyOriginalLoc(d.location);
         if (d.code == slang::diag::UsedBeforeDeclared)
             forwardDefparams.push_back(loc);
+        if (d.code == slang::diag::DisallowedPortDefault)
+            portDefaults.push_back(loc);
         if (d.code == slang::diag::AssignToNet) {
             if (auto id = identifierAt(sm, loc); !id.empty())
                 netUses[loc.buffer().getId()].emplace_back(loc.offset(), std::move(id));
@@ -648,6 +651,62 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
                     walkModules(*c);
         };
         walkModules(tree.root());
+    }
+    // ---- a value on an output net port (`output wire led = 1'b0`, SERV's board tops): Yosys and
+    // Vivado read it as a continuous assignment; the value moves to an assign after the header ----
+    if (!portDefaults.empty()) {
+        std::function<void(const SyntaxNode&)> walkPorts = [&](const SyntaxNode& node) {
+            if (node.kind == SyntaxKind::ModuleDeclaration) {
+                const auto& header = *node.as<ModuleDeclarationSyntax>().header;
+                if (!header.ports || header.ports->kind != SyntaxKind::AnsiPortList || header.semi.isMissing())
+                    return;
+                const auto semi = sm.getFullyOriginalLoc(header.semi.location());
+                std::string assigns;
+                for (const auto* m : header.ports->as<AnsiPortListSyntax>().ports) {
+                    if (m->kind != SyntaxKind::ImplicitAnsiPort)
+                        continue;
+                    const auto& port = m->as<ImplicitAnsiPortSyntax>();
+                    const auto* init = port.declarator->initializer;
+                    const auto& h = *port.header;
+                    const auto dir = h.kind == SyntaxKind::NetPortHeader ? h.as<NetPortHeaderSyntax>().direction
+                                     : h.kind == SyntaxKind::VariablePortHeader
+                                         ? h.as<VariablePortHeaderSyntax>().direction
+                                         : slang::parsing::Token();
+                    if (!init || dir.kind != slang::parsing::TokenKind::OutputKeyword)
+                        continue;
+                    const auto b = sm.getFullyOriginalLoc(init->sourceRange().start());
+                    const auto e = sm.getFullyOriginalLoc(init->sourceRange().end());
+                    if (b.buffer() != semi.buffer() || e.buffer() != semi.buffer() ||
+                        std::ranges::none_of(portDefaults, [&](const auto& l) { return l == b; }))
+                        continue;
+                    const auto text = sm.getSourceText(b.buffer());
+                    std::string expr(text.substr(b.offset() + 1, e.offset() - b.offset() - 1)); // after '='
+                    std::string blank(e.offset() - b.offset(), ' ');
+                    for (std::size_t i = 0; i < blank.size(); ++i)
+                        if (text[b.offset() + i] == '\n')
+                            blank[i] = '\n';
+                    std::ranges::replace(expr, '\n', ' ');
+                    std::ranges::replace(expr, '\r', ' ');
+                    const std::string name(port.declarator->name.valueText());
+                    edits.push_back({bufferKey(sm, b.buffer()), b.offset(), blank.size(), blank,
+                                     "FE-PORT-NET-DEFAULT",
+                                     "output net port '" + name +
+                                         "' with a value, which (System)Verilog does not allow: read as a "
+                                         "continuous assignment, as synthesis tools do",
+                                     "write 'assign " + name + " = ...;' in the module body to make the design "
+                                     "portable",
+                                     convertLocation(sm, b)});
+                    assigns += " assign " + name + " =" + expr + ";";
+                }
+                if (!assigns.empty())
+                    edits.push_back({bufferKey(sm, semi.buffer()), semi.offset() + 1, 0, assigns, "", "", "", {}});
+                return;
+            }
+            for (std::size_t i = 0; i < node.getChildCount(); ++i)
+                if (const auto* c = node.childNode(i))
+                    walkPorts(*c);
+        };
+        walkPorts(tree.root());
     }
     // ---- names of generate blocks used in the enclosing module: their declarations are moved out ----
     if (!undeclared.empty()) {

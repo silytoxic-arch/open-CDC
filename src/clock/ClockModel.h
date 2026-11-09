@@ -33,7 +33,8 @@ struct Clock {
     ClockId master;                    ///< Generated / Divider: the clock it is derived from
     std::optional<double> periodNs;
     /// How the period was obtained for a derived clock: periodNs = basis period
-    /// x periodRatio, basis = the master clock's name or "CLKIN1_PERIOD".
+    /// x periodRatio, basis = the master clock's name or "the configured input period"
+    /// (CLKIN1_PERIOD and the like, when the input clock has no period).
     std::optional<double> periodRatio;
     std::string periodBasis;
     std::vector<double> waveform;

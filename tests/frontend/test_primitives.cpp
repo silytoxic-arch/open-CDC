@@ -418,7 +418,7 @@ TEST_CASE("Primitives: generator input period from CLKIN1_PERIOD when the input 
             found = true;
             CHECK(c.periodNs == 4.0); // 8 x 1 x 2 / 4
             CHECK(c.periodRatio == 0.5);
-            CHECK(c.periodBasis == "CLKIN1_PERIOD"); // the input clock has no constraint
+            CHECK(c.periodBasis == "the configured input period"); // CLKIN1_PERIOD: the input clock has no constraint
         }
     CHECK(found);
 }
@@ -1770,4 +1770,50 @@ TEST_CASE("Primitives: every BSCANE2 gives the one JTAG TCK", "[primitives][jtag
     CHECK(run->path("top.r1", "top.q") == nullptr); // same clock
     // negative: a design register is still in another domain
     CHECK(crosses(*run, "top.r1", "top.c"));
+}
+
+TEST_CASE("Primitives: Spartan-6 PLL_BASE, DCM_SP and DCM_CLKGEN, Cyclone 10 LP PLL", "[primitives][dcm]") {
+    // SERV's board tops: PLL_BASE (ax309, pipistrello), DCM_SP (nexys_2), cyclone10lp_pll (cyc1000)
+    auto run = analyze("t.v",
+                       "module top(input clk, input clk_b, input d, output reg q, output reg qx, output reg qa,\n"
+                       "           output reg qc, output reg qd, output reg qg);\n"
+                       "  wire o1, fb, fx, c2x, dv, gfx, gdv; wire [4:0] ac;\n"
+                       "  PLL_BASE #(.CLKFBOUT_MULT(16), .CLKIN_PERIOD(20.0), .CLKOUT1_DIVIDE(25), .DIVCLK_DIVIDE(1))\n"
+                       "    pll (.CLKIN(clk), .CLKFBIN(fb), .CLKFBOUT(fb), .CLKOUT1(o1), .RST(1'b0));\n"
+                       "  DCM_SP #(.CLKFX_DIVIDE(25), .CLKFX_MULTIPLY(8), .CLKIN_PERIOD(20.0), .CLKDV_DIVIDE(4.0),\n"
+                       "    .CLKIN_DIVIDE_BY_2(\"TRUE\")) dcm (.CLKIN(clk), .CLKFX(fx), .CLK2X(c2x), .CLKDV(dv), .RST(1'b0));\n"
+                       "  DCM_CLKGEN #(.CLKFX_DIVIDE(2), .CLKFX_MULTIPLY(3), .CLKFXDV_DIVIDE(4), .CLKIN_PERIOD(20.0))\n"
+                       "    gen (.CLKIN(clk), .CLKFX(gfx), .CLKFXDV(gdv), .RST(1'b0));\n"
+                       "  cyclone10lp_pll #(.clk0_divide_by(6), .clk0_multiply_by(16), .inclk0_input_frequency(83333))\n"
+                       "    apll (.inclk({1'b0, clk_b}), .clk(ac), .fbin(), .fbout());\n"
+                       "  reg a, x, b, c;\n"
+                       "  always @(posedge o1) a <= d;\n"
+                       "  always @(posedge fx) begin x <= a; q <= x; end\n"
+                       "  always @(posedge c2x) qx <= x;\n"
+                       "  always @(posedge ac[0]) begin c <= a; qc <= c; end\n"
+                       "  always @(posedge gfx) qa <= d;\n"
+                       "  always @(posedge dv) qd <= d; always @(posedge gdv) qg <= d;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->clocks);
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    std::map<std::string, std::optional<double>> periods;
+    for (const auto& c : run->r->clocks->clocks)
+        periods[c.name] = c.periodNs;
+    CHECK(periods["top.pll.CLKOUT1"] == 31.25); // 20 x 1 x 25 / 16
+    CHECK(periods["top.dcm.CLKFX"] == 125.0);   // 20 x 2 x 25 / 8
+    CHECK(periods["top.dcm.CLK2X"] == 20.0);    // 20 x 2 / 2
+    CHECK(periods["top.dcm.CLKDV"] == 160.0);   // 20 x 2 x 4
+    CHECK(periods["top.gen.CLKFX"].has_value());
+    CHECK(std::abs(*periods["top.gen.CLKFX"] - 40.0 / 3.0) < 1e-9);
+    CHECK(std::abs(*periods["top.gen.CLKFXDV"] - 160.0 / 3.0) < 1e-9);
+    // the input clock clk_b is constrained at 7 ns: it wins over inclk0_input_frequency
+    CHECK(periods["top.apll.clk[0]"] == 2.625); // 7 x 6 / 16
+    CHECK(run->count("CON-INPUT-PERIOD") == 1);
+    // outputs derived from one input clock are related: not a crossing; the Cyclone PLL is on
+    // another input, so its domain is crossed
+    CHECK_FALSE(crosses(*run, "top.a", "top.x"));
+    CHECK(crosses(*run, "top.a", "top.c"));
 }

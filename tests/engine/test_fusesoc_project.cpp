@@ -249,7 +249,7 @@ TEST_CASE("FuseSoC core: lowRISC primgen output written by OpenCDC", "[engine][f
     const auto& cfg = r.value();
     CHECK(names(cfg.sources) == std::vector<std::string>{"prim_pkg.sv", "prim_generic_flop.sv", "prim_xilinx_flop.sv",
                                                          "prim_flop.sv", "top.sv"});
-    CHECK(hasNote(cfg, "PRJ-CORE-PRIMGEN", "prim_flop"));
+    CHECK(hasNote(cfg, "PRJ-CORE-GENERATED", "prim_flop.sv (primgen)"));
     const auto pkg = slurp(cfg.sources[0]);
     CHECK(pkg.find("ImplGeneric,\n    ImplXilinx") != std::string::npos);
     const auto abstract = slurp(cfg.sources[3]);
@@ -277,4 +277,102 @@ TEST_CASE("FuseSoC core: lowRISC primgen output written by OpenCDC", "[engine][f
     auto r2 = projectFromCoreFile(dir.path() / "top.core");
     REQUIRE(r2);
     CHECK(hasNote(r2.value(), "PRJ-CORE-GENERATOR", "no generic implementation of primitive 'bad'"));
+}
+
+TEST_CASE("FuseSoC core: SERV-style targets (flows, conditional names, icepll)", "[engine][fusesoc][icepll]") {
+    test::TempDir dir;
+    dir.write("rtl/top.v", "module top(input clk, output o); wire c;\n"
+                           "  SB_PLL40_PAD #(`include \"pll.vh\") pll (.PACKAGEPIN(clk), .PLLOUTCORE(c), .RESETB(1'b1), "
+                           ".BYPASS(1'b0));\n"
+                           "  reg r; always @(posedge c) r <= ~r; assign o = r;\nendmodule\n");
+    dir.write("rtl/ram_quartus.sv", "module ram; endmodule\n");
+    dir.write("rtl/ram.v", "module ram; endmodule\n");
+    dir.write("data/b.lpf", "FREQUENCY PORT \"clk\" 12 MHZ;\n");
+    dir.write("data/b.pcf", "set_io clk 35\n");
+    dir.write("data/b.cst", "IO_LOC \"clk\" 52;\n");
+    dir.write("t.core", "CAPI=2:\n"
+                        "name : x:y:t:1.0\n"
+                        "filesets:\n"
+                        "  soc:\n"
+                        "    files:\n"
+                        "      - rtl/top.v\n"
+                        "      -  \"tool_quartus? (rtl/ram_quartus.sv)\" : {file_type : systemVerilogSource}\n"
+                        "      - \"!tool_quartus? (rtl/ram.v)\"\n"
+                        "    file_type : verilogSource\n"
+                        "    depend : [\"fusesoc:utils:generators\"]\n"
+                        "  ice: {files: [data/b.pcf : {file_type : PCF}]}\n"
+                        "  ecp: {files: [data/b.lpf : {file_type : LPF}]}\n"
+                        "  gw: {files: [data/b.cst : {file_type : CST}]}\n"
+                        "parameters:\n"
+                        "  memfile: {datatype: file, paramtype: vlogparam}\n"
+                        "generate:\n"
+                        "  ice40pll:\n"
+                        "    generator: icepll\n"
+                        "    parameters: {freq_out: 60}\n"
+                        "targets:\n"
+                        "  icebreaker:\n"
+                        "    default_tool : icestorm\n"
+                        "    filesets : [soc, ice]\n"
+                        "    generate: [ice40pll : {freq_out : 16}]\n"
+                        "    parameters : [memfile=blinky.hex]\n"
+                        "    toplevel : top\n"
+                        "  ecp:\n"
+                        "    default_tool : diamond\n"
+                        "    filesets : [soc, ecp]\n"
+                        "    toplevel : top\n"
+                        "  tang:\n"
+                        "    flow: gowin\n"
+                        "    filesets : [soc, gw]\n"
+                        "    toplevel : top\n"
+                        "  de0:\n"
+                        "    default_tool : quartus\n"
+                        "    filesets : [soc]\n"
+                        "    toplevel : top\n");
+    auto ice = projectFromCoreFile(dir.path() / "t.core", "icebreaker");
+    REQUIRE(ice);
+    const auto& cfg = ice.value();
+    CHECK(names(cfg.sources) == std::vector<std::string>{"top.v", "ram.v"});
+    CHECK(cfg.constraints.empty()); // a PCF has no timing
+    CHECK(hasNote(cfg, "PRJ-CORE-SKIPPED", "PCF (x1)"));
+    CHECK_FALSE(hasNote(cfg, "PRJ-CORE-MISSING-DEP")); // the generators' core: built in
+    CHECK(param(cfg, "memfile") == "\"blinky.hex\"");
+    CHECK(define(cfg, "SYNTHESIS") == "(no value)"); // icestorm runs Yosys
+    // icepll for 12 -> 16 MHz (the target's freq_out replaces the generator's 60): VCO 12 x 85 / 64
+    CHECK(hasNote(cfg, "PRJ-CORE-GENERATED", "pll.vh (icepll, 12 -> 15.9375 MHz)"));
+    REQUIRE_FALSE(cfg.includeDirs.empty());
+    const auto vh = slurp(cfg.includeDirs.back() / "pll.vh");
+    CHECK(vh.find(".DIVR(4'b0000)") != std::string::npos);
+    CHECK(vh.find(".DIVF(7'b1010100)") != std::string::npos); // 84
+    CHECK(vh.find(".DIVQ(3'b110)") != std::string::npos);     // 6
+    CHECK(vh.find(".FILTER_RANGE(3'b001)") != std::string::npos);
+    // the analysis: the PLL output is a clock of 12 MHz x 85 / 64 when the input has 12 MHz
+    AnalysisSession session;
+    NullProgressSink progress;
+    CancellationToken cancel;
+    const auto res = session.run(cfg, progress, cancel);
+    for (const auto& d : res->diagnostics)
+        UNSCOPED_INFO(format(d));
+    CHECK(std::ranges::none_of(res->diagnostics, [](const Diagnostic& d) { return d.isError(); }));
+    REQUIRE(res->clocks);
+    CHECK(std::ranges::any_of(res->clocks->clocks, [](const auto& c) { return c.name == "top.pll.PLLOUTCORE"; }));
+
+    auto ecp = projectFromCoreFile(dir.path() / "t.core", "ecp");
+    REQUIRE(ecp);
+    CHECK(names(ecp.value().constraints) == std::vector<std::string>{"b.lpf"}); // read for its clocks
+    CHECK(define(ecp.value(), "SYNTHESIS") == "(undefined)");
+    auto tang = projectFromCoreFile(dir.path() / "t.core", "tang");
+    REQUIRE(tang);
+    CHECK(hasNote(tang.value(), "PRJ-CORE-IMPORT", "tool gowin"));
+    CHECK(hasNote(tang.value(), "PRJ-CORE-SKIPPED", "CST (x1)"));
+    // negative: with Quartus the condition selects the other RAM
+    auto de0 = projectFromCoreFile(dir.path() / "t.core", "de0");
+    REQUIRE(de0);
+    CHECK(names(de0.value().sources) == std::vector<std::string>{"top.v", "ram_quartus.sv"});
+    // negative: an input frequency icepll cannot use
+    dir.write("bad.core", "CAPI=2:\nname: x:y:bad\nfilesets:\n  s: {files: [rtl/ram.v], file_type: verilogSource}\n"
+                          "generate:\n  p: {generator: icepll, parameters: {freq_in: 5}}\n"
+                          "targets:\n  default: {filesets: [s], generate: [p]}\n");
+    auto bad = projectFromCoreFile(dir.path() / "bad.core");
+    REQUIRE(bad);
+    CHECK(hasNote(bad.value(), "PRJ-CORE-GENERATOR", "icepll: no PLL setting for 5 MHz"));
 }

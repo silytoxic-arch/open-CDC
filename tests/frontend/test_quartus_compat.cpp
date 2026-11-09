@@ -6,6 +6,7 @@
 #include "engine/AnalysisSession.h"
 #include "engine/ProjectConfig.h"
 #include "engine/Report.h"
+#include "ir/Dump.h"
 
 #include "../TestUtil.h"
 
@@ -545,4 +546,33 @@ TEST_CASE("Waivers selecting crossings by the timing exception that covers them"
         CHECK_FALSE(waived(a, "top.cfg"));
         CHECK(a.r->cdc->waivers[0].uses == 0);
     }
+}
+
+TEST_CASE("Output net ports with a value are continuous assignments", "[quartus-compat][port-default]") {
+    // SERV's go_board and PolarFire tops: `output wire o_led2 = 1'b0` (Yosys and Vivado accept it)
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input wire clk, input wire d,\n"
+                              "           output wire o_led = 1'b1,\n"
+                              "           output wire [1:0] o_two =\n"
+                              "             {d, 1'b0},\n"
+                              "           output reg q = 1'b0);\n"
+                              "  always @(posedge clk) q <= o_two[1] & o_led;\n"
+                              "endmodule\n"}},
+                     "top");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-PORT-NET-DEFAULT") == 2); // not for the variable q, which may have one
+    CHECK(a.has("FE-PORT-NET-DEFAULT", "'o_two'"));
+    REQUIRE(a.r->design);
+    CHECK(a.r->design->stats().registers == 1);
+    // the value drives the port
+    const auto dump = ir::dumpDesign(*a.r->design);
+    UNSCOPED_INFO(dump);
+    CHECK(dump.find("assign o_led = 1'b1") != std::string::npos);
+    CHECK(dump.find("assign o_two = {d, 1'b0}") != std::string::npos);
+    // negative: an inout port with a value stays an error
+    test::TempDir dir2;
+    auto b = analyze(dir2, {{"t.v", "module top(inout wire io = 1'b0); endmodule\n"}}, "top");
+    CHECK(b.errors() >= 1);
+    CHECK(b.count("FE-PORT-NET-DEFAULT") == 0);
 }

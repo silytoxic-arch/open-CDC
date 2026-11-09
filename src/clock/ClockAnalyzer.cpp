@@ -851,7 +851,8 @@ private:
     }
 
     /// Periods of generator outputs: master period x ratio, or the input
-    /// period written on the instance (CLKIN1_PERIOD) when the master has none.
+    /// period configured on the instance (CLKIN1_PERIOD, CLKIN_PERIOD, inclk0_input_frequency,
+    /// ...) when the master has none.
     void resolveDividerPeriods() {
         for (std::size_t round = 0; round < ratio_.size() + 1; ++round) {
             bool changed = false;
@@ -870,7 +871,7 @@ private:
                 }
                 else if (r.second > 0) {
                     base = r.second;
-                    basis = "CLKIN1_PERIOD";
+                    basis = "the configured input period";
                 }
                 if (base) {
                     c.periodNs = *base * r.first;
@@ -901,7 +902,7 @@ private:
         for (const auto& e : inputPeriodMismatch_)
             sink_.report({"CON-INPUT-PERIOD", Severity::Warning,
                           "clock generator output '" + e.clock + "': the generator is configured for an input period of " +
-                              fmt(e.configured) + " ns (CLKIN1_PERIOD) but its input clock '" + e.input + "' has " +
+                              fmt(e.configured) + " ns (CLKIN1_PERIOD, CLKIN_PERIOD, ...) but its input clock '" + e.input + "' has " +
                               fmt(e.actual) + " ns; the output period follows the input clock",
                           {}, {}});
 

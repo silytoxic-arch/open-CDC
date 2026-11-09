@@ -163,6 +163,11 @@ fetch_sparse fpga-disk-controller https://github.com/steve-chamberlin/fpga-disk-
 fetch_sparse ibex-demo-system https://github.com/lowRISC/ibex-demo-system d37beb753e19482eb054aefac73a27289bf72e47 \
     '/*' '!/sw/' '!/doc/' '!/vendor/lowrisc_ibex/doc/' '!/vendor/lowrisc_ibex/vendor/riscv-*/' \
     '!/vendor/lowrisc_ibex/vendor/google_riscv-dv/'
+# olofk/serv (ISC): the SERV bit-serial RISC-V and its servant SoC, analyzed from servant.core for boards of every
+# vendor (FuseSoC targets: Xilinx PLLE2/PLL_BASE/DCM_SP, iCE40 PLL from the icepll generator, ECP5, Intel altpll and
+# Cyclone 10 LP, Gowin flow); without the software and Zephyr
+fetch_sparse serv https://github.com/olofk/serv f200eb2ed7b69ac1c6b8eddd47654522aeee5ce8 \
+    '/*' '!/sw/' '!/zephyr/' '!/doc/'
 # lawrie/ulx3s_zx_spectrum (only fetched for this check): a ZX Spectrum (TV80 Z80, HDMI, USB host, SPI OSD) on the
 # ULX3S, built with yosys/nextpnr from a Makefile: the OpenCDC project takes its VERILOG list and the .lpf
 fetch_sparse ulx3s_zx_spectrum https://github.com/lawrie/ulx3s_zx_spectrum 19f242c057e25b38254004b1ea57306a28d85414 src ulx3s
@@ -488,6 +493,15 @@ check() { # project expected-regex
         echo "::error::$1 does not match '$2'"; echo "$out" | tail -30; fail=1
     fi
 }
+check_target() { # core target expected-regex
+    local out
+    out=$("$BIN/opencdc" analyze "$1" --target "$2" -q 2>&1 || true)
+    if grep -Eq "$3" <<<"${out//$'\n'/ }"; then
+        echo "ok   $1 ($2): $(echo "$out" | grep -E '^CDC     :')"
+    else
+        echo "::error::$1 ($2) does not match '$3'"; echo "$out" | tail -30; fail=1
+    fi
+}
 check axi_cdc.ocdc.json "80 registers.*0 unsupported construct.*80/80 registers resolved.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 52 crossing path\(s\), 50 synchronized.*Rules   : 0 error violation"
 check rgmii.ocdc.json "206/206 registers resolved.*async-fifo x2.*built-in models used for vendor primitives: BUFIO, BUFR, IDDR, ODDR.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 30 crossing path\(s\), 29 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 1 path\(s\) at potential risk, 1 path\(s\) need review"
 check arty_eth.ocdc.json "608/608 registers resolved.*Summary : 0 error\(s\), 9 warning\(s\).*CDC     : 27 crossing path\(s\), 27 synchronized.*Rules   : 0 error violation\(s\), 0 warning violation\(s\), 0 path\(s\) at potential risk, 0 path\(s\) need review"
@@ -544,7 +558,17 @@ check C64_MiSTer/C64.qpf "Instances: 317.*RTL     : 190 module bodies, 4328 regi
 check Atari800_MiSTer/Atari800.qpf "Instances: 514.*RTL     : 241 module bodies, 3608 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(3535/3608 registers resolved\).*address_decoder.vhdl:159:2: warning\[IR-SAME-DRIVERS\].*Summary : 0 error\(s\).*CDC     : 516 crossing path\(s\), 53 synchronized, 463 unsynchronized.*118 unsynchronized path\(s\) covered by a timing exception"
 check ice40-playground/riscv_usb.ocdc.json "RTL     : 50 module bodies, 359 registers .* 0 latches, .* 0 unsupported construct\\(s\\).*Clocks  : 3 \\(358/359 registers resolved\\).*IR-INPUT-DRIVEN\\]: input port 'sio_mosi_i'.*built-in models used for vendor primitives: SB_GB, SB_IO, SB_LEDDA_IP, SB_PLL40_2F_PAD, SB_RAM40_4K, SB_RAM40_4KNR, SB_RGBA_DRV, SB_SPI, SB_SPRAM256KA, SB_WARMBOOT.*Summary : 0 error\\(s\\), 8 warning\\(s\\).*CDC     : 1 crossing path\\(s\\), 0 synchronized, 1 unsynchronized"
 # the two JTAG TAPs of the debug module (BSCANE2 on chains 3 and 4) share the one TCK; the debug module's CDC (dmi)
-check ibex-demo-system/ibex_demo_system.core "RTL     : 78 module bodies, 271 registers .* 0 latches, .* 1 unsupported construct\(s\).*Clocks  : 3 \(271/271 registers resolved\).*i_tap_dtmcs.TCK  \[black-box\] alias=top_artya7.u_ibex_demo_system.gen_dm_top.u_dm_top.dap.i_dmi_jtag_tap.i_tap_dmi.TCK.*PRJ-CORE-PRIMGEN\]: 9 file\(s\).*FuseSoC core imported: 160 source\(s\), 1 constraint file\(s\), top 'top_artya7' \(target 'synth', tool vivado, 60 core\(s\), macro SYNTHESIS defined.*built-in models used for vendor primitives: BSCANE2, BUFG, BUFGCE, IBUF, PLLE2_ADV.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 26 crossing path\(s\), 24 synchronized, 2 unsynchronized"
+check ibex-demo-system/ibex_demo_system.core "RTL     : 78 module bodies, 271 registers .* 0 latches, .* 1 unsupported construct\(s\).*Clocks  : 3 \(271/271 registers resolved\).*i_tap_dtmcs.TCK  \[black-box\] alias=top_artya7.u_ibex_demo_system.gen_dm_top.u_dm_top.dap.i_dmi_jtag_tap.i_tap_dmi.TCK.*PRJ-CORE-GENERATED\]: 9 file\(s\) of FuseSoC generators.*FuseSoC core imported: 160 source\(s\), 1 constraint file\(s\), top 'top_artya7' \(target 'synth', tool vivado, 60 core\(s\), macro SYNTHESIS defined.*built-in models used for vendor primitives: BSCANE2, BUFG, BUFGCE, IBUF, PLLE2_ADV.*Summary : 0 error\(s\), 1 warning\(s\).*CDC     : 26 crossing path\(s\), 24 synchronized, 2 unsynchronized"
+# SERV: one clock domain behind each board's clock generator
+check_target serv/servant.core arty_a7_35t "RTL     : 24 module bodies, 68 registers .* 0 unsupported construct\\(s\\).*Clocks  : 2 \\(68/68 registers resolved\\).*PLLE2_BASE_inst.CLKOUT0  \\[divider\\].*period=62.5ns.*FuseSoC core imported: 28 source\\(s\\), 1 constraint file\\(s\\), top 'servix'.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core icebreaker "Clocks  : 2 \\(61/61 registers resolved\\).*pll.PLLOUTCORE  \\[divider\\].*PRJ-CORE-GENERATED\\]: 1 file\\(s\\).*pll.vh \\(icepll, 12 -> 15.9375 MHz\\).*built-in models used for vendor primitives: SB_PLL40_PAD.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core ulx3s_85 "Clocks  : 2 \\(64/64 registers resolved\\).*clk  \\[constraint\\].*period=40ns.*CLKOP  \\[divider\\].*period=64ns.*vendor primitives: EHXPLLL.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core de0_nano "Clocks  : 2 \\(65/65 registers resolved\\).*clk\\[0\\]  \\[divider\\].*period=62.5ns.*vendor primitives: altpll.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core cyc1000 "Clocks  : 2 \\(65/65 registers resolved\\).*clk\\[0\\]  \\[divider\\].*period=31.2499ns.*vendor primitives: cyclone10lp_pll.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core nexys_2_500 "Clocks  : 2 \\(70/70 registers resolved\\).*DCM_SP_inst.CLKFX  \\[divider\\].*period=62.5ns \\(16 MHz\\) = the configured input period x 3.125.*vendor primitives: DCM_SP.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core pipistrello "Clocks  : 2 \\(68/68 registers resolved\\).*PLL_BASE_inst.CLKOUT1  \\[divider\\].*period=62.5ns.*vendor primitives: PLL_BASE.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core go_board "Clocks  : 1 \\(60/60 registers resolved\\).*FE-PORT-NET-DEFAULT\\]: output net port 'o_led4'.*Summary : 0 error\\(s\\), 3 warning\\(s\\).*CDC     : 0 crossing path"
+check_target serv/servant.core tangnano9k "Clocks  : 1 \\(61/61 registers resolved\\).*target 'tangnano9k', tool gowin.*Summary : 0 error\\(s\\), 0 warning\\(s\\).*CDC     : 0 crossing path"
 check fpga-disk-controller/yellowstone_blink.ldf "Clocks  : 1 \(1/1 registers resolved\).*blink.internal_oscillator_inst.OSC  \[black-box\].*period=480.769ns \(2.08 MHz\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check ulx3s_zx_spectrum/ulx3s/zx.ocdc.json "Instances: 39.*RTL     : 29 module bodies, 270 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 6 \(270/270 registers resolved\).*clk25_mhz  \[constraint\].*period=40ns.*built-in models used for vendor primitives: EHXPLLL, ODDRX1F.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 1 crossing path\(s\), 0 synchronized, 1 unsynchronized"
 check fpga-disk-controller/lattice/liron.ldf "RTL     : 10 module bodies, 31 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 2 \(23/31 registers resolved\).*Lattice Diamond project imported: 4 source\(s\), 1 constraint file\(s\), top 'top' \(implementation 'fpgatop', device LCMXO2-1200HC-4TG100C\).*built-in models used for vendor primitives: DP8KC, VHI, VLO.*CLK-UNUSED-INTERFACE\]: 8 register\(s\).*DP8KC.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 17 crossing path\(s\), 0 synchronized, 17 unsynchronized"

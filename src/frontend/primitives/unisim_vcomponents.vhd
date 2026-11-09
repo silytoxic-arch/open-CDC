@@ -199,6 +199,14 @@ package vcomponents is
   component PLLE4_BASE port (CLKIN : in std_ulogic); end component;
   -- clock generator: generics and ports are taken from the instance (bound to a generated model)
   component PLLE4_ADV port (CLKIN : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLL_BASE port (CLKIN : in std_ulogic); end component;
+  -- clock generator: generics and ports are taken from the instance (bound to a generated model)
+  component PLL_ADV port (CLKIN1 : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component DCM_SP port (CLKIN : in std_ulogic); end component;
+  -- generics and ports are taken from the instance (bound to the Verilog model)
+  component DCM_CLKGEN port (CLKIN : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component IDDR port (C : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)

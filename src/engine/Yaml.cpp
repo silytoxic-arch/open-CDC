@@ -233,7 +233,20 @@ private:
                     auto v = flow(s, i, line);
                     if (!v)
                         return std::nullopt;
-                    n->items.push_back(*v);
+                    skip();
+                    // an implicit one-pair mapping: [a.pcf : {file_type: PCF}], [ice40pll: {freq_out: 16}]
+                    if (i < s.size() && s[i] == ':' && (*v)->isScalar()) {
+                        ++i;
+                        auto value = flow(s, i, line);
+                        if (!value)
+                            return std::nullopt;
+                        auto pair = std::make_shared<YamlNode>();
+                        pair->kind = YamlNode::Kind::Mapping;
+                        pair->entries.emplace_back((*v)->scalar, *value);
+                        n->items.push_back(pair);
+                    }
+                    else
+                        n->items.push_back(*v);
                 }
                 skip();
                 if (i < s.size() && s[i] == ',') {

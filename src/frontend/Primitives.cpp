@@ -127,7 +127,19 @@ PrimitiveLibrary::PrimitiveLibrary() {
     pllUsAdvOut.insert(pllUsAdvOut.end(), {{"DO", 16}, {"DRDY", 1}});
     P pllUsAdvIn = pllUsBaseIn;
     pllUsAdvIn.insert(pllUsAdvIn.end(), {{"DADDR", 7}, {"DCLK", 1}, {"DEN", 1}, {"DI", 16}, {"DWE", 1}});
+    // Virtex-5 / Spartan-6 PLL: CLKIN (CLKIN_PERIOD); the PLL_ADV CLKOUTDCMn outputs use the
+    // dividers of CLKOUTn
+    const P pllBaseOut = {{"CLKFBOUT", 1}, {"CLKOUT0", 1}, {"CLKOUT1", 1}, {"CLKOUT2", 1},
+                          {"CLKOUT3", 1},  {"CLKOUT4", 1}, {"CLKOUT5", 1}, {"LOCKED", 1}};
+    const P pllBaseIn = {{"CLKFBIN", 1}, {"CLKIN", 1}, {"RST", 1}};
+    P pllAdvOut = pllBaseOut;
+    pllAdvOut.insert(pllAdvOut.end(), {{"CLKFBDCM", 1},   {"CLKOUTDCM0", 1}, {"CLKOUTDCM1", 1}, {"CLKOUTDCM2", 1},
+                                       {"CLKOUTDCM3", 1}, {"CLKOUTDCM4", 1}, {"CLKOUTDCM5", 1}, {"DO", 16},
+                                       {"DRDY", 1}});
+    const P pllAdvIn = {{"CLKFBIN", 1}, {"CLKIN1", 1}, {"CLKIN2", 1}, {"CLKINSEL", 1}, {"DADDR", 5}, {"DCLK", 1},
+                        {"DEN", 1},     {"DI", 16},    {"DWE", 1},    {"REL", 1},      {"RST", 1}};
     generators_ = {
+        {"PLL_BASE", "CLKIN", pllBaseIn, pllBaseOut},        {"PLL_ADV", "CLKIN1", pllAdvIn, pllAdvOut},
         // Virtex-6 MMCM (Vivado retargets it to MMCME2 on 7-series): the same ports and dividers
         {"MMCM_BASE", "CLKIN1", mmcmBaseIn, mmcmBaseOut},    {"MMCM_ADV", "CLKIN1", mmcmAdvIn, mmcmAdvOut},
         {"MMCME2_BASE", "CLKIN1", mmcmBaseIn, mmcmBaseOut},  {"MMCME2_ADV", "CLKIN1", mmcmAdvIn, mmcmAdvOut},
@@ -187,8 +199,10 @@ std::string PrimitiveLibrary::generatorModel(const std::string& name, const std:
         std::string base = out;
         if (base.size() > 7 && base.back() == 'B')
             base.pop_back();
-        if (base == "CLKFBOUT")
+        if (base.starts_with("CLKFB")) // CLKFBOUT, CLKFBDCM
             return "1.0";
+        if (base.starts_with("CLKOUTDCM"))
+            return "CLKOUT" + base.substr(9) + "_DIVIDE";
         if (mmcm && base == "CLKOUT0")
             return "CLKOUT0_DIVIDE_F";
         return base + "_DIVIDE";

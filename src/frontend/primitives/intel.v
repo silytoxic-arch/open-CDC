@@ -452,6 +452,96 @@ module altpll #(parameter bandwidth_type = "AUTO", parameter compensate_clock = 
     assign activeclock = 1'b0;
 endmodule
 
+// PLL atoms of Cyclone IV E and Cyclone 10 LP (the altpll parameters, written by hand or by
+// the megafunction): clk[n] = inclk[0] x clkN_multiply_by / clkN_divide_by.
+module cycloneive_pll #(parameter bandwidth_type = "auto", parameter compensate_clock = "clk0",
+                parameter integer inclk0_input_frequency = 10000, parameter integer inclk1_input_frequency = 0,
+                parameter lpm_type = "", parameter operation_mode = "normal", parameter pll_type = "auto",
+                parameter self_reset_on_loss_lock = "off", parameter width_clock = 5,
+                parameter integer clk0_multiply_by = 1, parameter integer clk0_divide_by = 1,
+                parameter integer clk1_multiply_by = 1, parameter integer clk1_divide_by = 1,
+                parameter integer clk2_multiply_by = 1, parameter integer clk2_divide_by = 1,
+                parameter integer clk3_multiply_by = 1, parameter integer clk3_divide_by = 1,
+                parameter integer clk4_multiply_by = 1, parameter integer clk4_divide_by = 1,
+                parameter clk0_duty_cycle = 50, parameter clk0_phase_shift = "0",
+                parameter clk1_duty_cycle = 50, parameter clk1_phase_shift = "0",
+                parameter clk2_duty_cycle = 50, parameter clk2_phase_shift = "0",
+                parameter clk3_duty_cycle = 50, parameter clk3_phase_shift = "0",
+                parameter clk4_duty_cycle = 50, parameter clk4_phase_shift = "0")
+               (input [1:0] inclk, input areset, input pfdena, input clkswitch, input fbin, input scanclk,
+                input scanclkena, input scandata, input configupdate, input [2:0] phasecounterselect,
+                input phasestep, input phaseupdown,
+                output [4:0] clk, output locked, output fbout, output activeclock, output [1:0] clkbad,
+                output phasedone, output scandataout, output scandone, output vcooverrange, output vcounderrange);
+    wire ref = inclk[0];
+    localparam real INP = inclk0_input_frequency / 1000.0;
+    (* OPENCDC_CLOCK_PIN = "clk[0]", OPENCDC_CLOCK_RATIO = (1.0 * clk0_divide_by) / clk0_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c0 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[1]", OPENCDC_CLOCK_RATIO = (1.0 * clk1_divide_by) / clk1_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c1 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[2]", OPENCDC_CLOCK_RATIO = (1.0 * clk2_divide_by) / clk2_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c2 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[3]", OPENCDC_CLOCK_RATIO = (1.0 * clk3_divide_by) / clk3_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c3 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[4]", OPENCDC_CLOCK_RATIO = (1.0 * clk4_divide_by) / clk4_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c4 = 1'b0;
+    always @(posedge ref) begin c0 <= ~c0; c1 <= ~c1; c2 <= ~c2; c3 <= ~c3; c4 <= ~c4; end
+    assign clk = {c4, c3, c2, c1, c0};
+    opencdc_async_source u_locked (locked);
+    assign fbout = ref;
+    assign activeclock = 1'b0;
+    assign clkbad = 2'b00;
+    assign phasedone = 1'b0;
+    assign scandataout = 1'b0;
+    assign scandone = 1'b0;
+    assign vcooverrange = 1'b0;
+    assign vcounderrange = 1'b0;
+endmodule
+
+module cyclone10lp_pll #(parameter bandwidth_type = "auto", parameter compensate_clock = "clk0",
+                parameter integer inclk0_input_frequency = 10000, parameter integer inclk1_input_frequency = 0,
+                parameter lpm_type = "", parameter operation_mode = "normal", parameter pll_type = "auto",
+                parameter self_reset_on_loss_lock = "off", parameter width_clock = 5,
+                parameter integer clk0_multiply_by = 1, parameter integer clk0_divide_by = 1,
+                parameter integer clk1_multiply_by = 1, parameter integer clk1_divide_by = 1,
+                parameter integer clk2_multiply_by = 1, parameter integer clk2_divide_by = 1,
+                parameter integer clk3_multiply_by = 1, parameter integer clk3_divide_by = 1,
+                parameter integer clk4_multiply_by = 1, parameter integer clk4_divide_by = 1,
+                parameter clk0_duty_cycle = 50, parameter clk0_phase_shift = "0",
+                parameter clk1_duty_cycle = 50, parameter clk1_phase_shift = "0",
+                parameter clk2_duty_cycle = 50, parameter clk2_phase_shift = "0",
+                parameter clk3_duty_cycle = 50, parameter clk3_phase_shift = "0",
+                parameter clk4_duty_cycle = 50, parameter clk4_phase_shift = "0")
+               (input [1:0] inclk, input areset, input pfdena, input clkswitch, input fbin, input scanclk,
+                input scanclkena, input scandata, input configupdate, input [2:0] phasecounterselect,
+                input phasestep, input phaseupdown,
+                output [4:0] clk, output locked, output fbout, output activeclock, output [1:0] clkbad,
+                output phasedone, output scandataout, output scandone, output vcooverrange, output vcounderrange);
+    wire ref = inclk[0];
+    localparam real INP = inclk0_input_frequency / 1000.0;
+    (* OPENCDC_CLOCK_PIN = "clk[0]", OPENCDC_CLOCK_RATIO = (1.0 * clk0_divide_by) / clk0_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c0 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[1]", OPENCDC_CLOCK_RATIO = (1.0 * clk1_divide_by) / clk1_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c1 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[2]", OPENCDC_CLOCK_RATIO = (1.0 * clk2_divide_by) / clk2_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c2 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[3]", OPENCDC_CLOCK_RATIO = (1.0 * clk3_divide_by) / clk3_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c3 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "clk[4]", OPENCDC_CLOCK_RATIO = (1.0 * clk4_divide_by) / clk4_multiply_by,
+       OPENCDC_CLOCK_INPUT_PERIOD = INP *) reg c4 = 1'b0;
+    always @(posedge ref) begin c0 <= ~c0; c1 <= ~c1; c2 <= ~c2; c3 <= ~c3; c4 <= ~c4; end
+    assign clk = {c4, c3, c2, c1, c0};
+    opencdc_async_source u_locked (locked);
+    assign fbout = ref;
+    assign activeclock = 1'b0;
+    assign clkbad = 2'b00;
+    assign phasedone = 1'b0;
+    assign scandataout = 1'b0;
+    assign scandone = 1'b0;
+    assign vcooverrange = 1'b0;
+    assign vcounderrange = 1'b0;
+endmodule
+
 // altera_pll (Quartus Prime): frequencies are strings such as "200.000000 MHz";
 // the clock analysis derives each output period from them.
 module altera_pll #(parameter fractional_vco_multiplier = "false",

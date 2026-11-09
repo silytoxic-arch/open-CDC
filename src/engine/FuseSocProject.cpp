@@ -4,6 +4,7 @@
 #include "engine/Yaml.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <fstream>
 #include <functional>
@@ -207,7 +208,8 @@ public:
             return Diagnostic{"PRJ-CORE-TARGET", Severity::Error,
                               "core '" + topCore_.name + "' has no target '" + target + "'", {toUtf8(top_), 0, 0}, {}};
         flags_.target = target;
-        flags_.tool = t->str("default_tool", "vivado");
+        // the tool: default_tool, else the flow (the flow API: flow: gowin), else vivado
+        flags_.tool = t->str("default_tool", t->str("flow", "vivado"));
         cfg_.name = lastPart(topCore_.name);
         cfg_.top = t->str("toplevel");
         cfg_.importedFrom = top_;
@@ -332,8 +334,19 @@ private:
                 visitDep(dep);
         }
         // generators of the target
-        for (const auto& g : listOf(target ? target->get("generate") : nullptr, flags_))
-            generate(core, g);
+        // "name", "flag ? (name)" or "name: {parameters}" (overriding the generator's own)
+        if (const auto* gl = target ? target->get("generate") : nullptr; gl && gl->isSeq()) {
+            for (const auto& it : gl->items) {
+                if (it->isMap() && !it->entries.empty())
+                    generate(core, it->entries.front().first, it->entries.front().second.get());
+                else
+                    for (const auto& g : listOf(it.get(), flags_))
+                        generate(core, g, nullptr);
+            }
+        }
+        else
+            for (const auto& g : listOf(gl, flags_))
+                generate(core, g, nullptr);
         // own files
         for (const auto& fsName : names) {
             const auto* fs = filesets ? filesets->get(fsName) : nullptr;
@@ -348,7 +361,10 @@ private:
     void visitDep(const std::string& dep) {
         const Core* c = find(dep);
         if (!c) {
-            missingDeps_.insert(vln(dep));
+            // the core of fusesoc-generators only provides generators: those OpenCDC knows are
+            // built in, the others are reported where they are used (PRJ-CORE-GENERATOR)
+            if (vln(dep) != "fusesoc:utils:generators")
+                missingDeps_.insert(vln(dep));
             return;
         }
         const auto* targets = c->doc->get("targets");
@@ -381,7 +397,11 @@ private:
                     includePath = attrs->str("include_path");
                     copyto = attrs->str("copyto");
                 }
-                addFile(core, name, type, lib, include, includePath, copyto);
+                // the name can be a condition too: "tool_quartus? (ram_quartus.sv)" : {file_type: ...}
+                std::vector<std::string> expanded;
+                expand(name, flags_, expanded);
+                for (const auto& e : expanded)
+                    addFile(core, e, type, lib, include, includePath, copyto);
             }
         }
     }
@@ -418,7 +438,7 @@ private:
             }
             return;
         }
-        if (type == "xdc" || type == "sdc") {
+        if (const auto lt = lower(type); lt == "xdc" || lt == "sdc" || lt == "lpf") {
             if (std::ranges::find(cfg_.constraints, p) == cfg_.constraints.end())
                 cfg_.constraints.push_back(p);
             return;
@@ -449,7 +469,7 @@ private:
             }
             else if (type == "vlogparam" || type == "generic") {
                 std::string v = *value;
-                if (datatype == "str")
+                if (datatype == "str" || datatype == "file") // a file: its name as a string (memfile)
                     v = "\"" + v + "\"";
                 else if (datatype == "bool")
                     v = lower(v) == "true" ? "1" : lower(v) == "false" ? "0" : v;
@@ -469,35 +489,144 @@ private:
         return genDir_;
     }
 
-    void writeGenerated(const std::filesystem::path& p, const std::string& text) {
+    static void writeFile(const std::filesystem::path& p, const std::string& text) {
         const auto old = readFile(p);
         if (!old || *old != text) {
             std::ofstream out(p, std::ios::binary);
             out << text;
         }
+    }
+
+    void writeGenerated(const std::filesystem::path& p, const std::string& text, bool systemVerilog = true) {
+        writeFile(p, text);
         if (std::ranges::find(cfg_.sources, p) == cfg_.sources.end()) {
             cfg_.sources.push_back(p);
             cfg_.sourceLibraries.emplace_back();
-            sv_ = true;
+            if (systemVerilog)
+                sv_ = true;
         }
     }
 
     // ---- generators ----
 
-    void generate(const Core& core, const std::string& name) {
+    void generate(const Core& core, const std::string& name, const YamlNode* override) {
         const auto* gens = core.doc->get("generate");
         const auto* g = gens ? gens->get(name) : nullptr;
         if (!g || !g->isMap())
             return;
         const std::string generator = g->str("generator");
-        const auto* params = g->get("parameters");
+        // the parameters: the generator's, with those given by the target replacing them
+        auto merged = std::make_shared<YamlNode>();
+        merged->kind = YamlNode::Kind::Mapping;
+        if (const auto* p = g->get("parameters"); p && p->isMap())
+            merged->entries = p->entries;
+        if (override && override->isMap())
+            for (const auto& [k, v] : override->entries) {
+                std::erase_if(merged->entries, [&](const auto& e) { return e.first == k; });
+                merged->entries.emplace_back(k, v);
+            }
+        const YamlNode* params = merged.get();
         if (generator == "primgen") {
             primgen(core, params);
+            return;
+        }
+        if (generator == "icepll") {
+            icepll(core, params);
             return;
         }
         note("PRJ-CORE-GENERATOR", Severity::Warning,
              "generator '" + generator + "' of core '" + core.name + "' is not run: the files it generates are missing",
              {"run 'fusesoc run --setup' and add the generated files, or describe them in an OpenCDC project"});
+    }
+
+    /// The icepll generator of fusesoc-generators: the iCE40 PLL settings that the IceStorm tool
+    /// icepll computes for freq_in -> freq_out (MHz), as a parameter list to include (pll.vh)
+    /// or, with `module: true`, as a module pll(clock_in, clock_out, locked) (pll.v).
+    void icepll(const Core& core, const YamlNode* params) {
+        auto number = [&](const char* key, double def) {
+            try {
+                const std::string v = params ? params->str(key) : std::string();
+                return v.empty() ? def : std::stod(v);
+            }
+            catch (const std::exception&) {
+                return def;
+            }
+        };
+        const double fin = number("freq_in", 12);
+        const double fout = number("freq_out", 60);
+        const bool module = params && lower(params->str("module")) == "true";
+        const std::string filename = params && !params->str("filename").empty() ? params->str("filename")
+                                     : module                                    ? "pll.v"
+                                                                                 : "pll.vh";
+        // icepll.cc, simple feedback: DIVR 0..15 (10 <= PFD <= 133 MHz), DIVF 0..127
+        // (533 <= VCO <= 1066 MHz), DIVQ 1..6; the first best output frequency
+        bool found = false;
+        int bestR = 0, bestF = 0, bestQ = 0;
+        double best = 0;
+        for (int r = 0; r <= 15; ++r) {
+            const double pfd = fin / (r + 1);
+            if (pfd < 10 || pfd > 133)
+                continue;
+            for (int f = 0; f <= 127; ++f) {
+                const double vco = pfd * (f + 1);
+                if (vco < 533 || vco > 1066)
+                    continue;
+                for (int q = 1; q <= 6; ++q) {
+                    const double out = vco / static_cast<double>(1 << q);
+                    if (!found || std::abs(out - fout) < std::abs(best - fout)) {
+                        found = true;
+                        best = out;
+                        bestR = r;
+                        bestF = f;
+                        bestQ = q;
+                    }
+                }
+            }
+        }
+        if (!found) {
+            note("PRJ-CORE-GENERATOR", Severity::Warning,
+                 "icepll: no PLL setting for " + fmt(fin) + " MHz in (the input must be 10 to 133 MHz)", {});
+            return;
+        }
+        const double pfd = fin / (bestR + 1);
+        const int filter = pfd < 17 ? 1 : pfd < 26 ? 2 : pfd < 44 ? 3 : pfd < 66 ? 4 : pfd < 101 ? 5 : 6;
+        auto bits = [](int v, int n) {
+            std::string b;
+            for (int i = n - 1; i >= 0; --i)
+                b += ((v >> i) & 1) ? '1' : '0';
+            return std::to_string(n) + "'b" + b;
+        };
+        std::string cfgText = ".FEEDBACK_PATH(\"SIMPLE\"),\n.DIVR(" + bits(bestR, 4) + "),\t// DIVR = " +
+                              std::to_string(bestR) + "\n.DIVF(" + bits(bestF, 7) + "),\t// DIVF = " +
+                              std::to_string(bestF) + "\n.DIVQ(" + bits(bestQ, 3) + "),\t// DIVQ = " +
+                              std::to_string(bestQ) + "\n.FILTER_RANGE(" + bits(filter, 3) +
+                              ")\t// FILTER_RANGE = " + std::to_string(filter) + "\n";
+        std::string text = "/* Generated by OpenCDC (FuseSoC generator icepll of " + core.name + "): " + fmt(fin) +
+                           " MHz in, " + fmt(fout) + " MHz requested, " + fmt(best) + " MHz achieved */\n";
+        if (module)
+            text += "module pll(\n  input  clock_in,\n  output clock_out,\n  output locked\n);\n"
+                    "SB_PLL40_CORE #(\n" +
+                    cfgText +
+                    ") uut (\n  .LOCK(locked),\n  .RESETB(1'b1),\n  .BYPASS(1'b0),\n  .REFERENCECLK(clock_in),\n"
+                    "  .PLLOUTCORE(clock_out)\n);\nendmodule\n";
+        else
+            text += cfgText;
+        const auto p = generatedDir() / fromUtf8(filename);
+        if (module)
+            writeGenerated(p, text, false);
+        else {
+            writeFile(p, text);
+            const auto dir = p.parent_path().lexically_normal();
+            if (std::ranges::find(cfg_.includeDirs, dir) == cfg_.includeDirs.end())
+                cfg_.includeDirs.push_back(dir);
+        }
+        generatedFiles_.push_back(filename + " (icepll, " + fmt(fin) + " -> " + fmt(best) + " MHz)");
+    }
+
+    static std::string fmt(double v) {
+        std::ostringstream o;
+        o << v;
+        return o.str();
     }
 
     /// lowRISC's primgen (vendor/lowrisc_ip/ip/prim/util/primgen.py): prim_pkg.sv with one
@@ -536,7 +665,7 @@ private:
                     body += ",\n    " + enumName(l);
             body += "\n  } impl_e;\nendpackage : prim_pkg\n";
             writeGenerated(generatedDir() / "prim_pkg.sv", body);
-            primgenDone_.push_back("prim_pkg");
+            generatedFiles_.push_back("prim_pkg.sv (primgen)");
             return;
         }
         const std::string prim = params ? params->str("prim_name") : std::string();
@@ -630,7 +759,7 @@ private:
         }
         out += "\n\nendmodule\n";
         writeGenerated(generatedDir() / ("prim_" + prim + ".sv"), out);
-        primgenDone_.push_back("prim_" + prim);
+        generatedFiles_.push_back("prim_" + prim + ".sv (primgen)");
     }
 
     std::filesystem::path top_;
@@ -641,7 +770,7 @@ private:
     std::set<std::string> missingDeps_;
     std::vector<std::string> unreadable_;
     std::map<std::string, std::size_t> skippedTypes_;
-    std::vector<std::string> primgenDone_;
+    std::vector<std::string> generatedFiles_;
     Flags flags_;
     ProjectConfig cfg_;
     bool sv_ = false;
@@ -650,7 +779,7 @@ private:
     std::vector<Diagnostic> notes_;
 
 public:
-    [[nodiscard]] const std::vector<std::string>& generated() const { return primgenDone_; }
+    [[nodiscard]] const std::vector<std::string>& generated() const { return generatedFiles_; }
 };
 
 } // namespace
@@ -664,10 +793,9 @@ Result<ProjectConfig> projectFromCoreFile(const std::filesystem::path& file, con
         auto cfg = std::move(r).value();
         std::vector<std::string> names = imp.generated();
         cfg.importNotes.insert(cfg.importNotes.end() - 1,
-                               Diagnostic{"PRJ-CORE-PRIMGEN", Severity::Info,
+                               Diagnostic{"PRJ-CORE-GENERATED", Severity::Info,
                                           std::to_string(names.size()) +
-                                              " file(s) of lowRISC's primgen generator written by OpenCDC "
-                                              "(prim_pkg and abstract primitives)",
+                                              " file(s) of FuseSoC generators written by OpenCDC",
                                           {toUtf8(std::filesystem::absolute(file).lexically_normal()), 0, 0},
                                           std::move(names)});
         return cfg;

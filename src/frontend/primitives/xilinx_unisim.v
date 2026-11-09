@@ -1040,6 +1040,75 @@ module BSCANE2 #(parameter DISABLE_JTAG = "FALSE", parameter integer JTAG_CHAIN 
     assign UPDATE = tap[7];
 endmodule
 
+// ---------------------------------------------------------------- Spartan-3/6 DCM
+// Digital clock managers: every output is a clock derived from CLKIN (CLKIN_PERIOD, halved
+// first with CLKIN_DIVIDE_BY_2): CLK0/90/180/270 at its period, CLK2X/CLK2X180 at half of it,
+// CLKDV at CLKDV_DIVIDE times it, CLKFX/CLKFX180 at CLKFX_DIVIDE / CLKFX_MULTIPLY times it.
+// LOCKED has no clock domain.
+module DCM_SP #(parameter real CLKDV_DIVIDE = 2.0, parameter integer CLKFX_DIVIDE = 1,
+                parameter integer CLKFX_MULTIPLY = 4, parameter CLKIN_DIVIDE_BY_2 = "FALSE",
+                parameter real CLKIN_PERIOD = 10.0, parameter CLKOUT_PHASE_SHIFT = "NONE",
+                parameter CLK_FEEDBACK = "1X", parameter DESKEW_ADJUST = "SYSTEM_SYNCHRONOUS",
+                parameter DFS_FREQUENCY_MODE = "LOW", parameter DLL_FREQUENCY_MODE = "LOW",
+                parameter DSS_MODE = "NONE", parameter DUTY_CYCLE_CORRECTION = "TRUE",
+                parameter [15:0] FACTORY_JF = 16'hC080, parameter integer PHASE_SHIFT = 0,
+                parameter STARTUP_WAIT = "FALSE")
+               (input CLKIN, input CLKFB, input DSSEN, input PSCLK, input PSEN, input PSINCDEC, input RST,
+                output CLK0, output CLK90, output CLK180, output CLK270, output CLK2X, output CLK2X180,
+                output CLKDV, output CLKFX, output CLKFX180, output LOCKED, output PSDONE, output [7:0] STATUS);
+    localparam real D = (CLKIN_DIVIDE_BY_2 == "TRUE") ? 2.0 : 1.0;
+    localparam real FX = D * CLKFX_DIVIDE / CLKFX_MULTIPLY;
+    (* OPENCDC_CLOCK_PIN = "CLK0", OPENCDC_CLOCK_RATIO = D, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg c0 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLK90", OPENCDC_CLOCK_RATIO = D, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg c90 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLK180", OPENCDC_CLOCK_RATIO = D, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg c180 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLK270", OPENCDC_CLOCK_RATIO = D, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg c270 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLK2X", OPENCDC_CLOCK_RATIO = D / 2.0, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg c2x = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLK2X180", OPENCDC_CLOCK_RATIO = D / 2.0, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg c2x180 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKDV", OPENCDC_CLOCK_RATIO = D * CLKDV_DIVIDE, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg cdv = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKFX", OPENCDC_CLOCK_RATIO = FX, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg cfx = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKFX180", OPENCDC_CLOCK_RATIO = FX, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg cfx180 = 1'b0;
+    always @(posedge CLKIN) begin
+        c0 <= ~c0; c90 <= ~c90; c180 <= ~c180; c270 <= ~c270; c2x <= ~c2x; c2x180 <= ~c2x180;
+        cdv <= ~cdv; cfx <= ~cfx; cfx180 <= ~cfx180;
+    end
+    assign CLK0 = c0;
+    assign CLK90 = c90;
+    assign CLK180 = c180;
+    assign CLK270 = c270;
+    assign CLK2X = c2x;
+    assign CLK2X180 = c2x180;
+    assign CLKDV = cdv;
+    assign CLKFX = cfx;
+    assign CLKFX180 = cfx180;
+    opencdc_async_source u_locked (LOCKED);
+    assign PSDONE = 1'b0;
+    assign STATUS = 8'd0;
+endmodule
+
+// Spartan-6 DCM_CLKGEN: CLKFX/CLKFX180 at CLKFX_DIVIDE / CLKFX_MULTIPLY times the CLKIN period,
+// CLKFXDV at CLKFXDV_DIVIDE times that. The PROG port reprograms M/D (not modelled).
+module DCM_CLKGEN #(parameter integer CLKFXDV_DIVIDE = 2, parameter integer CLKFX_DIVIDE = 1,
+                    parameter real CLKFX_MD_MAX = 0.0, parameter integer CLKFX_MULTIPLY = 4,
+                    parameter real CLKIN_PERIOD = 0.0, parameter SPREAD_SPECTRUM = "NONE",
+                    parameter STARTUP_WAIT = "FALSE")
+                   (input CLKIN, input FREEZEDCM, input PROGCLK, input PROGDATA, input PROGEN, input RST,
+                    output CLKFX, output CLKFX180, output CLKFXDV, output LOCKED, output PROGDONE,
+                    output [2:1] STATUS);
+    localparam real FX = (1.0 * CLKFX_DIVIDE) / CLKFX_MULTIPLY;
+    (* OPENCDC_CLOCK_PIN = "CLKFX", OPENCDC_CLOCK_RATIO = FX, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg cfx = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKFX180", OPENCDC_CLOCK_RATIO = FX, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg cfx180 = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "CLKFXDV", OPENCDC_CLOCK_RATIO = FX * CLKFXDV_DIVIDE, OPENCDC_CLOCK_INPUT_PERIOD = CLKIN_PERIOD *) reg cdv = 1'b0;
+    always @(posedge CLKIN) begin cfx <= ~cfx; cfx180 <= ~cfx180; cdv <= ~cdv; end
+    assign CLKFX = cfx;
+    assign CLKFX180 = cfx180;
+    assign CLKFXDV = cdv;
+    opencdc_async_source u_locked (LOCKED);
+    reg progdone = 1'b0;
+    always @(posedge PROGCLK) progdone <= PROGEN; // the programming port is in the PROGCLK domain
+    assign PROGDONE = progdone;
+    assign STATUS = 2'd0;
+endmodule
+
 // ---------------------------------------------------------------- UltraRAM
 // One clock for both ports: no crossing inside; modelled so that designs
 // using it elaborate (cascade, ECC and sleep pins are not modelled).
