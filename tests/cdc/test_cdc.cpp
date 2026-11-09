@@ -1050,3 +1050,30 @@ TEST_CASE("Output ports driven asynchronously to their output delay clock", "[cd
     auto missing = analyze(kOutputs, outputSdc("set_output_delay -clock nope 1 [get_ports qa]\n"));
     CHECK(outputNamed(missing, "unknown clock 'nope'"));
 }
+
+TEST_CASE("x && 0 is no combinational path: no loop through it", "[cdc][seqgraph]") {
+    // BrianHG DDR3: busy[x] = busy_e[x] ^ (ena[x] && TOGGLE[x]) with TOGGLE[x] = 0, ena = f && !busy
+    auto design = [](const char* tog) {
+        return std::string("module c #(parameter [1:0] TOG = ") + tog +
+               ") (input clk, input [1:0] ena, output [1:0] busy);\n"
+               "  reg [1:0] b_e;\n"
+               "  always @(posedge clk) b_e <= ena;\n"
+               "  genvar x;\n"
+               "  generate for (x = 0; x < 2; x = x + 1) begin : g\n"
+               "    assign busy[x] = b_e[x] ^ (ena[x] && TOG[x]);\n"
+               "  end endgenerate\n"
+               "endmodule\n"
+               "module top(input clk_a, input f, output w);\n"
+               "  wire [1:0] ena; wire [1:0] busy;\n"
+               "  assign ena[0] = f && !busy[0];\n"
+               "  assign ena[1] = f || 1'b1;\n" // || with a true constant: 1
+               "  assign w = ena[0];\n"
+               "  c u (.clk(clk_a), .ena(ena), .busy(busy));\n"
+               "endmodule\n";
+    };
+    auto r = analyze(design("2'b10"), "");
+    CHECK(r.countCode("GR-COMB-LOOP") == 0);
+    // negative: with TOG[0] = 1 the loop is real
+    auto l = analyze(design("2'b01"), "");
+    CHECK(l.countCode("GR-COMB-LOOP") == 1);
+}

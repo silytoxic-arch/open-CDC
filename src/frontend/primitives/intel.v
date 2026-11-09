@@ -452,6 +452,94 @@ module altpll #(parameter bandwidth_type = "AUTO", parameter compensate_clock = 
     assign activeclock = 1'b0;
 endmodule
 
+// ---- MAX 10 atoms (fiftyfivenm_*, as altera_gpio_lite instantiates them) ----
+
+// DDR output: datainhi/datainlo registered on clkhi/clklo, the output selects them by muxsel
+module fiftyfivenm_ddio_out #(parameter async_mode = "none", parameter sync_mode = "none",
+                              parameter power_up = "low", parameter use_enhanced_ddr_hio = "false",
+                              parameter use_new_clocking_model = "false",
+                              parameter bypass_three_quarter_register = "false", parameter lpm_type = "")
+                             (input datainhi, input datainlo, input clkhi, input clklo, input muxsel, input ena,
+                              input areset, input sreset, input clk, input phymemclock, input devpor,
+                              input devclrn, output dataout, output dfflo, output dffhi);
+    reg hi = 1'b0, lo = 1'b0;
+    always @(posedge clkhi) if (ena) hi <= datainhi;
+    always @(posedge clklo) if (ena) lo <= datainlo;
+    assign dataout = muxsel ? hi : lo;
+    assign dffhi = hi;
+    assign dfflo = lo;
+endmodule
+
+// registered output enable
+module fiftyfivenm_ddio_oe #(parameter async_mode = "none", parameter sync_mode = "none",
+                             parameter power_up = "low", parameter use_enhanced_ddr_hio = "false",
+                             parameter enable_half_cycle_delay = "false",
+                             parameter bypass_three_quarter_register = "false", parameter lpm_type = "")
+                            (input oe, input clk, input ena, input areset, input sreset, input phymemclock,
+                             input devpor, input devclrn, output dataout, output dfflo, output dffhi);
+    reg r = 1'b0;
+    always @(posedge clk) if (ena) r <= oe;
+    assign dataout = r;
+    assign dffhi = r;
+    assign dfflo = r;
+endmodule
+
+// DDR input: the falling-edge sample is retimed to the rising edge. clkout (the clock of the
+// enhanced DDR mode) is not modelled, its connection is ignored: altera_gpio_lite also ties
+// the net it drives to 0 when the mode is off, which Quartus accepts
+module fiftyfivenm_ddio_in #(parameter async_mode = "none", parameter sync_mode = "none",
+                             parameter power_up = "low", parameter invert_input_clock = "false",
+                             parameter lpm_type = "")
+                            (input datain, input clk, input ena, input areset, input sreset, input devpor,
+                             input devclrn, input halfrateresyncclk, output regouthi, output regoutlo,
+                             output dfflo);
+    reg neg = 1'b0, hi = 1'b0, lo = 1'b0;
+    always @(negedge clk) if (ena) neg <= datain;
+    always @(posedge clk) if (ena) begin hi <= datain; lo <= neg; end
+    assign regouthi = hi;
+    assign regoutlo = lo;
+    assign dfflo = neg;
+endmodule
+
+// I/O register with asynchronous clear
+module fiftyfivenm_ff #(parameter power_up = "low", parameter x_on_violation = "on", parameter lpm_type = "")
+                       (input d, input clk, input clrn, input aload, input sclr, input sload, input asdata,
+                        input ena, input devclrn, input devpor, output reg q);
+    initial q = 1'b0;
+    always @(posedge clk or negedge clrn)
+        if (!clrn) q <= 1'b0;
+        else if (ena) q <= d;
+endmodule
+
+// half-rate clock of the I/O: clkout = clk / 2
+module fiftyfivenm_io_clock_divider #(parameter invert_input_clock_phase = "false",
+                                      parameter use_phasectrlin = "false", parameter sync_mode = "none",
+                                      parameter lpm_type = "")
+                                     (input clk, input phaseinvertctrl, input sreset, output clkout);
+    (* OPENCDC_CLOCK_PIN = "clkout", OPENCDC_CLOCK_RATIO = 2.0 *) reg half = 1'b0;
+    always @(posedge clk) half <= ~half;
+    assign clkout = half;
+endmodule
+
+module fiftyfivenm_io_obuf #(parameter bus_hold = "false", parameter open_drain_output = "false",
+                             parameter lpm_type = "")
+                            (input i, input oe, input [15:0] seriesterminationcontrol, input devoe,
+                             output o, output obar);
+    assign o = i;
+    assign obar = ~i;
+endmodule
+
+module fiftyfivenm_io_ibuf #(parameter bus_hold = "false", parameter differential_mode = "false",
+                             parameter lpm_type = "")
+                            (input i, input ibar, input nsleep, output o);
+    assign o = i;
+endmodule
+
+module fiftyfivenm_pseudo_diff_out #(parameter lpm_type = "") (input i, output o, output obar);
+    assign o = i;
+    assign obar = ~i;
+endmodule
+
 // PLL atoms of Cyclone IV E and Cyclone 10 LP (the altpll parameters, written by hand or by
 // the megafunction): clk[n] = inclk[0] x clkN_multiply_by / clkN_divide_by.
 module cycloneive_pll #(parameter bandwidth_type = "auto", parameter compensate_clock = "clk0",

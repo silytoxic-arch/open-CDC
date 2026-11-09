@@ -1505,3 +1505,22 @@ TEST_CASE("case inside items are ranges and wildcard values", "[extract][inside]
     CHECK(l.countCode("IR-UNSUPPORTED-STMT") == 0);
     CHECK(l.countCode("IR-LATCH-INFERRED") == 1);
 }
+
+TEST_CASE("IR: a task calling a task without timing is inlined", "[ir][task]") {
+    // BrianHG DDR3 CMD_SEQUENCER: send_cmd(...) calls SET_cas()
+    auto e = extract("module t(input clk, input [1:0] cmd, input [7:0] a, output reg [7:0] q, output reg [7:0] r);\n"
+                     "  task set_cas; q <= a; endtask\n"
+                     "  task send_cmd(input [1:0] c); begin if (c == 2'd1) set_cas; else q <= 8'd0; end endtask\n"
+                     "  task waits; #1 r <= a; endtask\n"
+                     "  task calls_waits; waits; endtask\n"
+                     "  always @(posedge clk) send_cmd(cmd);\n"
+                     // negative: a task whose callee waits stays unsupported
+                     "  always @(posedge clk) calls_waits;\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(e.contains("reg q <= "));
+    CHECK(e.countCode("IR-UNSUPPORTED-STMT") == 1);
+    CHECK(std::ranges::any_of(e.diags, [](const Diagnostic& d) {
+        return d.message.find("task call 'calls_waits': it waits") != std::string::npos;
+    }));
+}

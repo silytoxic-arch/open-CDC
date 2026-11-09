@@ -61,6 +61,13 @@ std::optional<ClockId> ClockModel::find(std::string_view name) const {
     for (std::size_t i = 0; i < clocks.size(); ++i)
         if (std::ranges::find(clocks[i].aliases, name) != clocks[i].aliases.end())
             return ClockId{static_cast<std::uint32_t>(i)};
+    // a pattern (set_input_delay -clock [get_clocks {*DDR3_PLL5*clk[2]}], BrianHG DDR3): the
+    // first clock whose name or one of whose aliases matches
+    if (name.find_first_of("*?") != std::string_view::npos)
+        for (std::size_t i = 0; i < clocks.size(); ++i)
+            if (constraints::globMatch(name, clocks[i].name) ||
+                std::ranges::any_of(clocks[i].aliases, [&](const std::string& a) { return constraints::globMatch(name, a); }))
+                return ClockId{static_cast<std::uint32_t>(i)};
     return std::nullopt;
 }
 

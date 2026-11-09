@@ -179,6 +179,18 @@ std::optional<SigSpec> simplifyCell(const Cell& c) {
                     return other;
             }
         }
+        // x && 0 = 0, x || 1 = 1: the result does not depend on x (BrianHG DDR3: busy = busy_e ^
+        // (ena && TOGGLE[x]) with TOGGLE[x] = 0 is no combinational path from ena to busy)
+        if ((c.kind == CellKind::LogicAnd || c.kind == CellKind::LogicOr))
+            for (const auto& in : c.inputs) {
+                const auto cv = in.asConst();
+                if (!cv || !cv->isFullyDefined())
+                    continue;
+                if (c.kind == CellKind::LogicAnd && cv->isZero())
+                    return bool1(false).resized(c.width, false);
+                if (c.kind == CellKind::LogicOr && !cv->isZero())
+                    return bool1(true).resized(c.width, false);
+            }
         auto a = constUint(c.inputs.at(0));
         auto b = constUint(c.inputs.at(1));
         if (!a || !b)

@@ -2145,6 +2145,25 @@ private:
                                                               : resolver_->nets(pat, hier, nocase);
                 if (r.empty() && pins && pat.find('|') != std::string::npos)
                     r = resolver_->quartus(pat, QuartusKind::Pins, nocase); // a Quartus name held in a variable
+                if (r.empty() && name == "get_nets" && pat.find('|') != std::string::npos) {
+                    // a Quartus net name (BrianHG DDR3: {I2C_HDMI_Config:u_I2C_HDMI_Config|mI2C_CTRL_CLK}):
+                    // '|' between levels, a level may name its entity before the instance
+                    std::string h;
+                    std::size_t from = 0;
+                    for (;;) {
+                        const auto bar = pat.find('|', from);
+                        std::string level = pat.substr(from, bar == std::string::npos ? std::string::npos : bar - from);
+                        if (const auto colon = level.rfind(':'); colon != std::string::npos)
+                            level.erase(0, colon + 1);
+                        h += (h.empty() ? "" : "/") + level;
+                        if (bar == std::string::npos)
+                            break;
+                        from = bar + 1;
+                    }
+                    r = resolver_->nets(h, hier, nocase);
+                    if (r.size() == 1)
+                        r.front().name = pat; // a clock on it is named so, as Quartus names it
+                }
                 if (!filter.empty() && !applyFilter(r, filter, true, false, name, cmd))
                     return objectsValue({});
                 if (r.empty() && !quiet)

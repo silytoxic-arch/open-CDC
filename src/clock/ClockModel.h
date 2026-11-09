@@ -101,6 +101,8 @@ public:
     [[nodiscard]] ClockRelation relation(ClockId a, ClockId b) const;
     [[nodiscard]] const std::string& reason(ClockId a, ClockId b) const;
 
+    /// The clock named `name` (or with that alias); a pattern with * or ? matches the first
+    /// clock whose name or alias matches it.
     [[nodiscard]] std::optional<ClockId> find(std::string_view name) const;
     [[nodiscard]] const Clock& clock(ClockId id) const { return clocks.at(id.index()); }
     /// Root of the master chain (itself for non-derived clocks).

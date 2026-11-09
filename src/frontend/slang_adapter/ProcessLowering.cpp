@@ -30,6 +30,7 @@
 #include <slang/ast/types/Type.h>
 
 #include <algorithm>
+#include <set>
 #include <utility>
 #include <functional>
 
@@ -1007,11 +1008,20 @@ struct TimingFinder : sast::ASTVisitor<TimingFinder, sast::VisitFlags::Statement
             visitDefault(e);
     }
     void handle(const sast::CallExpression& e) {
-        if (!e.isSystemCall() && e.getSubroutineKind() == sast::SubroutineKind::Task)
-            found = true;
-        else
-            visitDefault(e);
+        if (!e.isSystemCall() && e.getSubroutineKind() == sast::SubroutineKind::Task) {
+            // a task calling a task (BrianHG DDR3: send_cmd calls SET_cas): it waits
+            // only if the called task does; a recursive task is not hardware
+            const auto* sub = std::get<0>(e.subroutine);
+            if (!sub || !inside.insert(sub).second || inside.size() > 16) {
+                found = true;
+                return;
+            }
+            sub->getBody().visit(*this);
+            inside.erase(sub);
+        }
+        visitDefault(e);
     }
+    std::set<const sast::SubroutineSymbol*> inside; ///< tasks being searched (recursion)
 };
 
 bool hasTiming(const sast::Statement& s) {

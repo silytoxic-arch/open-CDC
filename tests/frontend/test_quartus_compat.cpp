@@ -576,3 +576,66 @@ TEST_CASE("Output net ports with a value are continuous assignments", "[quartus-
     CHECK(b.errors() >= 1);
     CHECK(b.count("FE-PORT-NET-DEFAULT") == 0);
 }
+
+TEST_CASE("Quartus SDC: clock patterns after derive_pll_clocks, net names with entities", "[quartus-compat][sdc]") {
+    // BrianHG DDR3 DECA demo: set_input_delay -clock [get_clocks {*DDR3_PLL5*clk[2]}],
+    // create_clock [get_nets {I2C_HDMI_Config:u_I2C_HDMI_Config|mI2C_CTRL_CLK}]
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module i2c(input clk, output reg slow, input d, output reg q);\n"
+                              "  reg [3:0] n; always @(posedge clk) begin n <= n + 1'b1; slow <= n[3]; end\n"
+                              "  always @(posedge slow) q <= d;\n"
+                              "endmodule\n"
+                              "module top(input clk50, input din, output reg q, output reg q2, output qs);\n"
+                              "  wire [4:0] c; wire s;\n"
+                              "  altpll #(.clk0_multiply_by(2), .clk0_divide_by(1), .inclk0_input_frequency(20000))\n"
+                              "    PLL5 (.inclk({1'b0, clk50}), .clk(c));\n"
+                              "  always @(posedge c[0]) q <= din;\n"
+                              "  always @(posedge clk50) q2 <= din;\n"
+                              "  i2c u_i2c (.clk(clk50), .slow(s), .d(din), .q(qs));\n"
+                              "endmodule\n"}},
+                     "top",
+                     "create_clock -period 20 [get_ports clk50]\n"
+                     "create_clock -period \"1.0 MHz\" [get_nets {i2c:u_i2c|slow}]\n"
+                     "derive_pll_clocks\n"
+                     "set_input_delay -clock [get_clocks {*PLL5*clk[0]}] -max 1 [get_ports din]\n"
+                     // negative: a pattern that matches no clock
+                     "set_output_delay -clock [get_clocks {*PLL7*clk[0]}] -max 1 [get_ports q]\n");
+    CHECK(a.errors() == 0);
+    REQUIRE(a.r->clocks);
+    CHECK(std::ranges::any_of(a.r->clocks->clocks, [](const auto& c) {
+        return c.name == "i2c:u_i2c|slow" && c.periodNs && *c.periodNs == 1000.0;
+    }));
+    CHECK(a.count("CON-UNMATCHED") == 0);
+    // din is in the PLL clock domain: it crosses into clk50 (asynchronous to nothing declared: related)
+    CHECK(a.count("CDC-INPUT-CLOCK") == 0);
+    CHECK(a.has("CDC-OUTPUT-CLOCK", "unknown clock '*PLL7*clk[0]'"));
+}
+
+TEST_CASE("MAX 10 I/O atoms of altera_gpio_lite", "[quartus-compat][max10]") {
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input clk_a, input clk_b, input d0, input d1, input pin, output pad,\n"
+                              "           output reg q, output reg h);\n"
+                              "  wire o, ddr_hi, ddr_lo, hr;\n"
+                              "  fiftyfivenm_ddio_out #(.async_mode(\"none\")) out (.datainhi(d0), .datainlo(d1),\n"
+                              "    .clkhi(clk_a), .clklo(clk_a), .muxsel(clk_a), .ena(1'b1), .dataout(o));\n"
+                              "  fiftyfivenm_io_obuf ob (.i(o), .oe(1'b1), .o(pad), .obar());\n"
+                              "  fiftyfivenm_ddio_in in_ (.datain(pin), .clk(clk_b), .ena(1'b1), .regouthi(ddr_hi),\n"
+                              "    .regoutlo(ddr_lo), .clkout());\n"
+                              "  fiftyfivenm_io_clock_divider div (.clk(clk_a), .clkout(hr));\n"
+                              "  always @(posedge clk_b) q <= ddr_hi ^ ddr_lo ^ pad;\n"
+                              "  always @(posedge hr) h <= d0;\n"
+                              "endmodule\n"}},
+                     "top", "create_clock -period 10 [get_ports clk_a]\ncreate_clock -period 7 [get_ports clk_b]\n");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(a.count("FE-PRIMITIVE-PORT") == 1); // clkout of the DDR input is not modelled
+    REQUIRE(a.r->clocks);
+    CHECK(std::ranges::any_of(a.r->clocks->clocks, [](const auto& c) {
+        return c.name == "top.div.clkout" && c.periodNs && *c.periodNs == 20.0;
+    }));
+    // the DDR output register (clk_a) is read in clk_b: a crossing
+    CHECK(a.crosses("top.out.hi", "top.q"));
+    CHECK_FALSE(a.crosses("top.in_.hi", "top.q")); // the DDR input registers are in clk_b
+}
