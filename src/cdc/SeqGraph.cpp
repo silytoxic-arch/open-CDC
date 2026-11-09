@@ -553,8 +553,10 @@ BitInput SeqGraph::computeCell(const CellKey& root) {
             if (k.bit == kShared) {
                 // the data and index of a DynInsert, read by every bit: once for the cell
                 // (as cellInputs lists them after A[bit]: D as logic, the index as a select)
-                for (const auto& [input, flags] : {std::pair<std::size_t, std::uint8_t>{2, ConeEntry::kLogic},
-                                                   {1, ConeEntry::kLogic | ConeEntry::kSelect}})
+                constexpr std::uint8_t kData = ConeEntry::kLogic;
+                constexpr auto kIndex = static_cast<std::uint8_t>(ConeEntry::kLogic | ConeEntry::kSelect);
+                for (const auto& [input, flags] :
+                     {std::pair<std::size_t, std::uint8_t>{2, kData}, std::pair<std::size_t, std::uint8_t>{1, kIndex}})
                     if (input < kc.inputs.size())
                         for (std::uint32_t b = 0; b < kc.inputs[input].width(); ++b)
                             if (auto bit = view_.bitOf(InstanceId{k.inst}, kc.inputs[input], b))
