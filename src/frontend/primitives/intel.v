@@ -346,6 +346,30 @@ module altddio_in #(parameter intended_device_family = "", parameter invert_inpu
         else if (inclocken) begin dataout_h <= datain; dataout_l <= neg; end
 endmodule
 
+// Bidirectional DDR I/O: the input side is altddio_in on padio (inclock); the output side is
+// registered on outclock and not driven onto padio (as for IOBUF: the pad is read only)
+module altddio_bidir #(parameter extend_oe_disable = "OFF", parameter implement_input_in_lcell = "OFF",
+                       parameter intended_device_family = "", parameter invert_output = "OFF",
+                       parameter lpm_hint = "UNUSED", parameter lpm_type = "altddio_bidir",
+                       parameter oe_reg = "UNREGISTERED", parameter power_up_high = "OFF", parameter width = 1)
+                      (input aclr, input aset, input [width-1:0] datain_h, input [width-1:0] datain_l,
+                       input inclock, input inclocken, input oe, input outclock, input outclocken, input sclr,
+                       input sset, inout [width-1:0] padio, output [width-1:0] combout,
+                       output reg [width-1:0] dataout_h, output reg [width-1:0] dataout_l,
+                       output [width-1:0] dqsundelayedout, output oe_out);
+    reg [width-1:0] h, l, neg;
+    always @(posedge outclock or posedge aclr)
+        if (aclr) begin h <= {width{1'b0}}; l <= {width{1'b0}}; end
+        else if (outclocken) begin h <= datain_h; l <= datain_l; end
+    always @(negedge inclock) if (inclocken) neg <= padio;
+    always @(posedge inclock or posedge aclr)
+        if (aclr) begin dataout_h <= {width{1'b0}}; dataout_l <= {width{1'b0}}; end
+        else if (inclocken) begin dataout_h <= padio; dataout_l <= neg; end
+    assign combout = padio;
+    assign dqsundelayedout = padio;
+    assign oe_out = oe;
+endmodule
+
 module altddio_out #(parameter extend_oe_disable = "OFF", parameter intended_device_family = "",
                      parameter invert_output = "OFF", parameter lpm_hint = "UNUSED", parameter lpm_type = "altddio_out",
                      parameter oe_reg = "UNREGISTERED", parameter power_up_high = "OFF", parameter width = 1)
@@ -435,15 +459,15 @@ module altpll #(parameter bandwidth_type = "AUTO", parameter compensate_clock = 
     wire ref = inclk[0];
     localparam real INP = inclk0_input_frequency / 1000.0;
     (* OPENCDC_CLOCK_PIN = "clk[0]", OPENCDC_CLOCK_RATIO = (1.0 * clk0_divide_by) / clk0_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[0]" *) reg c0 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[0];auto_generated|generic_pll1~PLL_OUTPUT_COUNTER|divclk" *) reg c0 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[1]", OPENCDC_CLOCK_RATIO = (1.0 * clk1_divide_by) / clk1_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[1]" *) reg c1 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[1];auto_generated|generic_pll2~PLL_OUTPUT_COUNTER|divclk" *) reg c1 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[2]", OPENCDC_CLOCK_RATIO = (1.0 * clk2_divide_by) / clk2_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[2]" *) reg c2 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[2];auto_generated|generic_pll3~PLL_OUTPUT_COUNTER|divclk" *) reg c2 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[3]", OPENCDC_CLOCK_RATIO = (1.0 * clk3_divide_by) / clk3_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[3]" *) reg c3 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[3];auto_generated|generic_pll4~PLL_OUTPUT_COUNTER|divclk" *) reg c3 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "clk[4]", OPENCDC_CLOCK_RATIO = (1.0 * clk4_divide_by) / clk4_multiply_by,
-       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[4]" *) reg c4 = 1'b0;
+       OPENCDC_CLOCK_INPUT_PERIOD = INP, OPENCDC_CLOCK_QUARTUS_SUFFIX = "auto_generated|pll1|clk[4];auto_generated|generic_pll5~PLL_OUTPUT_COUNTER|divclk" *) reg c4 = 1'b0;
     always @(posedge ref) begin c0 <= ~c0; c1 <= ~c1; c2 <= ~c2; c3 <= ~c3; c4 <= ~c4; end
     wire [4:0] all = {c4, c3, c2, c1, c0};
     assign clk = all[width_clock-1:0];
@@ -645,28 +669,28 @@ module altera_pll #(parameter fractional_vco_multiplier = "false",
                     output fboutclk);
     (* OPENCDC_CLOCK_PIN = "outclk[0]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency0,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[0].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o0 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[0].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[0].output_counter|divclk" *) reg o0 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[1]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency1,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[1].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o1 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[1].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[1].output_counter|divclk" *) reg o1 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[2]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency2,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[2].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o2 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[2].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[2].output_counter|divclk" *) reg o2 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[3]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency3,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[3].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o3 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[3].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[3].output_counter|divclk" *) reg o3 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[4]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency4,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[4].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o4 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[4].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[4].output_counter|divclk" *) reg o4 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[5]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency5,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[5].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o5 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[5].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[5].output_counter|divclk" *) reg o5 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[6]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency6,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[6].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o6 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[6].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[6].output_counter|divclk" *) reg o6 = 1'b0;
     (* OPENCDC_CLOCK_PIN = "outclk[7]", OPENCDC_CLOCK_FREQ_IN = reference_clock_frequency,
        OPENCDC_CLOCK_FREQ_OUT = output_clock_frequency7,
-       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[7].gpll~PLL_OUTPUT_COUNTER|divclk" *) reg o7 = 1'b0;
+       OPENCDC_CLOCK_QUARTUS_SUFFIX = "general[7].gpll~PLL_OUTPUT_COUNTER|divclk;cyclonev_pll|counter[7].output_counter|divclk" *) reg o7 = 1'b0;
     always @(posedge refclk) begin
         o0 <= ~o0; o1 <= ~o1; o2 <= ~o2; o3 <= ~o3; o4 <= ~o4; o5 <= ~o5; o6 <= ~o6; o7 <= ~o7;
     end

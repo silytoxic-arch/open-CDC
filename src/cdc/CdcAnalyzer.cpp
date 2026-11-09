@@ -890,6 +890,27 @@ private:
                 st_.syncOutputs.emplace(last.first, SyncOut{p.srcClock, st_.sg.nodes()[last.first].name, i});
                 for (std::size_t s = 1; s + 1 < c.stages.size(); ++s)
                     st_.syncOutputs.emplace(c.stages[s].first, SyncOut{p.srcClock, st_.sg.nodes()[c.stages[s].first].name, i});
+                // The chain follows one second stage of a first stage read by several registers.
+                // Another reader that starts a chain as long as the rest of this one is a parallel
+                // copy of it (BrianHG DDR3: the video sync generator's output runs into the delay
+                // pipes of two line buffers): its stages are synchronized as well.
+                if (c.extraFanoutFirst > 0 && c.stages.size() >= 2) {
+                    const auto [reg0, bit0] = c.stages.front();
+                    const std::size_t need = std::max<std::size_t>(2, c.stages.size() - 1);
+                    for (const auto& u : st_.consumersOf(reg0)) {
+                        if (bit0 < u.lo || bit0 > u.hi || u.pin != Pin::Data || !u.direct || u.directBit != bit0 ||
+                            st_.domain[u.reg] != st_.domain[reg0] || (u.reg == reg0 && u.bit == bit0) ||
+                            !st_.sg.pinBits(u.reg, Pin::Enable).empty() ||
+                            (u.reg == c.stages[1].first && u.bit == c.stages[1].second))
+                            continue;
+                        const auto alt = chainFrom(u.reg, u.bit);
+                        if (alt.stages.size() < need)
+                            continue;
+                        for (std::size_t s = 0; s < alt.stages.size(); ++s)
+                            st_.syncOutputs.emplace(alt.stages[s].first,
+                                                    SyncOut{p.srcClock, st_.sg.nodes()[alt.stages[s].first].name, i});
+                    }
+                }
             }
         }
         st_.result->stats.synchronizers = firstStages.size();

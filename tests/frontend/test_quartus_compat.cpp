@@ -639,3 +639,41 @@ TEST_CASE("MAX 10 I/O atoms of altera_gpio_lite", "[quartus-compat][max10]") {
     CHECK(a.crosses("top.out.hi", "top.q"));
     CHECK_FALSE(a.crosses("top.in_.hi", "top.q")); // the DDR input registers are in clk_b
 }
+
+TEST_CASE("altddio_bidir and the Cyclone V names of PLL clocks", "[quartus-compat][cyclonev]") {
+    // BrianHG DDR3 on a Cyclone V: DQ/DQS through altddio_bidir; the SDC names the clocks of
+    // altera_pll as *DDR3_PLL5*counter[2]* and of altpll as ...|auto_generated|generic_pll1~...
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input clk50, input clk_b, input [7:0] w, inout [7:0] dq, output reg [7:0] q,\n"
+                              "           output reg [7:0] v, output reg [7:0] x);\n"
+                              "  wire [1:0] o; wire [4:0] c; wire [7:0] rh, rl;\n"
+                              "  altera_pll #(.reference_clock_frequency(\"50.0 MHz\"), .number_of_clocks(2),\n"
+                              "    .output_clock_frequency0(\"100.0 MHz\"), .output_clock_frequency1(\"100.0 MHz\"))\n"
+                              "    DDR3_PLL5 (.refclk(clk50), .rst(1'b0), .outclk(o));\n"
+                              "  altpll #(.clk0_multiply_by(3), .clk0_divide_by(2), .inclk0_input_frequency(20000))\n"
+                              "    VGA (.inclk({1'b0, clk50}), .clk(c));\n"
+                              "  altddio_bidir #(.width(8)) io (.outclock(o[0]), .outclocken(1'b1), .oe(1'b1),\n"
+                              "    .inclock(o[1]), .inclocken(1'b1), .datain_h(w), .datain_l(w), .padio(dq),\n"
+                              "    .dataout_h(rh), .dataout_l(rl), .aclr(1'b0), .aset(1'b0), .sclr(1'b0), .sset(1'b0));\n"
+                              "  always @(posedge o[1]) q <= rh ^ rl;\n"
+                              "  always @(posedge c[0]) v <= q;\n"
+                              "  always @(posedge clk_b) x <= w;\n"
+                              "endmodule\n"}},
+                     "top",
+                     "create_clock -period 20 [get_ports clk50]\n"
+                     "create_clock -period 7 [get_ports clk_b]\n"
+                     "derive_pll_clocks\n"
+                     "set_input_delay -clock [get_clocks {*DDR3_PLL5*counter[1]*}] -max 1 [get_ports {dq[*]}]\n"
+                     "set_output_delay -clock [get_clocks {VGA|auto_generated|generic_pll1~PLL_OUTPUT_COUNTER|divclk}] "
+                     "-max 1 [get_ports {v[*]}]\n"
+                     // negative: an output of another clock domain
+                     "set_output_delay -clock [get_clocks {*DDR3_PLL5*counter[1]*}] -max 1 [get_ports {x[*]}]\n");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(a.count("CDC-INPUT-CLOCK") == 0);
+    CHECK_FALSE(a.has("CDC-OUTPUT-CLOCK", "'top.v"));
+    CHECK(a.has("CDC-OUTPUT-CLOCK", "'top.x"));
+    // the pad is read by the input registers of the DDR I/O, in inclock's domain
+    CHECK_FALSE(a.crosses("top.io.dataout_h", "top.q"));
+}

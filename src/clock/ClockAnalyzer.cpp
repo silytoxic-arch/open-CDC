@@ -312,12 +312,19 @@ private:
         }
         // Quartus' name of the clock (derive_pll_clocks): the instance path below the top
         // with '|' separators, then the model's suffix ("general[0].gpll~PLL_OUTPUT_COUNTER|divclk")
+        // (several, separated by ';': the names differ between Quartus versions and families)
         if (const auto* qs = net.findAttr("OPENCDC_CLOCK_QUARTUS_SUFFIX")) {
-            std::string v = qs->value;
-            std::erase(v, '"');
+            std::string all = qs->value;
+            std::erase(all, '"');
             const auto& path = view_.design().instance(d.bit.inst).hierPath;
             const auto dot = path.find('.');
-            if (!v.empty() && dot != std::string::npos) {
+            std::size_t from = 0;
+            while (dot != std::string::npos && from <= all.size()) {
+                const auto semi = all.find(';', from);
+                const std::string v = all.substr(from, semi == std::string::npos ? std::string::npos : semi - from);
+                from = semi == std::string::npos ? all.size() + 1 : semi + 1;
+                if (v.empty())
+                    continue;
                 std::string q = path.substr(dot + 1);
                 std::ranges::replace(q, '.', '|');
                 q += "|" + v;

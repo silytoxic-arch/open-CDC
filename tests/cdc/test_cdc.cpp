@@ -1077,3 +1077,24 @@ TEST_CASE("x && 0 is no combinational path: no loop through it", "[cdc][seqgraph
     auto l = analyze(design("2'b01"), "");
     CHECK(l.countCode("GR-COMB-LOOP") == 1);
 }
+
+TEST_CASE("A first synchronizer stage read by parallel chains qualifies data behind each", "[cdc][sync]") {
+    // BrianHG DDR3: the video sync generator's output runs into the delay pipes of two line
+    // buffers; the chain was followed into the first one only, so only it qualified its reads
+    const char* src = "module top(input clk_a, input clk_b, input [7:0] d, input v, output reg [7:0] q0,\n"
+                      "           output reg [7:0] q1, output reg [7:0] q2);\n"
+                      "  reg [7:0] data; reg valid, v1, a2, a3, b2, b3, c2;\n"
+                      "  always @(posedge clk_a) begin data <= d; valid <= v; end\n"
+                      "  always @(posedge clk_b) begin v1 <= valid; a2 <= v1; a3 <= a2; b2 <= v1; b3 <= b2;\n"
+                      "                                c2 <= v1; end\n"
+                      "  always @(posedge clk_b) if (a3) q0 <= data;\n"
+                      "  always @(posedge clk_b) if (b3) q1 <= data;\n"
+                      "  always @(posedge clk_b) if (c2) q2 <= data;\n"
+                      "endmodule\n";
+    auto r = analyze(src);
+    CHECK(r.path("top.data", "top.q0").syncType == SyncType::QualifiedData);
+    CHECK(r.path("top.data", "top.q1").syncType == SyncType::QualifiedData);
+    // negative: c2 is a single register behind the first stage, not a parallel chain
+    CHECK(r.path("top.data", "top.q2").syncType != SyncType::QualifiedData);
+    CHECK(r.path("top.data", "top.q2").status != AnalysisStatus::Safe);
+}
