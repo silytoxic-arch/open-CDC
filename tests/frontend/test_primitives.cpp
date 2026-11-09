@@ -1817,3 +1817,45 @@ TEST_CASE("Primitives: Spartan-6 PLL_BASE, DCM_SP and DCM_CLKGEN, Cyclone 10 LP 
     CHECK_FALSE(crosses(*run, "top.a", "top.x"));
     CHECK(crosses(*run, "top.a", "top.c"));
 }
+
+TEST_CASE("Primitives: PolarFire PLL, CLKINT, GateMate CC_PLL", "[primitives][microchip]") {
+    // SERV's polarfire_splashkit and gmm7550 tops
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input d, output reg q, output reg r, output reg s);\n"
+                       "  wire buf_a, out0, out1, c0, c90, lock, vcc, gnd, rstn;\n"
+                       "  CLKINT ci (.A(clk_a), .Y(buf_a));\n"
+                       "  VCC v (.Y(vcc)); GND g (.Y(gnd));\n"
+                       "  PLL #(.RFDIV(6'd25), .FB_INT_VAL(12'd2496), .DIV0_VAL(7'd39), .DIV1_VAL(7'd78)) pll (\n"
+                       "    .REF_CLK_0(buf_a), .OUT0(out0), .OUT1(out1), .LOCK(lock), .POWERDOWN_N(vcc), .DRI_CLK(gnd));\n"
+                       "  CC_PLL #(.REF_CLK(\"100.0\"), .OUT_CLK(\"32.0\")) cc (.CLK_REF(clk_b), .CLK0(c0), .CLK90(c90));\n"
+                       "  CC_USR_RSTN ur (.USR_RSTN(rstn));\n"
+                       "  reg a; always @(posedge out0) a <= d;\n"
+                       "  always @(posedge out1) q <= a;\n"
+                       "  always @(posedge c0 or negedge rstn) if (!rstn) r <= 1'b0; else r <= a;\n"
+                       "  always @(posedge c90) s <= r;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->clocks);
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    std::map<std::string, std::optional<double>> periods;
+    for (const auto& c : run->r->clocks->clocks)
+        periods[c.name] = c.periodNs;
+    // clk_a is 10 ns (100 MHz): VCO 9984 MHz, OUT0 = 9984 / (4 x 39) = 64 MHz
+    REQUIRE(periods["top.pll.OUT0"].has_value());
+    CHECK(std::abs(*periods["top.pll.OUT0"] - 10.0 * 25 * 4 * 39 / 2496) < 1e-9);
+    CHECK(std::abs(*periods["top.pll.OUT1"] - 10.0 * 25 * 4 * 78 / 2496) < 1e-9);
+    // clk_b is 7 ns: the output follows the input clock with REF_CLK / OUT_CLK = 3.125
+    REQUIRE(periods["top.cc.CLK0"].has_value());
+    CHECK(std::abs(*periods["top.cc.CLK0"] - 7.0 * 3.125) < 1e-9);
+    CHECK(run->count("CON-INPUT-PERIOD") == 2); // CLK0, CLK90: REF_CLK says 100 MHz, clk_b has 7 ns
+    // outputs of one PLL are related; the two PLLs are on asynchronous inputs
+    CHECK_FALSE(crosses(*run, "top.a", "top.q"));
+    CHECK(crosses(*run, "top.a", "top.r"));
+    CHECK_FALSE(crosses(*run, "top.r", "top.s"));
+    // the user reset is released asynchronously to CLK0
+    CHECK(std::ranges::any_of(run->r->cdc->paths, [](const CdcPath& p) {
+        return std::ranges::any_of(p.hits, [](const auto& h) { return h.ruleId == "CDC-006"; });
+    }));
+}

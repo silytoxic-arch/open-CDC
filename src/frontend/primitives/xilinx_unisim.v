@@ -496,12 +496,15 @@ module MUXF8 (output O, input I0, input I1, input S);
     assign O = S ? I1 : I0;
 endmodule
 
-module VCC (output P);
+// also Microchip's VCC and GND (output Y)
+module VCC (output P, output Y);
     assign P = 1'b1;
+    assign Y = 1'b1;
 endmodule
 
-module GND (output G);
+module GND (output G, output Y);
     assign G = 1'b0;
+    assign Y = 1'b0;
 endmodule
 
 // ---------------------------------------------------------------- DDR I/O

@@ -150,12 +150,23 @@ Gowin cells with generic names are modelled **only in Gowin projects** (a `.gprj
 
 `DFF`, `DFFE` and the other Gowin flip-flop cells are not modelled; Gowin `IDDR`/`ODDR` are not modelled either: the names are the Xilinx cells.
 
+## Microchip and Cologne Chip
+
+| Primitive | Model |
+|---|---|
+| `PLL` (PolarFire, the PLL of a `PF_CCC` as Libero writes it) | `OUT0`..`OUT3` derived from `REF_CLK_0`: f(VCO) = f(in) × (`FB_INT_VAL` + `FB_FRAC_VAL` / 2^24) / `RFDIV`, f(`OUTn`) = f(VCO) / (4 × `DIVn_VAL`); `LOCK` has no clock domain; the DRI port is in the `DRI_CLK` domain. Reference selection, bypass and phase are not modelled |
+| `CLKINT`, `CLKINT_PRESERVE`, `CLKBUF` | Global clock buffers (wires) |
+| `VCC`, `GND` | The Xilinx cells, with Microchip's output `Y` too |
+| `CC_PLL` (GateMate) | `CLK0`, `CLK90`, `CLK180`, `CLK270` derived from `CLK_REF`, period ratio `REF_CLK` / `OUT_CLK` (MHz); `CLK_REF_OUT` is the reference; the lock outputs have no clock domain |
+| `CC_USR_RSTN` | The user reset of the configuration logic: no clock domain |
+| `CC_BUFG` | Global buffer (wire) |
+
 ## Not modelled
 
 These primitives are still reported as `FE-UNKNOWN-MODULE`:
 - Xilinx: `ICAPE2`/`ICAPE3`, `PCIE*`, `CMAC*`, `HBM*`;
 - Intel: transceiver IP, `altlvds`, `altiobuf`;
-- Lattice: SERDES (`DCUA`), gearing DDR (`IDDRX2F`, `ODDRX2F`, …), `PDPW16KD`, iCE40 `SB_IO`; Gowin: `IDDR`/`ODDR` (name clash with Xilinx), `SP`, `pROM`, SERDES; Microchip primitives.
+- Lattice: SERDES (`DCUA`), gearing DDR (`IDDRX2F`, `ODDRX2F`, …), `PDPW16KD`; Gowin: `IDDR`/`ODDR` (name clash with Xilinx), `SP`, `pROM`, SERDES; Microchip: `CCC` and the PolarFire transceivers and I/O cells.
 
 For each one you can:
 - provide your own behavioral model in the sources (it replaces the built-in lookup), or
