@@ -571,6 +571,10 @@ private:
         if (p.relation == ClockRelation::Unknown) {
             if (const auto* why = pathExceptionFor(a.node, g, pin, ci, unclockedSource)) {
                 p.relation = ClockRelation::Asynchronous;
+                // also recorded as the path's timing exception (shown, counted and
+                // usable by waivers as for related clocks; corundum: transceiver and PCIe
+                // clocks of black-box IP with set_max_delay -datapath_only per crossing)
+                p.timingException = *why;
                 p.notes.push_back("the clock relation is unknown, but " + *why +
                                   " constrains this crossing: it is analyzed as asynchronous");
             }

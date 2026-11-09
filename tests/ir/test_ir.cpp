@@ -74,6 +74,22 @@ TEST_CASE("SigSpec normalizes, extracts and replaces", "[ir][sigspec]") {
     CHECK(SigSpec::net(a, 4).onlyReferences(a));
 }
 
+TEST_CASE("SigSpec: a constant part written in place into a constant", "[ir][sigspec]") {
+    SigSpec c = SigSpec::allX(8);
+    CHECK(c.overwriteConst(2, SigSpec::constant(0b11, 2)));
+    CHECK(c.asConst()->toString() == "8'bxxxx11xx");
+    CHECK(c.overwriteConst(0, SigSpec::constant(0, 8)));
+    CHECK(c.asConst()->isZero());
+    // negative: not in place when either side is not all constant, or out of range
+    const NetId a{0};
+    SigSpec n = SigSpec::net(a, 4);
+    CHECK_FALSE(n.overwriteConst(0, SigSpec::constant(1, 1)));
+    CHECK(n == SigSpec::net(a, 4));
+    CHECK_FALSE(c.overwriteConst(0, SigSpec::net(a, 1)));
+    CHECK_FALSE(c.overwriteConst(7, SigSpec::constant(0, 2)));
+    CHECK(c.asConst()->isZero());
+}
+
 TEST_CASE("Constant folding of arithmetic, comparison and logic", "[ir][fold]") {
     auto fold = [](CellKind k, std::uint64_t a, std::uint64_t b, std::uint32_t w, std::uint32_t outW,
                    bool isSigned = false) {

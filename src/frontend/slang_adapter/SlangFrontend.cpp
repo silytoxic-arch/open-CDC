@@ -7,7 +7,9 @@
 #include "core/PathUtil.h"
 #include "frontend/slang_adapter/IrBuilder.h"
 
+#include <slang/ast/ASTVisitor.h>
 #include <slang/ast/Compilation.h>
+#include <slang/ast/EvalContext.h>
 #include <slang/ast/Symbol.h>
 #include <slang/ast/symbols/BlockSymbols.h>
 #include <slang/ast/symbols/CompilationUnitSymbols.h>
@@ -91,10 +93,94 @@ struct UnusedRange {
     std::string module;
 };
 
+/// Branches of procedural 'if' statements whose condition is constant in every
+/// instance: never taken (dead) and taken (live) source ranges.
+struct ConstantBranches {
+    std::vector<UnusedRange> dead, live;
+    [[nodiscard]] bool onlyDead(slang::SourceLocation loc) const {
+        auto in = [&](const std::vector<UnusedRange>& v) {
+            return std::ranges::any_of(v, [&](const UnusedRange& r) {
+                return loc.buffer() == r.buffer && loc.offset() >= r.begin && loc.offset() < r.end;
+            });
+        };
+        if (!in(dead))
+            return false;
+        // the innermost range decides: a live branch nested in a dead one stays dead
+        const UnusedRange* best = nullptr;
+        bool bestDead = false;
+        for (const auto* v : {&dead, &live})
+            for (const auto& r : *v)
+                if (loc.buffer() == r.buffer && loc.offset() >= r.begin && loc.offset() < r.end &&
+                    (!best || r.end - r.begin < best->end - best->begin ||
+                     (r.end - r.begin == best->end - best->begin && v == &live))) {
+                    best = &r;
+                    bestDead = v == &dead;
+                }
+        return bestDead;
+    }
+};
+
+/// Collects the branches of procedural 'if (constant)' statements in the elaborated
+/// design (corundum pcie_tlp_fifo_raw.v: `if (OUT_TLP_SEG_COUNT > 1) ... x[i +: SEG_SEL_WIDTH]`
+/// with SEG_SEL_WIDTH = 0 when the count is 1). The same statement in another
+/// instance, with other parameters, may take the other branch: it is then live.
+struct ConstantBranchCollector
+    : sast::ASTVisitor<ConstantBranchCollector, sast::VisitFlags::Statements | sast::VisitFlags::Expressions |
+                                                    sast::VisitFlags::Bad> { // the erroneous code is in "bad" nodes
+    const slang::SourceManager& sm;
+    ConstantBranches& out;
+    const sast::InstanceBodySymbol* body = nullptr;
+    ConstantBranchCollector(const slang::SourceManager& m, ConstantBranches& o) : sm(m), out(o) {}
+    /// The range of a statement as offsets in its file (none when slang kept no range:
+    /// a statement containing an error, and the block around it).
+    std::optional<UnusedRange> rangeOf(slang::SourceRange r) const {
+        if (!r.start().valid() || !r.end().valid())
+            return std::nullopt;
+        const auto b = sm.getFullyOriginalLoc(r.start());
+        const auto e = sm.getFullyOriginalLoc(r.end());
+        if (b.buffer() != e.buffer())
+            return std::nullopt;
+        return UnusedRange{b.buffer(), b.offset(), e.offset(), {}};
+    }
+    void handle(const sast::InstanceBodySymbol& b) {
+        const auto* saved = std::exchange(body, &b);
+        visitDefault(b);
+        body = saved;
+    }
+    // slang wraps a statement containing an error in an InvalidStatement
+    void handle(const sast::InvalidStatement& s) {
+        if (s.child)
+            s.child->visit(*this);
+    }
+    void handle(const sast::ConditionalStatement& c) {
+        if (body && c.conditions.size() == 1 && !c.conditions[0].pattern) {
+            sast::EvalContext ctx(*body);
+            const auto v = c.conditions[0].expr->eval(ctx);
+            const auto whole = rangeOf(c.sourceRange);
+            const auto cond = rangeOf(c.conditions[0].expr->sourceRange);
+            if (v.isInteger() && !v.integer().hasUnknown() && whole && cond && cond->buffer == whole->buffer) {
+                // a branch without a range of its own spans the gap up to its neighbour
+                auto then = rangeOf(c.ifTrue.sourceRange);
+                auto other = c.ifFalse ? rangeOf(c.ifFalse->sourceRange) : std::nullopt;
+                if (!then)
+                    then = UnusedRange{whole->buffer, cond->end, other ? other->begin : whole->end, {}};
+                if (c.ifFalse && !other && then->end <= whole->end)
+                    other = UnusedRange{whole->buffer, then->end, whole->end, {}};
+                const bool taken = static_cast<bool>(v.integer() != 0);
+                (taken ? out.live : out.dead).push_back(*then);
+                if (other)
+                    (taken ? out.dead : out.live).push_back(*other);
+            }
+        }
+        visitDefault(c);
+    }
+};
+
 bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::SourceManager& sm, DiagnosticSink& sink,
                             const std::set<std::string>* lenientModules = nullptr,
                             const std::vector<UnusedRange>* unused = nullptr,
-                            const slang::Diagnostics* parseDiags = nullptr) {
+                            const slang::Diagnostics* parseDiags = nullptr,
+                            const ConstantBranches* branches = nullptr) {
     slang::DiagnosticEngine engine(sm);
     (void)engine.setWarningOptions({}); // slang's default warning set
     bool errors = false;
@@ -196,6 +282,13 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
                                         "tools elaborate from the top and do not check it)");
                     break;
                 }
+            // a semantic error in a branch of 'if (constant)' that no instance takes:
+            // synthesis does not elaborate it (and OpenCDC does not lower it)
+            if (!syntax && out.isError() && branches && branches->onlyDead(loc)) {
+                out.severity = Severity::Warning;
+                out.notes.push_back("in a branch of an 'if' whose condition is constant and false in every instance "
+                                    "(FPGA tools do not elaborate that branch)");
+            }
         }
         errors = errors || out.isError();
         for (const auto& note : diag.notes) {
@@ -839,10 +932,15 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
         if (b.buffer() == e.buffer())
             unused.push_back({b.buffer(), b.offset(), e.offset(), std::string(def->name)});
     }
+    ConstantBranches branches;
+    if (std::ranges::any_of(slangDiags, [](const slang::Diagnostic& d) { return d.isError(); })) {
+        ConstantBranchCollector collector(sourceManager, branches);
+        root.visit(collector);
+    }
     const bool hdlErrors = reportSlangDiagnostics(slangDiags, sourceManager, sink,
                                                   mixed ? &mixed->lenientModules : nullptr,
                                                   input.top.empty() && !mixed ? nullptr : &unused,
-                                                  &compilation.getParseDiagnostics());
+                                                  &compilation.getParseDiagnostics(), &branches);
 
     FrontendOutput output;
     ElaborationSummary& summary = output.summary;

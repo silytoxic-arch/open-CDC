@@ -253,13 +253,28 @@ void DesignObjectResolver::buildRegisters() {
                 // indices (a pipeline such as m_axis_pipe_reg[j]) is made of
                 // flip-flops named per element: "<net>_reg[<element>]"
                 // (elements counted from 0 in storage order).
+                // (also through multiplexers: several writes in one block, corundum
+                // queue_manager's queue_ram, 2^14 x 128 bits)
                 bool memory = false;
-                if (auto b = view_.bitOf(inst, r.d, 0)) {
-                    const auto drv = view_.driver(*b);
-                    if (drv.kind == graph::DriverKind::Cell) {
-                        const auto& db = d.body(d.instances[drv.bit.inst.index()].body);
-                        memory = drv.index < db.cells.size() && db.cells[drv.index].kind == ir::CellKind::DynInsert;
-                    }
+                std::vector<graph::BitRef> todo;
+                if (auto b = view_.bitOf(inst, r.d, 0))
+                    todo.push_back(*b);
+                for (int steps = 0; !todo.empty() && !memory && steps < 16; ++steps) {
+                    const auto drv = view_.driver(todo.back());
+                    todo.pop_back();
+                    if (drv.kind != graph::DriverKind::Cell)
+                        continue;
+                    const auto& db = d.body(d.instances[drv.bit.inst.index()].body);
+                    if (drv.index >= db.cells.size())
+                        continue;
+                    const auto& cell = db.cells[drv.index];
+                    if (cell.kind == ir::CellKind::DynInsert)
+                        memory = true;
+                    else if (cell.kind == ir::CellKind::Mux && cell.inputs.size() >= 3)
+                        for (std::size_t in = 0; in < 2; ++in) // A and B (inputs: A, B, S)
+                            if (cell.inputs[in].width() > drv.bit.bit)
+                                if (auto nb = view_.bitOf(drv.bit.inst, cell.inputs[in], drv.bit.bit))
+                                    todo.push_back(*nb);
                 }
                 const std::uint32_t ew = net.elemWidth;
                 if (memory || ew == 0)
@@ -466,6 +481,78 @@ std::vector<Object> DesignObjectResolver::cells(std::string_view pattern, bool h
     return out;
 }
 
+namespace {
+std::string lowered(std::string_view s) {
+    std::string r(s);
+    for (char& c : r)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return r;
+}
+
+/// The longest run of literal characters every match of an ECMAScript regex must
+/// contain (empty when none is certain): a cheap pre-check before std::regex_match.
+/// Runs stop at groups, classes, brackets (also escaped: a bit index is never part of
+/// a run) and at a character a quantifier applies to; none with a top-level '|'.
+std::string requiredLiteral(std::string_view re) {
+    std::string best, cur;
+    auto flush = [&] {
+        if (cur.size() > best.size())
+            best = cur;
+        cur.clear();
+    };
+    auto quantified = [&](std::size_t next) {
+        return next < re.size() && (re[next] == '*' || re[next] == '+' || re[next] == '?' || re[next] == '{');
+    };
+    int depth = 0;
+    for (std::size_t i = 0; i < re.size(); ++i) {
+        const char c = re[i];
+        if (c == '(' || c == '[') {
+            flush();
+            ++depth;
+            if (c == '[') { // skip the class
+                for (++i; i < re.size() && re[i] != ']'; ++i)
+                    if (re[i] == '\\')
+                        ++i;
+                --depth;
+            }
+            continue;
+        }
+        if (c == ')') {
+            flush();
+            depth = std::max(0, depth - 1);
+            continue;
+        }
+        if (depth > 0) // inside a group (it may be optional)
+            continue;
+        if (c == '|') // an alternative at the top level: nothing is certain
+            return {};
+        std::optional<char> lit;
+        std::size_t next = i + 1;
+        if (c == '\\' && i + 1 < re.size()) {
+            const char e = re[i + 1];
+            next = i + 2;
+            if (std::isalnum(static_cast<unsigned char>(e)) || e == '[' || e == ']')
+                lit.reset(); // \d, \w, \b ... or a bracket
+            else
+                lit = e;
+            ++i;
+        }
+        else if (std::string_view(".^$*+?{}]").find(c) == std::string_view::npos)
+            lit = c;
+        if (!lit || quantified(next)) {
+            flush();
+            continue;
+        }
+        cur += *lit;
+    }
+    flush();
+    // only digits could match inside a bit index ("[12]"): not certain then
+    if (std::ranges::all_of(best, [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; }))
+        return {};
+    return best;
+}
+} // namespace
+
 std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bool hierarchical, bool nocase) {
     buildRegisters();
     buildInstances();
@@ -473,6 +560,16 @@ std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bo
     if (nocase)
         flags |= std::regex::icase;
     const std::regex re{std::string(regex), flags};
+    // corundum's constraint scripts call get_cells -hier -regexp for every FIFO
+    // instance: names without the literal part of the pattern are skipped cheaply
+    std::string literal = requiredLiteral(regex);
+    if (nocase)
+        literal = lowered(literal);
+    auto mayHit = [&](const std::string& name) {
+        if (literal.empty())
+            return true;
+        return nocase ? lowered(name).find(literal) != std::string::npos : name.find(literal) != std::string::npos;
+    };
     auto hitsOne = [&](const std::string& name) {
         if (std::regex_match(name, re))
             return true;
@@ -491,6 +588,9 @@ std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bo
     std::vector<Object> out;
     for (std::size_t r = 0; r < regs_.size(); ++r) {
         const auto& it = regs_[r];
+        // the literal has no brackets: it is in a bit name only if in the register name
+        if (!mayHit(it.name) && !mayHit(withoutGenblk(it.name)))
+            continue;
         Object o{ObjectKind::Cell, it.name, {}, static_cast<std::int32_t>(r), false};
         if (hits(it.name)) {
             for (std::uint32_t b = 0; b < it.width; ++b)
@@ -518,7 +618,7 @@ std::vector<Object> DesignObjectResolver::cellsRegexp(std::string_view regex, bo
             out.push_back(std::move(o));
     }
     for (std::size_t i = 0; i < insts_.size(); ++i)
-        if (hits(insts_[i]))
+        if ((mayHit(insts_[i]) || mayHit(withoutGenblk(insts_[i]))) && hits(insts_[i]))
             out.push_back({ObjectKind::Cell, insts_[i], {}, static_cast<std::int32_t>(i), true});
     return out;
 }
@@ -578,10 +678,15 @@ std::vector<Object> DesignObjectResolver::perBit(const Object& cell) {
     // a whole vector register only: "x_reg" -> "x_reg[0]", "x_reg[1]", ...
     if (cell.name != it.name || (it.width < 2 && !it.vector) || !it.indexable || !it.explicitBits.empty() || it.name.ends_with(']'))
         return {cell};
+    // which bits the object has (one pass: a wide register would make a search per bit quadratic)
+    std::vector<bool> has(it.width, false);
+    for (const auto& b : cell.bits)
+        if (b.inst == it.first.inst && b.net == it.first.net && b.bit >= it.first.bit && b.bit - it.first.bit < it.width)
+            has[b.bit - it.first.bit] = true;
     std::vector<Object> out;
     for (std::uint32_t b = 0; b < it.width; ++b) {
         const BitRef bit{it.first.inst, it.first.net, it.first.bit + b};
-        if (std::ranges::find(cell.bits, bit) == cell.bits.end())
+        if (!has[b])
             continue;
         const std::int32_t index =
             it.msb >= it.lsb ? it.lsb + static_cast<std::int32_t>(b) : it.lsb - static_cast<std::int32_t>(b);

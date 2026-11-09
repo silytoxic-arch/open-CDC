@@ -392,6 +392,37 @@ TEST_CASE("case: items covering every value of a computed selector, a constant s
     CHECK(e.has("comb  w = 8'b00000001"));
 }
 
+TEST_CASE("initial blocks start from the power-up value", "[extract]") {
+    // corundum queue_manager.v: a 2^13-entry RAM cleared element by element (written in
+    // place: one copy per element would make it quadratic); a partly assigned variable
+    // keeps unknown bits; a declaration's initializer is the starting value
+    auto e = extract("module m(input clk, input [1:0] a, output reg [7:0] q, output reg [7:0] p, output reg [7:0] r);\n"
+                     "  reg [7:0] mem [0:3];\n"
+                     "  reg [7:0] half;\n"
+                     "  reg [7:0] dflt = 8'hF0;\n"
+                     "  integer i;\n"
+                     "  initial begin\n"
+                     "    for (i = 0; i < 4; i = i + 1) mem[i] = 8'h0;\n"
+                     "    half[3:0] = 4'h5;\n"
+                     "    dflt[0] = 1'b1;\n"
+                     "  end\n"
+                     "  always @(posedge clk) begin q <= mem[a]; p <= half; r <= dflt; end\n"
+                     "endmodule\n",
+                     LanguageStd::Verilog2001, "m");
+    CHECK(e.has("var [8 x 4] mem init=32'b00000000000000000000000000000000"));
+    CHECK(e.has("var [7:0] half init=8'bxxxx0101"));
+    CHECK(e.has("var [7:0] dflt init=8'b11110001"));
+    CHECK(e.countCode("IR-INITIAL-IGNORED") == 0);
+    // negative: a value that is not constant is still ignored
+    auto n = extract("module m(input clk, input d, output reg q);\n"
+                     "  reg x;\n"
+                     "  initial x = d;\n"
+                     "  always @(posedge clk) q <= x;\n"
+                     "endmodule\n",
+                     LanguageStd::Verilog2001, "m");
+    CHECK(n.countCode("IR-INITIAL-IGNORED") == 1);
+}
+
 // ---------------------------------------------------------------------------
 // Combinational processes and latches
 // ---------------------------------------------------------------------------

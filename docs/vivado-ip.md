@@ -227,7 +227,9 @@ to `blackbox`.
 A VHDL component declaration of such an IP still helps. With the IP as a
 black box, its outputs drive their signals: a clock output becomes a clock of
 its own (for example the `ui_clk` of a memory interface without a model), and
-its registers are analyzed. Constraints that refer to the inside of the black box are noted,
+its registers are analyzed. A Verilog instance of an unknown module has no port
+directions: a signal connected to it that nothing else drives is taken as its
+output (for example the `user_clk` of a PCIe IP generated from a Tcl script). Constraints that refer to the inside of the black box are noted,
 not warned.
 
 ## Example

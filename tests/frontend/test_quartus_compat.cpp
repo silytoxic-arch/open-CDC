@@ -44,7 +44,7 @@ struct Analysis {
 
 /// The design in `files` (name -> text), top `top`, with an SDC.
 Analysis analyze(test::TempDir& dir, const std::vector<std::pair<std::string, std::string>>& files,
-                 const std::string& top, const std::string& sdc = "") {
+                 const std::string& top, const std::string& sdc = "", const std::string& extraJson = "") {
     std::string sources;
     for (const auto& [n, t] : files) {
         dir.write(n, t);
@@ -57,7 +57,7 @@ Analysis analyze(test::TempDir& dir, const std::vector<std::pair<std::string, st
     }
     const auto p = dir.write("p.ocdc.json", "{\"format\": \"opencdc-project\", \"version\": 1, \"name\": \"p\", "
                                             "\"top\": \"" + top + "\", \"sources\": [" + sources + "]" +
-                                                constraints + "}");
+                                                constraints + extraJson + "}");
     auto cfg = engine::loadProjectFile(p);
     REQUIRE(cfg);
     engine::AnalysisSession session;
@@ -163,6 +163,82 @@ TEST_CASE("True dual-port RAM written from two always blocks", "[frontend][quart
     CHECK(a.crosses("m.ram", "m.qb"));
     CHECK_FALSE(a.crosses("m.one#2", "m.r1"));
     CHECK(a.crosses("m.one", "m.r1"));
+}
+
+TEST_CASE("Errors in a branch of 'if (constant)' that no instance takes are warnings", "[frontend]") {
+    // corundum pcie_tlp_fifo_raw.v: if (OUT_TLP_SEG_COUNT > 1) ... x[i*W +: W] with W = $clog2(1) = 0
+    test::TempDir dir;
+    const auto a = analyze(dir,
+                           {{"m.v", "module m #(parameter N = 1, parameter W = $clog2(N)) (input clk, input [3:0] d,\n"
+                                    "  output reg [3:0] q);\n"
+                                    "  reg [N*W-1:0] sel;\n"
+                                    "  always @* begin\n"
+                                    "    sel = 0;\n"
+                                    "    if (N > 1) begin\n"
+                                    "      sel[0 +: W] = d[0];\n"
+                                    "    end else begin\n"
+                                    "      sel = 0;\n"
+                                    "    end\n"
+                                    "  end\n"
+                                    "  always @(posedge clk) q <= d ^ sel;\n"
+                                    "endmodule\n"
+                                    "module top(input clk, input [3:0] d, output [3:0] q);\n"
+                                    "  m u (.clk(clk), .d(d), .q(q));\n"
+                                    "endmodule\n"}},
+                           "top");
+    CHECK(a.errors() == 0);
+    CHECK(a.has("FE-SLANG-ValueMustBePositive", "positive"));
+    REQUIRE(a.r->cdc);
+    CHECK(a.count("IR-ALWAYS-NO-EVENT") == 0);
+    CHECK(a.count("IR-UNSUPPORTED-STMT") == 0);
+    // negative: the same error where the branch is taken stays an error
+    test::TempDir dir2;
+    const auto b = analyze(dir2,
+                           {{"m.v", "module top #(parameter N = 1, parameter W = $clog2(N)) (input clk, input [3:0] d,\n"
+                                    "  output reg [3:0] q);\n"
+                                    "  reg [3:0] sel;\n"
+                                    "  always @* begin\n"
+                                    "    sel = 0;\n"
+                                    "    if (N < 2) sel[0 +: W] = d[0];\n"
+                                    "  end\n"
+                                    "  always @(posedge clk) q <= d ^ sel;\n"
+                                    "endmodule\n"}},
+                           "top");
+    CHECK(b.errors() > 0);
+}
+
+TEST_CASE("Black boxes: what only an unknown module connects is its output", "[frontend]") {
+    // corundum: the PCIe IP (generated from Tcl, no sources) drives user_clk
+    test::TempDir dir;
+    const auto a = analyze(dir,
+                           {{"m.v", "module top(input clk_a, input d, input [1:0] cfg, output reg q, output reg r);\n"
+                                    "  wire user_clk, ip_data;\n"
+                                    "  reg a_q;\n"
+                                    "  always @(posedge clk_a) a_q <= d;\n"
+                                    // a_q and cfg are driven here: inputs of the black box, not hijacked
+                                    "  pcie_ip u_ip (.user_clk(user_clk), .data_out(ip_data), .data_in(a_q), .cfg(cfg));\n"
+                                    "  always @(posedge user_clk) q <= a_q;\n"
+                                    "  always @(posedge user_clk) r <= ip_data;\n"
+                                    "endmodule\n"}},
+                           "top", "create_clock -name ca -period 10 [get_ports clk_a]\n"
+                                  "set_max_delay -datapath_only -from [get_cells a_q_reg] -to [get_cells q_reg] 4\n",
+                           ", \"options\": {\"unknownModules\": \"blackbox\"}");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-BLACKBOX-MODULE") == 1);
+    CHECK(a.count("CLK-UNRESOLVED") == 0);
+    REQUIRE(a.r->clocks);
+    CHECK(std::ranges::any_of(a.r->clocks->clocks, [](const auto& c) { return c.name.find("user_clk") != std::string::npos; }));
+    // the crossing into the black box's clock domain is analyzed, and the designer's
+    // set_max_delay -datapath_only is recorded (the clock relation is unknown)
+    REQUIRE(a.r->cdc);
+    const auto it = std::ranges::find_if(a.r->cdc->paths, [](const auto& p) {
+        return p.srcName == "top.a_q" && p.dstName == "top.q";
+    });
+    REQUIRE(it != a.r->cdc->paths.end());
+    CHECK_FALSE(it->timingException.empty());
+    // negative: a_q keeps its own register as driver (no multiple drivers from the black box)
+    CHECK(a.count("IR-MULTIDRIVER") == 0);
+    CHECK(a.crosses("top.a_q", "top.q"));
 }
 
 TEST_CASE("Quartus compatibility negative: real errors stay errors", "[frontend][quartus]") {

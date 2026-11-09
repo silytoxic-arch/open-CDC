@@ -112,6 +112,15 @@ std::vector<std::pair<std::uint32_t, std::uint32_t>> runs(const BitMask& m) {
 // ============================================================================
 
 namespace {
+/// A statement slang marked invalid because it contains an error inside a branch of
+/// 'if (constant)' that is never taken (reported as a warning): the statement itself.
+const sast::Statement& unwrapInvalid(const sast::Statement& s) {
+    const sast::Statement* p = &s;
+    while (p->kind == sast::StatementKind::Invalid && p->as<sast::InvalidStatement>().child)
+        p = p->as<sast::InvalidStatement>().child;
+    return *p;
+}
+
 /// The variable at the root of an assignment target (`ram[a]` -> ram).
 const sast::ValueSymbol* targetRoot(const sast::Expression& e) {
     switch (e.kind) {
@@ -148,8 +157,9 @@ void BodyBuilder::findSharedMemories(const sast::Scope& scope) {
                 // logic is not a RAM
                 if ((pb.procedureKind != sast::ProceduralBlockKind::Always &&
                      pb.procedureKind != sast::ProceduralBlockKind::AlwaysFF) ||
-                    pb.getBody().kind != sast::StatementKind::Timed ||
-                    pb.getBody().as<sast::TimedStatement>().timing.kind == sast::TimingControlKind::ImplicitEvent)
+                    unwrapInvalid(pb.getBody()).kind != sast::StatementKind::Timed ||
+                    unwrapInvalid(pb.getBody()).as<sast::TimedStatement>().timing.kind ==
+                        sast::TimingControlKind::ImplicitEvent)
                     continue;
                 WrittenMemories w;
                 pb.getBody().visit(w);
@@ -271,11 +281,36 @@ void BodyBuilder::assignTargets(const std::vector<LTarget>& targets, const SigSp
 
         ProcState& st = *proc_;
         const std::uint32_t W = widthOf(*t.sym);
+        // a constant into a value that is all constant (an initial block clearing a
+        // memory element by element: corundum queue_manager.v, 2^13 entries): in place,
+        // without copying the whole value for every element
+        if (!nb && !t.dynamic && t.offset + t.width <= W) {
+            if (auto* cur = st.cur.find(t.sym); cur && cur->width() == W && cur->overwriteConst(t.offset, part)) {
+                markBits(st.all[t.sym], W, t.offset, t.width);
+                markBits(st.any[t.sym], W, t.offset, t.width);
+                st.blockingWritten.insert(t.sym);
+                continue;
+            }
+        }
         SigSpec base;
         if (nb)
             base = nbaBase(st, *t.sym);
         else if (const auto* cur = st.cur.find(t.sym))
             base = *cur;
+        else if (auto n = inInitial_ ? netFor(*t.sym) : std::nullopt) {
+            // an initial block starts from the power-up value: the declaration's
+            // initializer, or unknown; bits it does not assign stay so (and the value
+            // stays constant, written in place element by element)
+            const auto& init = body_.net(*n).init;
+            base = init && init->width() == W ? SigSpec::constant(*init) : SigSpec::allX(W);
+            if (!t.dynamic && t.offset + t.width <= W && base.overwriteConst(t.offset, part)) {
+                st.cur[t.sym] = std::move(base);
+                markBits(st.all[t.sym], W, t.offset, t.width);
+                markBits(st.any[t.sym], W, t.offset, t.width);
+                st.blockingWritten.insert(t.sym);
+                continue;
+            }
+        }
         else
             base = defaultValue(*t.sym);
         if (base.width() != W)
@@ -355,6 +390,12 @@ void BodyBuilder::exec(const sast::Statement& s, ProcState& st) {
 
     switch (s.kind) {
         case SK::Empty: return;
+        case SK::Invalid:
+            if (const auto* child = s.as<sast::InvalidStatement>().child) {
+                exec(*child, st);
+                return;
+            }
+            break;
         case SK::List:
             for (const auto* item : s.as<sast::StatementList>().list) {
                 if (st.returned)
@@ -1011,7 +1052,7 @@ void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
     } restore{curBlock_, savedBlock};
     using PK = sast::ProceduralBlockKind;
     const auto l = pb.location;
-    const auto& body = pb.getBody();
+    const auto& body = unwrapInvalid(pb.getBody());
     switch (pb.procedureKind) {
         case PK::Final: return;
         case PK::Initial: lowerInitial(body, l); return;
@@ -1090,7 +1131,9 @@ void BodyBuilder::lowerProcedure(const sast::ProceduralBlockSymbol& pb) {
 
 void BodyBuilder::lowerInitial(const sast::Statement& body, slang::SourceLocation l) {
     ProcState st;
+    const bool savedInitial = std::exchange(inInitial_, true);
     exec(body, st);
+    inInitial_ = savedInitial;
     for (const auto& [s, mask] : st.any) {
         auto net = netFor(*s);
         if (!net)

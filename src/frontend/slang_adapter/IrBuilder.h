@@ -226,6 +226,7 @@ private:
     };
     std::unordered_map<const sast::ValueSymbol*, SharedMemory> sharedMem_;
     const sast::ProceduralBlockSymbol* curBlock_ = nullptr; ///< the block being lowered
+    bool inInitial_ = false; ///< lowering an initial block (power-up values)
     void findSharedMemories(const sast::Scope& scope);
     /// the copy of a shared memory written by the block being lowered
     std::optional<ir::NetId> ownCopy(const sast::ValueSymbol& s) const;

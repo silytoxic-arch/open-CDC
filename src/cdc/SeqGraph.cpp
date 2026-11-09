@@ -471,14 +471,58 @@ BitInput SeqGraph::computeCell(const CellKey& root) {
             m.state = 1;
             std::vector<ResolvedInput> inputs;
             bool pushed = false;
-            for (const auto& ci : k.bit == kAll ? allCellInputs(InstanceId{k.inst}, k.cell)
-                                                : cellInputs(InstanceId{k.inst}, k.cell, k.bit)) {
+            // A cell evaluated as a whole (very wide: the read and write logic of a
+            // 2^14 x 128 bit RAM, corundum cpl_queue_manager) has millions of input
+            // bits; its cone keeps one entry per source with a bit hull, so its
+            // inputs are reduced first: one per wide driver cell, and the lowest and
+            // highest bit of each other source (kept until its dependencies are done)
+            struct InKey {
+                std::uint64_t a = 0, b = 0;
+                bool operator==(const InKey&) const = default;
+            };
+            struct InKeyHash {
+                std::size_t operator()(const InKey& x) const noexcept { return x.a * 0x9E3779B97F4A7C15ULL ^ x.b; }
+            };
+            std::unordered_map<InKey, std::pair<std::size_t, std::size_t>, InKeyHash> seen; // lowest, highest
+            const bool whole = k.bit == kAll;
+            for (const auto& ci : whole ? allCellInputs(InstanceId{k.inst}, k.cell)
+                                        : cellInputs(InstanceId{k.inst}, k.cell, k.bit)) {
                 const Driver d = view_.driver(ci.bit);
+                std::optional<CellKey> dk;
                 if (d.kind == DriverKind::Cell) {
-                    const CellKey dk = keyFor(d.bit.inst, d.index, d.bit.bit);
-                    if (memo_[dk].state == 0) { // may rehash: `m` is not used below
-                        stack.push_back(dk);
+                    dk = keyFor(d.bit.inst, d.index, d.bit.bit);
+                    if (memo_[*dk].state == 0) { // may rehash: `m` is not used below
+                        stack.push_back(*dk);
                         pushed = true;
+                    }
+                }
+                if (whole) {
+                    const std::uint64_t head = (static_cast<std::uint64_t>(d.kind) << 56) |
+                                               (static_cast<std::uint64_t>(ci.flags) << 48) | d.bit.inst.value;
+                    const InKey key = dk ? InKey{head, (static_cast<std::uint64_t>(dk->cell) << 32) | dk->bit}
+                                         : InKey{head, (static_cast<std::uint64_t>(d.index) << 32) | d.bit.net.value};
+                    const auto [it, fresh] = seen.try_emplace(key, inputs.size(), inputs.size());
+                    if (!fresh) {
+                        if (dk)
+                            continue; // the same cone again
+                        auto& [lo, hi] = it->second;
+                        if (d.bit.bit < inputs[lo].driver.bit.bit) {
+                            if (lo == hi) {
+                                lo = inputs.size();
+                                inputs.push_back({ci, d});
+                            }
+                            else
+                                inputs[lo] = {ci, d};
+                        }
+                        else if (d.bit.bit > inputs[hi].driver.bit.bit) {
+                            if (lo == hi) {
+                                hi = inputs.size();
+                                inputs.push_back({ci, d});
+                            }
+                            else
+                                inputs[hi] = {ci, d};
+                        }
+                        continue;
                     }
                 }
                 inputs.push_back({ci, d});

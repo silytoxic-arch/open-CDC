@@ -510,6 +510,67 @@ TEST_CASE("Design resolver: netlist traversal of flip-flop pins, nets and cells;
     CHECK(q.set.clocks[0].name == "x00");
 }
 
+TEST_CASE("get_cells -regexp: the literal pre-check keeps every match", "[constraints]") {
+    // corundum's scripts call get_cells -hier -regexp per instance: names without the
+    // pattern's literal part are skipped before std::regex_match; the result is the same
+    auto b = test::buildDesign("module m(input clk, input [3:0] d, output [3:0] q);\n"
+                               "  reg rb_addr_reg, rb_di_reg, rb_we_reg, other_reg;\n"
+                               "  reg [1:0] Sync_reg;\n"
+                               "  always @(posedge clk) begin rb_addr_reg <= d[0]; rb_di_reg <= d[1]; rb_we_reg <= d[2];\n"
+                               "    other_reg <= d[3]; Sync_reg <= d[1:0]; end\n"
+                               "  assign q = {rb_addr_reg ^ rb_di_reg ^ rb_we_reg, other_reg, Sync_reg};\n"
+                               "endmodule\n"
+                               "module top(input clk, input [3:0] d, output [3:0] q0, output [3:0] q1);\n"
+                               "  m u0 (.clk(clk), .d(d), .q(q0));\n"
+                               "  m u1 (.clk(clk), .d(d), .q(q1));\n"
+                               "endmodule\n",
+                               "top");
+    graph::DesignView view(*b.design);
+    DesignObjectResolver r(view);
+    // an alternative inside a group: the literal outside it is still required
+    CHECK(r.cellsRegexp(".*/rb_(addr|di|we)_reg_reg", true, false).size() == 6);
+    // an alternative at the top level: no literal is certain
+    CHECK(r.cellsRegexp(".*/rb_di_reg_reg|u1/other_reg_reg", true, false).size() == 3);
+    // an optional part (quantified group, quantified character)
+    CHECK(r.cellsRegexp(".*/rb_we(_x)?_reg_reg", true, false).size() == 2);
+    CHECK(r.cellsRegexp(".*/othe?r_reg_reg", true, false).size() == 2);
+    // bits: the literal stops at the escaped bracket
+    CHECK(r.cellsRegexp(".*/Sync_reg_reg\\[\\d+\\]", true, false).size() == 4);
+    // -nocase: the literal is compared without case too
+    CHECK(r.cellsRegexp(".*/sync_reg_reg\\[1\\]", true, true).size() == 2);
+    // negative: nothing that lacks the literal
+    CHECK(r.cellsRegexp(".*/rb_(addr|di)_xyz_reg", true, false).empty());
+    CHECK(r.cellsRegexp(".*/sync_reg_reg\\[1\\]", true, false).empty()); // case matters without -nocase
+}
+
+TEST_CASE("Design resolver: an array written through a multiplexer is a memory, not flip-flops", "[constraints]") {
+    // corundum queue_manager: several writes to queue_ram in one block (a mux of dynamic inserts)
+    auto b = test::buildDesign("module top(input clk, input [1:0] a, input [1:0] b, input [7:0] d, input we, input wb,\n"
+                               "           output reg [7:0] q, output reg [7:0] p);\n"
+                               "  reg [7:0] mem [0:3];\n"
+                               "  always @(posedge clk) begin\n"
+                               "    if (we) mem[a] <= d;\n"
+                               "    if (wb) mem[b] <= ~d;\n"
+                               "    q <= mem[a];\n"
+                               "  end\n"
+                               // negative: written at constant indices only (a pipeline): flip-flops per element
+                               "  reg [7:0] pipe [0:1];\n"
+                               "  always @(posedge clk) begin pipe[0] <= d; pipe[1] <= pipe[0]; p <= pipe[1]; end\n"
+                               "endmodule\n",
+                               "top");
+    graph::DesignView view(*b.design);
+    DesignObjectResolver r(view);
+    CHECK(r.cells("mem_reg*", false, false).empty());
+    auto bits = [&](std::string_view pattern) {
+        std::size_t n = 0;
+        for (const auto& o : r.cells(pattern, false, false))
+            n += o.bits.size();
+        return n;
+    };
+    CHECK(bits("pipe_reg[1][*]") == 8);
+    CHECK(bits("q_reg[*]") == 8);
+}
+
 TEST_CASE("get_cells -regexp: filters compare with regular expressions", "[constraints]") {
     auto b = test::buildDesign("module mii_phy_if(input clk, input d, output reg q);\n"
                                "  always @(posedge clk) q <= d;\n"

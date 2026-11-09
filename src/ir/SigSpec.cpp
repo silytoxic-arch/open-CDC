@@ -29,6 +29,20 @@ SigSpec SigSpec::allX(std::uint32_t width) {
     return constant(ConstBits(width, Logic::X));
 }
 
+bool SigSpec::overwriteConst(std::uint32_t offset, const SigSpec& part) {
+    if (chunks_.size() != 1 || !chunks_[0].isConst() || offset + part.width() > width_)
+        return false;
+    for (const auto& c : part.chunks_)
+        if (!c.isConst())
+            return false;
+    ConstBits& bits = chunks_[0].constant;
+    std::uint32_t pos = offset;
+    for (const auto& c : part.chunks_)
+        for (std::uint32_t i = 0; i < c.width; ++i)
+            bits[pos++] = c.constant[i];
+    return true;
+}
+
 void SigSpec::append(const SigChunk& chunk) {
     if (chunk.width == 0)
         return;

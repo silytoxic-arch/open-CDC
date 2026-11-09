@@ -973,7 +973,8 @@ void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
             if (owner_.blackBoxUnknown())
                 owner_.report({"FE-BLACKBOX-MODULE", Severity::Warning,
                                "unknown module '" + ci.definition + "': instance '" + std::string(u.name) +
-                                   "' is analyzed as a black box (its outputs have no clock domain; crossings "
+                                   "' is analyzed as a black box (signals it alone connects are its outputs: "
+                                   "without a clock domain as data, a clock of their own as clocks; crossings "
                                    "through it are not checked)",
                                ci.loc, {}});
             else
@@ -985,6 +986,22 @@ void BodyBuilder::lowerUninstantiated(const sast::UninstantiatedDefSymbol& u) {
         owner_.design().unsupported.push_back(
             {"IR-UNRESOLVED-INSTANCE", body_.name, "instance '" + std::string(u.name) + "' of an unknown module",
              loc(u.location)});
+        if (owner_.blackBoxUnknown()) {
+            // its connections, direction unknown: what nothing else drives is its output
+            const auto conns = u.getPortConnections();
+            const auto pnames = u.getPortNames();
+            for (std::size_t k = 0; k < conns.size(); ++k) {
+                PortBinding pb;
+                pb.port = k < pnames.size() ? std::string(pnames[k]) : std::string();
+                pb.dir = PortDir::None;
+                if (const auto* ae = conns[k]; ae && ae->kind == sast::AssertionExprKind::Simple) {
+                    const auto& e = ae->as<sast::SimpleAssertionExpr>().expr;
+                    if (e.kind != sast::ExpressionKind::EmptyArgument && !e.bad())
+                        pb.actual = lower(e);
+                }
+                ci.ports.push_back(std::move(pb));
+            }
+        }
     }
     body_.children.push_back(std::move(ci));
 }

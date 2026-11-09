@@ -55,6 +55,9 @@ public:
     [[nodiscard]] SigSpec repeated(std::uint32_t count) const;
 
     [[nodiscard]] bool isFullyConst() const noexcept;
+    /// When this is one constant and `part` is constant: overwrites
+    /// [offset, offset + part.width()) in place and returns true (no copy of the rest).
+    bool overwriteConst(std::uint32_t offset, const SigSpec& part);
     [[nodiscard]] std::optional<ConstBits> asConst() const;
     /// True if every bit refers to `net`.
     [[nodiscard]] bool onlyReferences(NetId net) const noexcept;

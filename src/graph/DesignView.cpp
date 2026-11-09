@@ -68,6 +68,41 @@ DesignView::DesignView(const Design& design) : design_(design) {
                     inoutBindings.push_back({b, c, p});
             }
         }
+        // A Verilog instance of an unknown module (a black box) has ports of unknown
+        // direction: the bits connected to one that nothing else drives are its
+        // outputs (corundum: the PCIe IP's user_clk, the transceivers' user clocks)
+        for (std::size_t c = 0; c < body.children.size(); ++c) {
+            const auto& ch = body.children[c];
+            if (ch.body.valid())
+                continue;
+            for (std::size_t p = 0; p < ch.ports.size(); ++p) {
+                if (ch.ports[p].dir != PortDir::None)
+                    continue;
+                std::uint32_t pos = 0;
+                for (const auto& k : ch.ports[p].actual.chunks()) {
+                    if (!k.isConst()) {
+                        auto& list = idx[k.net.index()];
+                        std::vector<bool> covered(k.width, false);
+                        for (const auto& e : list)
+                            for (std::uint32_t i = std::max(e.lo, k.offset); i < std::min(e.hi, k.offset + k.width); ++i)
+                                covered[i - k.offset] = true;
+                        for (std::uint32_t i = 0; i < k.width;) {
+                            if (covered[i]) {
+                                ++i;
+                                continue;
+                            }
+                            std::uint32_t j = i;
+                            while (j < k.width && !covered[j])
+                                ++j;
+                            list.push_back({k.offset + i, k.offset + j, EntryKind::ChildOut, static_cast<std::uint32_t>(c),
+                                            static_cast<std::uint32_t>(p), pos + i, 0});
+                            i = j;
+                        }
+                    }
+                    pos += k.width;
+                }
+            }
+        }
     }
     // is bit `bit` of `net` in body `b` driven from inside (no InPort entry for inout ports yet)?
     const auto drivenInside = [&](std::size_t b, NetId net, std::uint32_t bit) {
