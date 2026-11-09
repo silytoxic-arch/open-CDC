@@ -348,6 +348,114 @@ Driver DesignView::driver(const BitRef& start, const std::function<bool(const Bi
     return {DriverKind::Loop, cur, 0, Logic::X};
 }
 
+std::pair<Driver, std::uint32_t> DesignView::driverRun(const BitRef& start, std::uint32_t maxLen) const {
+    if (maxLen <= 1)
+        return {driver(start), 1};
+    // a net with a tristate pad (a top-level inout): bit by bit, as driver() checks pads
+    auto padNet = [&](const BitRef& b) {
+        if (pads_.empty())
+            return false;
+        const auto it = pads_.lower_bound(padKey(b.inst, b.net, 0));
+        return it != pads_.end() && std::get<0>(it->first) == static_cast<std::uint32_t>(b.inst.index()) &&
+               std::get<1>(it->first) == static_cast<std::uint32_t>(b.net.index());
+    };
+    // bits left in the chunk of `sig` that holds bit `index` (and whether it is constant)
+    auto chunkLeft = [](const SigSpec& sig, std::uint32_t index) -> std::pair<std::uint32_t, bool> {
+        std::uint32_t pos = 0;
+        for (const auto& c : sig.chunks()) {
+            if (index < pos + c.width)
+                return {pos + c.width - index, c.isConst()};
+            pos += c.width;
+        }
+        return {1, true};
+    };
+    std::uint32_t run = maxLen;
+    BitRef cur = start;
+    Driver d{DriverKind::Loop, cur, 0, Logic::X};
+    for (int steps = 0; steps < 100000; ++steps) {
+        if (padNet(cur))
+            return {driver(start), 1};
+        const auto& node = design_.instance(cur.inst);
+        const ModuleBody& body = design_.body(node.body);
+        const Entry* e = find(bodies_[node.body.index()], cur.net, cur.bit);
+        if (!e) {
+            d = {DriverKind::Undriven, cur, 0, Logic::X};
+            run = 1; // the next bits may have a driver
+            break;
+        }
+        run = std::min(run, e->hi - cur.bit);
+        const std::uint32_t pos = e->pos + (cur.bit - e->lo);
+        if (e->kind == EntryKind::Reg || e->kind == EntryKind::Latch || e->kind == EntryKind::Cell) {
+            d = {e->kind == EntryKind::Reg     ? DriverKind::Register
+                 : e->kind == EntryKind::Latch ? DriverKind::Latch
+                                               : DriverKind::Cell,
+                 cur, e->index, Logic::X};
+            break;
+        }
+        const SigSpec* via = nullptr;
+        std::uint32_t at = 0;
+        InstanceId viaInst = cur.inst;
+        if (e->kind == EntryKind::Conn) {
+            via = &body.connections[e->index].rhs;
+            at = pos;
+        }
+        else if (e->kind == EntryKind::InPort) {
+            if (!node.parent.valid()) {
+                d = {DriverKind::PrimaryInput, cur, 0, Logic::X};
+                break;
+            }
+            const ModuleBody& parentBody = design_.body(design_.instance(node.parent).body);
+            const auto& ci = parentBody.children.at(node.childIndex);
+            for (const auto& p : ci.ports)
+                if (p.childNet == cur.net)
+                    via = &p.actual;
+            at = cur.bit;
+            viaInst = node.parent;
+        }
+        else { // ChildOut
+            const InstanceId childInst = child(cur.inst, e->index);
+            if (!childInst.valid()) {
+                d = {DriverKind::UnresolvedInstance, cur, e->index, Logic::X};
+                break;
+            }
+            const auto& pb = body.children[e->index].ports[e->sub];
+            if (!pb.childNet.valid() || pos >= bodyOf(childInst).net(pb.childNet).width) {
+                d = {DriverKind::Undriven, cur, 0, Logic::X};
+                run = 1;
+                break;
+            }
+            run = std::min(run, bodyOf(childInst).net(pb.childNet).width - pos);
+            cur = BitRef{childInst, pb.childNet, pos};
+            continue;
+        }
+        if (!via || at >= via->width()) {
+            d = {DriverKind::Undriven, cur, 0, Logic::X};
+            run = 1;
+            break;
+        }
+        const auto [left, isConst] = chunkLeft(*via, at);
+        run = std::min(run, left);
+        if (isConst) {
+            d = {DriverKind::Constant, cur, 0, constBit(*via, at)};
+            break;
+        }
+        cur = *bitOf(viaInst, *via, at);
+    }
+    if (d.kind == DriverKind::Loop)
+        return {driver(start), 1};
+    // the walk follows the first bit; overlapping entries (several drivers of one bit)
+    // could send a later bit elsewhere: the last bit must agree, otherwise one bit
+    if (run > 1) {
+        const Driver last = driver(BitRef{start.inst, start.net, start.bit + run - 1});
+        const bool same = last.kind == d.kind && last.index == d.index && last.bit.inst == d.bit.inst &&
+                          (d.kind == DriverKind::Constant || last.bit.net == d.bit.net) &&
+                          (d.kind == DriverKind::Constant || last.bit.bit == d.bit.bit + run - 1);
+        if (!same)
+            return {driver(start), 1};
+    }
+    return {d, run};
+}
+
 std::string DesignView::name(const BitRef& b) const {
     const auto& node = design_.instance(b.inst);
     const Net& n = design_.body(node.body).net(b.net);

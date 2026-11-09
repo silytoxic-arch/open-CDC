@@ -68,6 +68,12 @@ public:
     /// (used to show the hierarchical path of a crossing).
     [[nodiscard]] Driver driver(const BitRef& b, const std::function<bool(const BitRef&)>& stop = {},
                                 std::vector<BitRef>* hops = nullptr) const;
+    /// The driver of `b` and the number n (1 <= n <= maxLen) of bits from `b` on whose
+    /// drivers are the same element at consecutive bits (bit b + j is driven by bit
+    /// d.bit.bit + j of the same register / cell / port; for a constant driver the
+    /// bits are constant, `constant` is the value of the first). One walk for a whole
+    /// run of a wide signal (a RAM's read and write logic: millions of bits).
+    [[nodiscard]] std::pair<Driver, std::uint32_t> driverRun(const BitRef& b, std::uint32_t maxLen) const;
 
     /// A bit of a top-level inout port driven through a tristate (oe ? d : 'z): a pad.
     /// Logic reading it sees the pin, a primary input; padInternal() gives the bit

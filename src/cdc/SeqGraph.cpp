@@ -101,8 +101,32 @@ SeqGraph::SeqGraph(const graph::DesignView& view, DiagnosticSink& sink) : view_(
         };
         pr.data = static_cast<std::uint32_t>(bits_.size());
         pr.dataLen = reg.d.width();
-        for (std::uint32_t i = 0; i < reg.d.width(); ++i)
-            add(reg.d, i);
+        // The data input chunk by chunk, run by run: a RAM's array register has
+        // millions of bits (corundum: 11.6M register bits). Bits of a run fed by one
+        // wide cell share its cone; other drivers give each bit directly.
+        for (const auto& ch : reg.d.chunks()) {
+            if (ch.isConst()) {
+                bits_.insert(bits_.end(), ch.width, BitInput{});
+                continue;
+            }
+            for (std::uint32_t at = 0; at < ch.width;) {
+                const BitRef first{inst, ch.net, ch.offset + at};
+                const auto [d0, n] = view.driverRun(first, ch.width - at);
+                if (d0.kind == DriverKind::Cell && keyFor(d0.bit.inst, d0.index, d0.bit.bit).bit == kAll) {
+                    bits_.insert(bits_.end(), n, resolve(d0));
+                }
+                else {
+                    for (std::uint32_t q = 0; q < n; ++q) {
+                        Driver dq = d0;
+                        dq.bit.bit += q;
+                        bits_.push_back(resolve(n == 1                           ? d0
+                                                : d0.kind == DriverKind::Constant ? view.driver(BitRef{inst, ch.net, ch.offset + at + q})
+                                                                                  : dq));
+                    }
+                }
+                at += n;
+            }
+        }
         // Controls tied to their inactive level through the hierarchy (a
         // primitive FDRE with CE = 1 and R = 0) are no controls at all.
         auto constantAt = [&](const SigSpec& sig, Logic level) { return constantBit(inst, sig, 0) == level; };
@@ -485,9 +509,7 @@ BitInput SeqGraph::computeCell(const CellKey& root) {
             };
             std::unordered_map<InKey, std::pair<std::size_t, std::size_t>, InKeyHash> seen; // lowest, highest
             const bool whole = k.bit == kAll;
-            for (const auto& ci : whole ? allCellInputs(InstanceId{k.inst}, k.cell)
-                                        : cellInputs(InstanceId{k.inst}, k.cell, k.bit)) {
-                const Driver d = view_.driver(ci.bit);
+            auto take = [&](const CellInput& ci, const Driver& d) {
                 std::optional<CellKey> dk;
                 if (d.kind == DriverKind::Cell) {
                     dk = keyFor(d.bit.inst, d.index, d.bit.bit);
@@ -504,7 +526,7 @@ BitInput SeqGraph::computeCell(const CellKey& root) {
                     const auto [it, fresh] = seen.try_emplace(key, inputs.size(), inputs.size());
                     if (!fresh) {
                         if (dk)
-                            continue; // the same cone again
+                            return; // the same cone again
                         auto& [lo, hi] = it->second;
                         if (d.bit.bit < inputs[lo].driver.bit.bit) {
                             if (lo == hi) {
@@ -522,10 +544,54 @@ BitInput SeqGraph::computeCell(const CellKey& root) {
                             else
                                 inputs[hi] = {ci, d};
                         }
-                        continue;
+                        return;
                     }
                 }
                 inputs.push_back({ci, d});
+            };
+            if (!whole) {
+                for (const auto& ci : cellInputs(InstanceId{k.inst}, k.cell, k.bit))
+                    take(ci, view_.driver(ci.bit));
+            }
+            else {
+                // the whole cell (very wide, or not bitwise): its inputs chunk by chunk,
+                // resolved run by run (one walk for a run of consecutive bits), and of a
+                // run only what the cone needs: a wide driver cell once, other sources by
+                // their first and last bit, a narrow driver cell bit by bit
+                const InstanceId inst{k.inst};
+                const Cell& c = view_.bodyOf(inst).cells[k.cell];
+                constexpr std::uint8_t L = ConeEntry::kLogic;
+                constexpr std::uint8_t S = ConeEntry::kLogic | ConeEntry::kSelect;
+                for (std::size_t i = 0; i < c.inputs.size(); ++i) {
+                    std::uint8_t flags = c.kind == CellKind::Not ? 0 : L;
+                    if ((c.kind == CellKind::Mux && i == 2) || ((c.kind == CellKind::DynInsert || c.kind == CellKind::DynSelect) && i == 1))
+                        flags = S;
+                    for (const auto& ch : c.inputs[i].chunks()) {
+                        if (ch.isConst())
+                            continue;
+                        for (std::uint32_t at = 0; at < ch.width;) {
+                            const BitRef first{inst, ch.net, ch.offset + at};
+                            const auto [d, n] = view_.driverRun(first, ch.width - at);
+                            const bool perBitCell =
+                                d.kind == DriverKind::Cell && keyFor(d.bit.inst, d.index, d.bit.bit).bit != kAll;
+                            if (n == 1 || perBitCell) {
+                                for (std::uint32_t q = 0; q < n; ++q) {
+                                    const BitRef bq{inst, ch.net, ch.offset + at + q};
+                                    Driver dq = d;
+                                    dq.bit.bit += q;
+                                    take({bq, flags}, d.kind == DriverKind::Constant ? view_.driver(bq) : dq);
+                                }
+                            }
+                            else if (d.kind != DriverKind::Constant) { // a constant adds nothing to the cone
+                                take({first, flags}, d);
+                                Driver last = d;
+                                last.bit.bit += n - 1;
+                                take({BitRef{inst, ch.net, ch.offset + at + n - 1}, flags}, last);
+                            }
+                            at += n;
+                        }
+                    }
+                }
             }
             if (pushed) {
                 pending_.emplace(k, std::move(inputs));

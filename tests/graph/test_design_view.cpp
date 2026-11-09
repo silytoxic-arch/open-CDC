@@ -105,3 +105,55 @@ TEST_CASE("The stop callback ends the walk at a given bit", "[graph]") {
     CHECK(v.name(d.bit) == "top.clk_buf");
     CHECK(v.registerCount() == 1);
 }
+
+TEST_CASE("Driver runs: one walk for consecutive bits, the same answer as bit by bit", "[graph]") {
+    // the CDC graph resolves the inputs of very wide cells (a RAM's read and write logic,
+    // millions of bits) run by run
+    auto b = test::buildDesign("module src(input clk, output reg [7:0] q); always @(posedge clk) q <= q + 8'd1; endmodule\n"
+                               "module top(input clk, input [3:0] a, inout [1:0] pad, input oe, output reg [15:0] y, output reg [1:0] z);\n"
+                               "  wire [7:0] w;\n"
+                               "  src u (.clk(clk), .q(w));\n"
+                               "  wire [15:0] mix = {4'b1010, a, w};\n"
+                               "  assign pad = oe ? a[1:0] : 2'bzz;\n"
+                               "  always @(posedge clk) begin y <= mix; z <= pad; end\n"
+                               "endmodule\n",
+                               "top");
+    DesignView v(*b.design);
+    auto [inst, r] = test::findRegister(v.design(), "top.y");
+    const auto& reg = v.bodyOf(inst).registers[r];
+    std::vector<std::uint32_t> lengths;
+    for (std::uint32_t i = 0; i < 16;) {
+        auto first = v.bitOf(inst, reg.d, i);
+        REQUIRE(first);
+        const auto [d, n] = v.driverRun(*first, 16 - i);
+        REQUIRE(n >= 1);
+        for (std::uint32_t j = 0; j < n; ++j) {
+            const Driver one = v.driver(BitRef{first->inst, first->net, first->bit + j});
+            CHECK(one.kind == d.kind);
+            if (d.kind != DriverKind::Constant) {
+                CHECK(one.index == d.index);
+                CHECK(one.bit.inst == d.bit.inst);
+                CHECK(one.bit.net == d.bit.net);
+                CHECK(one.bit.bit == d.bit.bit + j);
+            }
+        }
+        lengths.push_back(n);
+        i += n;
+    }
+    // w (the register in u, through its output port), a (a primary input), the constant
+    REQUIRE(lengths.size() == 3);
+    CHECK(lengths[0] == 8);
+    CHECK(lengths[1] == 4);
+    CHECK(lengths[2] == 4);
+    CHECK(v.driverRun(*v.bitOf(inst, reg.d, 0), 8).first.kind == DriverKind::Register);
+    // the run never exceeds the length asked for
+    CHECK(v.driverRun(*v.bitOf(inst, reg.d, 0), 3).second == 3);
+    // negative: a net with a tristate pad is walked bit by bit (the logic reading it sees the pin)
+    auto [pinst, pr] = test::findRegister(v.design(), "top.z");
+    const auto pb = v.bitOf(pinst, v.bodyOf(pinst).registers[pr].d, 0);
+    REQUIRE(pb);
+    REQUIRE(v.isPad(v.driver(*pb).bit));
+    const auto [pd, pn] = v.driverRun(*pb, 2);
+    CHECK(pn == 1);
+    CHECK(pd.kind == v.driver(*pb).kind);
+}
