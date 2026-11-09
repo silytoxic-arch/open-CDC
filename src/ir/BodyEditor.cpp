@@ -690,6 +690,32 @@ void BodyEditor::checkMultipleDrivers(DiagnosticSink& sink) {
         return a.conn && b.conn && a.conn->kind == ConnKind::Assign && b.conn->kind == ConnKind::Assign &&
                a.conn->lhs == b.conn->lhs && a.conn->rhs == b.conn->rhs;
     };
+    // the source of bit `bit` of net `net` in a connection
+    auto sourceOf = [](const Connection& c, NetId net, std::uint32_t bit) -> std::optional<SigSpec> {
+        std::uint32_t pos = 0;
+        for (const auto& ch : c.lhs.chunks()) {
+            if (!ch.isConst() && ch.net == net && bit >= ch.offset && bit < ch.offset + ch.width)
+                return pos + (bit - ch.offset) < c.rhs.width() ? std::optional<SigSpec>(c.rhs.bit(pos + bit - ch.offset))
+                                                               : std::nullopt;
+            pos += ch.width;
+        }
+        return std::nullopt;
+    };
+    // a continuous assignment and a process (or two of them) that give the overlapping
+    // bits the same source (Atari800_MiSTer address_decoder.vhdl: SDRAM_WRITE_EN <=
+    // write_enable_next both concurrently and in a process): one driver, as Quartus
+    // reads it, with a warning
+    auto sameSource = [&](const Drv& a, const Drv& b, NetId net) {
+        if (!a.conn || !b.conn)
+            return false;
+        for (std::uint32_t bit = std::max(a.lo, b.lo); bit < std::min(a.hi, b.hi); ++bit) {
+            const auto x = sourceOf(*a.conn, net, bit);
+            const auto y = sourceOf(*b.conn, net, bit);
+            if (!x || !y || *x != *y)
+                return false;
+        }
+        return true;
+    };
     for (const auto& p : body_.ports)
         if (p.dir == PortDir::In)
             add(body_.netSig(p.net), "input port");
@@ -710,11 +736,24 @@ void BodyEditor::checkMultipleDrivers(DiagnosticSink& sink) {
         if (ds.size() < 2)
             continue;
         std::ranges::sort(ds, {}, &Drv::lo);
+        bool warned = false;
         for (std::size_t i = 0; i + 1 < ds.size(); ++i) {
             for (std::size_t j = i + 1; j < ds.size() && ds[j].lo < ds[i].hi; ++j) {
                 // Several assignments from the same procedural block are one driver.
                 if (ds[i].what == ds[j].what || identical(ds[i], ds[j]))
                     continue;
+                if (sameSource(ds[i], ds[j], NetId{static_cast<std::uint32_t>(n)})) {
+                    if (!warned) {
+                        const auto& net = body_.nets[n];
+                        sink.report({"IR-SAME-DRIVERS", Severity::Warning,
+                                     "'" + net.name + "' bit [" + std::to_string(net.indexOf(std::max(ds[i].lo, ds[j].lo))) +
+                                         "] in module '" + body_.name + "' is driven twice with the same value: " +
+                                         ds[i].what + " and " + ds[j].what + "; analyzed as one driver",
+                                     net.loc, {}});
+                        warned = true;
+                    }
+                    continue;
+                }
                 const auto& net = body_.nets[n];
                 const std::uint32_t bit = ds[j].lo;
                 sink.report({"IR-MULTIDRIVER", Severity::Error,

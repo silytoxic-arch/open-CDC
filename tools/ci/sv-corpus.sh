@@ -140,6 +140,10 @@ printf '`define BUILD_DATE "261108"' > ao486_MiSTer/build_id.v
 # two always blocks, mem[i][j] writes, '&' on a constrained array type; rtl/ and sys/ only
 fetch_sparse C64_MiSTer https://github.com/MiSTer-devel/C64_MiSTer 88354ba0b69c7168f2f7439266f88d936ae64de3 rtl sys
 printf '`define BUILD_DATE "261108"' > C64_MiSTer/build_id.v
+# MiSTer-devel/Atari800_MiSTer (only fetched for this check, not redistributed): almost all VHDL (87 files: CPU, ANTIC,
+# GTIA, POKEY, cartridge emulation); a signal driven twice with the same value, RAM arrays of 9M bits; rtl/ and sys/ only
+fetch_sparse Atari800_MiSTer https://github.com/MiSTer-devel/Atari800_MiSTer 98d73fa3e349bd06c9a1ddf310c7a445b5c4dbdc rtl sys
+printf '`define BUILD_DATE "261109"' > Atari800_MiSTer/build_id.v
 # corundum/corundum (BSD-2-Clause-Views, only fetched for this check): the open-source NIC on the ZCU106 (UltraScale+),
 # PCIe and 10G Ethernet; the Vivado IP (PCIe, transceivers) is generated from Tcl and not part of the sources: black
 # boxes. Zero-width selects in branches of 'if (constant)' that are never taken, a 2^14 x 128 bit RAM, and the
@@ -481,6 +485,7 @@ check Genesis_MiSTer/Genesis.qpf "Instances: 381.*RTL     : 265 module bodies, 3
 check SNES_MiSTer/SNES.qpf "Instances: 367.*RTL     : 234 module bodies, 3496 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(3446/3496 registers resolved\).*CX4Map.vhd:135:24: warning\[VHDL-LENGTH-LOGIC\].*built-in models used for vendor primitives: altddio_out, altdpram,.*Summary : 0 error\(s\).*CDC     : 617 crossing path\(s\), 65 synchronized, 552 unsynchronized.*113 unsynchronized path\(s\) covered by a timing exception"
 check ao486_MiSTer/ao486.qpf "Instances: 661.*RTL     : 302 module bodies, 4487 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 13 \(4437/4487 registers resolved\).*Summary : 0 error\(s\).*CDC     : 605 crossing path\(s\), 80 synchronized, 525 unsynchronized.*122 unsynchronized path\(s\) covered by a timing exception"
 check C64_MiSTer/C64.qpf "Instances: 317.*RTL     : 190 module bodies, 4328 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(4278/4328 registers resolved\).*FE-WIRE-FUNCTION-PORT.*Summary : 0 error\(s\).*CDC     : 515 crossing path\(s\), 65 synchronized, 450 unsynchronized.*113 unsynchronized path\(s\) covered by a timing exception"
+check Atari800_MiSTer/Atari800.qpf "Instances: 514.*RTL     : 241 module bodies, 3608 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(3535/3608 registers resolved\).*address_decoder.vhdl:159:2: warning\[IR-SAME-DRIVERS\].*Summary : 0 error\(s\).*CDC     : 516 crossing path\(s\), 53 synchronized, 463 unsynchronized.*118 unsynchronized path\(s\) covered by a timing exception"
 check corundum/fpga/mqnic/ZCU106/fpga_pcie/corundum.ocdc.json "Instances: 532.*RTL     : 192 module bodies, 5936 registers .* 0 latches, .* 3 unsupported construct\(s\).*Clocks  : 9 \(5936/5936 registers resolved\).*pcie_tlp_fifo_raw.v:450:57: warning\[FE-SLANG-ValueMustBePositive\].*FE-BLACKBOX-MODULE.*Summary : 0 error\(s\).*CDC     : 219 crossing path\(s\), 209 synchronized, 10 unsynchronized.*10 unsynchronized path\(s\) covered by a timing exception"
 check u96_mpsoc.ocdc.json "Clocks  : 1 \(93/93 registers resolved\).*zynq_ultra_ps_e_0.pl_clk0  \[black-box\] alias=clk_pl_0 .*period=10ns.*zynq_ultra_ps_e:3.2\) modelled from its configuration: PL clocks pl_clk0.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 # MicroBlaze (simulation netlist: slice gates, SRLC16E), its debug module (FDC_1/FDRE_1), MMCM_ADV, an encrypted IP known by

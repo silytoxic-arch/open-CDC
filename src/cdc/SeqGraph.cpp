@@ -672,8 +672,18 @@ SeqGraph::consumersOf(const std::vector<std::uint32_t>& wanted) const {
         for (const Pin pin : {Pin::Data, Pin::Enable, Pin::SyncReset, Pin::AsyncReset}) {
             const auto bits = pinBits(g, pin);
             ConeEntry scratch;
-            for (std::uint32_t i = 0; i < bits.size(); ++i) {
+            for (std::uint32_t i = 0; i < bits.size();) {
                 const BitInput& bi = bits[i];
+                // a run of bits with the same set of sources, none direct (the array
+                // register of a RAM: millions of bits fed by one wide cell): one pass,
+                // the records the bit-by-bit merge below would give
+                std::uint32_t end = i + 1;
+                if (!bi.isDirect() && bi.cone != BitInput::kDirectCone)
+                    while (end < bits.size() && bits[end].cone == bi.cone && !bits[end].isDirect())
+                        ++end;
+                const std::uint32_t lastBit = end - 1;
+                const std::uint32_t first = i;
+                i = end;
                 for (const auto& e : entries(bi, scratch)) {
                     if (!set.contains(e.node))
                         continue;
@@ -681,16 +691,16 @@ SeqGraph::consumersOf(const std::vector<std::uint32_t>& wanted) const {
                     auto& list = out[e.node];
                     if (!direct && !list.empty()) {
                         Consumer& last = list.back();
-                        if (last.reg == g && last.pin == pin && !last.direct && last.bitEnd + 1 == i &&
+                        if (last.reg == g && last.pin == pin && !last.direct && last.bitEnd + 1 == first &&
                             last.lo == e.lo && last.hi == e.hi && last.flags == e.flags) {
-                            last.bitEnd = i;
+                            last.bitEnd = lastBit;
                             continue;
                         }
                     }
                     Consumer c;
                     c.reg = g;
-                    c.bit = i;
-                    c.bitEnd = i;
+                    c.bit = first;
+                    c.bitEnd = direct ? first : lastBit;
                     c.pin = pin;
                     c.lo = e.lo;
                     c.hi = e.hi;

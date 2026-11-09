@@ -1236,6 +1236,28 @@ TEST_CASE("VHDL: '&' on a constrained array type works on its unconstrained base
     CHECK(n.count("VHDL-LENGTH") == 1);
 }
 
+TEST_CASE("VHDL: a signal driven twice with the same value is one driver", "[vhdl][elab]") {
+    // Atari800_MiSTer address_decoder.vhdl: SDRAM_WRITE_EN <= write_enable_next; concurrently
+    // and as the default in a combinational process
+    auto r = elaborate(lib("entity t is port (a, b, sel : in std_logic; y, n : out std_logic); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  y <= a;\n"
+                           "  process (a, b, sel) begin y <= a; n <= a; if sel = '1' then n <= b; end if; end process;\n"
+                           // negative: a different value is a real second driver
+                           "  n <= b;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.count("IR-SAME-DRIVERS") == 1);
+    CHECK(r.count("IR-MULTIDRIVER") == 1);
+    CHECK(std::ranges::any_of(r.diags, [](const Diagnostic& d) {
+        return d.code == "IR-MULTIDRIVER" && d.message.find("'n'") != std::string::npos;
+    }));
+    CHECK(std::ranges::any_of(r.diags, [](const Diagnostic& d) {
+        return d.code == "IR-SAME-DRIVERS" && d.message.find("'y'") != std::string::npos;
+    }));
+}
+
 TEST_CASE("VHDL negative: a clock edge that is not the last condition stays unsupported", "[vhdl][elab]") {
     auto r = elaborate(lib("entity t is port (clk, rst_n, d : in std_logic; q : out std_logic); end;\n"
                            "architecture rtl of t is begin\n"

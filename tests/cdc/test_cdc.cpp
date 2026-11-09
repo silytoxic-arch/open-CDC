@@ -80,6 +80,49 @@ TEST_CASE("SeqGraph: direct, inverted, logic and select sources", "[cdc][seqgrap
     CHECK_FALSE(wRec.direct);
 }
 
+TEST_CASE("SeqGraph: consumers of a wide array register are merged runs", "[cdc][seqgraph]") {
+    // a RAM's array register: its data bits share the sources of the wide write logic;
+    // consumersOf() takes such a run in one pass (Atari800_MiSTer: 9M register bits)
+    auto b = test::buildDesign("module top(input clk, input [1:0] a, input [7:0] d, input we, output reg [7:0] q,\n"
+                               "           output reg [3:0] t);\n"
+                               "  reg [7:0] src_d, src_a; reg src_we;\n"
+                               "  always @(posedge clk) begin src_d <= d; src_a <= {6'b0, a}; src_we <= we; end\n"
+                               "  reg [7:0] mem [0:63];\n"
+                               "  always @(posedge clk) begin if (src_we) mem[src_a] <= src_d; q <= mem[a]; end\n"
+                               // direct bits next to each other: one record per bit
+                               "  always @(posedge clk) t <= src_d[3:0];\n"
+                               "endmodule\n",
+                               "top");
+    graph::DesignView view(*b.design);
+    CollectingDiagnosticSink sink;
+    SeqGraph sg(view, sink);
+    auto regOf = [&](std::string_view name) {
+        auto [inst, r] = test::findRegister(*b.design, name);
+        return view.globalRegister(inst, r);
+    };
+    const auto srcD = SeqGraph::registerNode(regOf("top.src_d"));
+    auto consumers = sg.consumersOf({srcD});
+    const auto& list = consumers[srcD];
+    std::size_t memRecords = 0, memBits = 0, tRecords = 0;
+    for (const auto& c : list) {
+        if (c.reg == regOf("top.mem")) {
+            ++memRecords;
+            memBits += c.bitEnd - c.bit + 1;
+            CHECK_FALSE(c.direct);
+        }
+        if (c.reg == regOf("top.t")) {
+            ++tRecords;
+            CHECK(c.direct);
+            CHECK(c.bit == c.bitEnd);
+        }
+    }
+    // all 512 bits of the array in one record (the same sources for every bit)
+    CHECK(memRecords == 1);
+    CHECK(memBits == 512);
+    // negative: direct connections are never merged
+    CHECK(tRecords == 4);
+}
+
 TEST_CASE("SeqGraph: registers that hold at most one set bit", "[cdc][seqgraph][CDC-005]") {
     auto b = test::buildDesign(
         "module top(input clk, input clk2, input [1:0] op, input [1:0] raw, input [1:0] idx, output [76:0] y);\n"

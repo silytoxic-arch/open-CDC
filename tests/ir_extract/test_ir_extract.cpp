@@ -276,9 +276,16 @@ TEST_CASE("Continuous assignment and always block on the same net", "[extract][d
                      "endmodule\n"
                      "module n(input a, input b, output [1:0] y);\n"
                      "  assign y = {a, b};\n"
-                     "  assign y[0] = b;\n"
+                     "  assign y[0] = a;\n" // y[0] is b in the first assignment: a real conflict
                      "endmodule\n");
     CHECK(e.countCode("IR-MULTIDRIVER") == 1); // only module n
+    // the same source twice is one driver (with a warning)
+    auto same = extract("module n(input a, input b, output [1:0] y);\n"
+                        "  assign y = {a, b};\n"
+                        "  assign y[0] = b;\n"
+                        "endmodule\n");
+    CHECK(same.countCode("IR-MULTIDRIVER") == 0);
+    CHECK(same.countCode("IR-SAME-DRIVERS") == 1);
 }
 
 TEST_CASE("A constant 'Z assignment gives way to another driver", "[extract][drivers]") {
