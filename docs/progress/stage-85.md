@@ -101,6 +101,7 @@
 - SV 语料 49 项、VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
 - 阶段 84 的 Windows CI（提交 60c8f0c，运行 42593957365）：Release 与 Debug 均 672/672 通过，生成 `OpenCDC-0.84.0-windows-x64.zip` 与 `.exe`。
+- 本阶段的 Windows CI（提交 1eb94a3，运行 42602634006）：Release 与 Debug 均 676/676 通过，生成 `OpenCDC-0.85.0-windows-x64.zip` 与 `.exe`。
 - 尝试过但撤回的修改（见第 5 节）：
   - 只让满足全部结构条件的同步链作为限定信号：MiSTer、chiplab、surf 等 30 个语料项目的结果大幅改变；
   - 第一级扇出到多个寄存器时把它们都作为第二级：chiplab 中 AXI 互联模型里的普通寄存器被当作限定信号，30 条路径错误地变为安全。
