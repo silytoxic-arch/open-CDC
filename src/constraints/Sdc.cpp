@@ -203,15 +203,34 @@ void DesignObjectResolver::buildNames() {
         x.indexable = net.width > 1 && net.arrayDepth == 0;
         return x;
     };
+    // A port of an unpacked array type has one port per element in Vivado:
+    // sfp_led[0] for `output logic sfp_led[2]`, sfp_rs[1][0] for a bit of
+    // `output logic [1:0] sfp_rs[4]` (the element at offset 0 is the right index)
+    auto withElements = [&](std::vector<Named>& to, const std::string& name, BitRef first, const ir::Net& net) {
+        to.push_back(named(name, first, net));
+        if (net.arrayDepth == 0 || net.elemWidth == 0)
+            return;
+        for (std::uint32_t e = 0; e < net.arrayDepth; ++e) {
+            const std::int64_t index = net.msb >= net.lsb ? std::int64_t{net.lsb} + e : std::int64_t{net.lsb} - e;
+            Named x;
+            x.name = name + "[" + std::to_string(index) + "]";
+            x.first = BitRef{first.inst, first.net, first.bit + e * net.elemWidth};
+            x.width = net.elemWidth;
+            x.msb = static_cast<std::int32_t>(net.elemWidth) - 1;
+            x.lsb = 0;
+            x.indexable = net.elemWidth > 1;
+            to.push_back(std::move(x));
+        }
+    };
     for (std::size_t i = 0; i < d.instances.size(); ++i) {
         const ir::InstanceId inst{static_cast<std::uint32_t>(i)};
         const auto& node = d.instances[i];
         const auto& body = d.body(node.body);
         for (const auto& p : body.ports) {
             if (!node.parent.valid())
-                ports_.push_back(named(p.name, BitRef{inst, p.net, 0}, body.net(p.net)));
+                withElements(ports_, p.name, BitRef{inst, p.net, 0}, body.net(p.net));
             else
-                pins_.push_back(named(prefix[i] + p.name, BitRef{inst, p.net, 0}, body.net(p.net)));
+                withElements(pins_, prefix[i] + p.name, BitRef{inst, p.net, 0}, body.net(p.net));
         }
         for (std::size_t n = 0; n < body.nets.size(); ++n) {
             const auto& net = body.nets[n];

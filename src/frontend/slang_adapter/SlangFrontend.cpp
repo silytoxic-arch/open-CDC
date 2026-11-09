@@ -1009,6 +1009,9 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     // Vivado and Quartus accept a net used before its declaration (implicit
     // forward reference, common in vendor IP such as ADI's axi_ad9361)
     compOptions.flags |= sast::CompilationFlags::AllowUseBeforeDeclare;
+    // Vivado accepts hierarchical names in constant expressions: a parameter of
+    // an interface instance (taxi: .DATA_W(axis_qsfp_tx[0].DATA_W))
+    compOptions.flags |= sast::CompilationFlags::AllowHierarchicalConst;
     // every error is reported (and corrected by quartusCompatEdits), not only the first 64
     compOptions.errorLimit = 100000;
     for (const auto& def : input.defines)

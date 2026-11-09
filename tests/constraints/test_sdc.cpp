@@ -318,6 +318,50 @@ TEST_CASE("Design resolver: ports, bits, hierarchical nets, pins and register pi
     CHECK(view.name(regc[0].bits.at(0)) == "top.g[0].u_leaf.ck");
 }
 
+TEST_CASE("Design resolver: ports of unpacked arrays are named per element, as in Vivado", "[constraints][array-port]") {
+    // taxi: `output wire sfp_led[2]` constrained with get_ports {sfp_led[*]},
+    // `output wire [1:0] sfp_rs[4]` with get_ports {sfp_rs[*][*]}
+    auto b = test::buildDesign("module leaf(input wire ck, input wire [1:0] v[0:2]);\n"
+                               "endmodule\n"
+                               "module top(input wire clk, input wire d[2], output wire led[2],\n"
+                               "           output wire [1:0] rs[4], input wire [3:0] bus);\n"
+                               "  assign led = d;\n"
+                               "  assign rs[0] = 2'b01; assign rs[1] = 2'b10; assign rs[2] = bus[1:0]; assign rs[3] = bus[3:2];\n"
+                               "  leaf u(.ck(clk), .v(rs[0:2]));\n"
+                               "endmodule\n",
+                               "top", frontend::LanguageStd::SystemVerilog2017);
+    graph::DesignView view(*b.design);
+    DesignObjectResolver r(view);
+    // one-bit elements: led[0], led[1]
+    const auto leds = r.ports("led[*]", false);
+    REQUIRE(leds.size() == 2);
+    for (const auto& o : leds)
+        CHECK(o.bits.size() == 1);
+    const auto led0 = r.ports("led[0]", false);
+    REQUIRE(led0.size() == 1);
+    REQUIRE(led0[0].bits.size() == 1);
+    // [2] is [0:1]: element 0 is the left one, at the higher offset
+    CHECK(led0[0].bits[0].bit == 1);
+    CHECK(r.ports("led[1]", false).at(0).bits.at(0).bit == 0);
+    // vector elements: rs[3] is two bits, rs[*][*] every bit (one object per element)
+    CHECK(r.ports("rs[3]", false).at(0).bits.size() == 2);
+    const auto rsBit = r.ports("rs[2][1]", false);
+    REQUIRE(rsBit.size() == 1);
+    REQUIRE(rsBit[0].bits.size() == 1);
+    CHECK(rsBit[0].bits[0].bit == 1 * 2 + 1); // [4] = [0:3]: element 2 at offset 1
+    std::size_t bits = 0;
+    for (const auto& o : r.ports("rs[*][*]", false))
+        bits += o.bits.size();
+    CHECK(bits == 8);
+    // instance pins of an array port: u/v[2]
+    CHECK(r.pins("u/v[2]", false, false).size() == 1);
+    // negative: an index outside the array, and a vector port keeps its bit selects only
+    CHECK(r.ports("led[2]", false).empty());
+    CHECK(r.ports("rs[4]", false).empty());
+    CHECK(r.ports("bus[3]", false).at(0).bits.size() == 1);
+    CHECK(r.ports("bus[3][0]", false).empty());
+}
+
 TEST_CASE("Options can be abbreviated to a unique prefix", "[constraints]") {
     FakeResolver r;
     auto p = parse("create_clock -name c -per 10 [get_ports clk]\n"

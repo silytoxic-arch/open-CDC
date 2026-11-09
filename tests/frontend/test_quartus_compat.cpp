@@ -759,3 +759,63 @@ TEST_CASE("Initial blocks: loops bounded by a value computed from a wide string 
                      "top");
     CHECK(b.count("IR-UNSUPPORTED-LOOP") == 1);
 }
+
+TEST_CASE("A parameter of an interface instance in a constant expression, as Vivado accepts it", "[vivado-compat][hier-const]") {
+    // taxi's 10G/25G examples: .DATA_W(axis_qsfp_tx[0].DATA_W), .ID_W(axis_stat.ID_W)
+    const std::string lib = "interface bus_if #(parameter DATA_W = 8); logic [DATA_W-1:0] d; endinterface\n"
+                            "module sink #(parameter N = 1)(input wire clk, input wire [N-1:0] d, output reg [N-1:0] q);\n"
+                            "  always @(posedge clk) q <= d;\n"
+                            "endmodule\n";
+    SECTION("an element of an interface array and a single instance") {
+        test::TempDir dir;
+        auto a = analyze(dir,
+                         {{"t.sv", lib + "module top(input wire clk, input wire [15:0] d, output wire [5:0] q1,\n"
+                                         "           output wire [9:0] q2);\n"
+                                         "  bus_if #(.DATA_W(6)) arr[2]();\n"
+                                         "  bus_if #(.DATA_W(10)) one();\n"
+                                         "  sink #(.N(arr[0].DATA_W)) s1(.clk(clk), .d(d[5:0]), .q(q1));\n"
+                                         "  sink #(.N(one.DATA_W)) s2(.clk(clk), .d(d[9:0]), .q(q2));\n"
+                                         "endmodule\n"}},
+                         "top");
+        CHECK(a.errors() == 0);
+        REQUIRE(a.r->design);
+        CHECK(a.r->design->stats().registerBits == 16);
+    }
+    SECTION("negative: a signal is still not a constant") {
+        test::TempDir dir;
+        auto a = analyze(dir,
+                         {{"t.sv", lib + "module top(input wire clk, input wire [15:0] d, output wire [5:0] q1);\n"
+                                         "  bus_if #(.DATA_W(6)) one();\n"
+                                         "  sink #(.N(one.d)) s1(.clk(clk), .d(d[5:0]), .q(q1));\n"
+                                         "endmodule\n"}},
+                         "top");
+        CHECK(a.errors() >= 1);
+    }
+}
+
+TEST_CASE("An assignment pattern on an output port connection is a target", "[frontend][pattern-lvalue]") {
+    // taxi's KC705 10G example: .xcvr_txp('{sfp_tx_p}) on `output wire logic xcvr_txp[CNT]`
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.sv", "module leaf(input wire logic clk_a, input wire logic clk_b, input wire logic d,\n"
+                               "            output wire logic q[2]);\n"
+                               "  logic ra, rb;\n"
+                               "  always_ff @(posedge clk_a) ra <= d;\n"
+                               "  always_ff @(posedge clk_b) rb <= d;\n"
+                               "  assign q[0] = ra;\n"
+                               "  assign q[1] = rb;\n"
+                               "endmodule\n"
+                               "module top(input wire logic clk_a, input wire logic clk_b, input wire logic d,\n"
+                               "           output logic ya, output logic yb);\n"
+                               "  wire logic a, b;\n"
+                               "  leaf u(.clk_a(clk_a), .clk_b(clk_b), .d(d), .q('{a, b}));\n"
+                               "  always_ff @(posedge clk_b) begin ya <= a; yb <= b; end\n"
+                               "endmodule\n"}},
+                     "top", "create_clock -period 10 [get_ports clk_a]\ncreate_clock -period 7 [get_ports clk_b]\n");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("IR-UNSUPPORTED-LVALUE") == 0);
+    // the first element is q[0] (the left index): a comes from clk_a, b from clk_b
+    CHECK(a.crosses("top.u.ra", "top.ya"));
+    CHECK_FALSE(a.crosses("top.u.rb", "top.yb"));
+    CHECK_FALSE(a.crosses("top.u.ra", "top.yb"));
+}

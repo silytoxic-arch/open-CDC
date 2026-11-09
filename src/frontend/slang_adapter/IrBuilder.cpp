@@ -1649,6 +1649,20 @@ bool BodyBuilder::lvalueInto(const sast::Expression& e, std::vector<LTarget>& ou
                     return false;
             return true;
         }
+        case EK::SimpleAssignmentPattern: {
+            // '{a, b} as a target (taxi: .xcvr_txp('{sfp_tx_p}) on an output array port): the
+            // elements in order, the first one at the left index, stored as a concatenation
+            auto ops = e.as<sast::SimpleAssignmentPatternExpression>().elements();
+            for (auto it = ops.rbegin(); it != ops.rend(); ++it) {
+                // slang gives each element of a target pattern as `element = <its part>`
+                const sast::Expression* el = *it;
+                if (el->kind == EK::Assignment)
+                    el = &el->as<sast::AssignmentExpression>().left();
+                if (!lvalueInto(*el, out))
+                    return false;
+            }
+            return true;
+        }
         case EK::Conversion: return lvalueInto(e.as<sast::ConversionExpression>().operand(), out);
         case EK::MemberAccess: {
             const auto& ma = e.as<sast::MemberAccessExpression>();
