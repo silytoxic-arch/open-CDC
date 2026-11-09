@@ -54,6 +54,7 @@ Sources:
 | `URAM288` | One clock for both ports | |
 | `DSP48E1`, `DSP48E2` | `P` and the cascade outputs depend on all data and control inputs; registered on `CLK` (`CEP` enable, `RSTP` reset) when any pipeline register (`AREG`, `BREG`, `CREG`, `DREG`, `ADREG`, `MREG`, `PREG`) is on, otherwise combinational | The individual pipeline stages are not modelled |
 | `BSCANE2` | `TCK` is a clock source of its own (relation unknown until constrained), the same for all instances (the device's one JTAG port: one clock, `OPENCDC_CLOCK_SHARED`); `DRCK` = `TCK`; `SEL`, `SHIFT`, `CAPTURE`, `UPDATE`, `RESET`, `RUNTEST`, `TDI`, `TMS` change in the `TCK` domain | The TAP controller is not modelled |
+| `ICAPE2`, `ICAPE3` | The configuration access port: `I`, `CSIB`, `RDWRB` are registered on `CLK`; `O` (and `AVAIL`, `PRDONE`, `PRERROR` of `ICAPE3`) come from registers on `CLK` | The configuration logic is not modelled |
 | `STARTUPE2`, `STARTUPE3` | `CFGCLK` and `CFGMCLK` are clock sources of their own (the configuration oscillator); `EOS`, `PREQ` (and `DI` of `STARTUPE3`) have no clock domain; `USRCCLKO`, `USRDONEO` and the other inputs go to device pins | The configuration logic is not modelled |
 | `MMCME2/3/4_BASE`, `MMCME2/3/4_ADV`, `MMCM_BASE`, `MMCM_ADV` (Virtex-6, retargeted by Vivado), `PLLE2/3/4_BASE`, `PLLE2/3/4_ADV`, `PLL_BASE`, `PLL_ADV` (Virtex-5, Spartan-6) | Every `CLKOUT*`/`CLKFBOUT` is a clock derived from `CLKIN1` (`CLKIN` for PLLE3/4 and `PLL_BASE`), named after the pin; `LOCKED` has no clock domain | Period = input period × `DIVCLK_DIVIDE` × `CLKOUTn_DIVIDE[_F]` / `CLKFBOUT_MULT[_F]` (`PLL_ADV`'s `CLKOUTDCMn` use `CLKOUTn_DIVIDE`). The input period comes from the input clock, or from `CLKIN1_PERIOD` when the input clock has none. Phase shift, duty cycle and DRP are not modelled. |
 | `DCM_SP` (Spartan-3/6), `DCM_CLKGEN` (Spartan-6) | Every output is a clock derived from `CLKIN`, named after the pin: `CLK0/90/180/270` at the input period, `CLK2X`/`CLK2X180` at half of it, `CLKDV` × `CLKDV_DIVIDE`, `CLKFX`/`CLKFX180` × `CLKFX_DIVIDE` / `CLKFX_MULTIPLY` (`CLKFXDV` × `CLKFXDV_DIVIDE` more); `CLKIN_DIVIDE_BY_2` halves the input first; `LOCKED` has no clock domain | The input period comes from the input clock or from `CLKIN_PERIOD`. Phase shift, the `DCM_CLKGEN` programming port (in the `PROGCLK` domain) and `STATUS` are not modelled. |
@@ -167,7 +168,7 @@ Gowin cells with generic names are modelled **only in Gowin projects** (a `.gprj
 ## Not modelled
 
 These primitives are still reported as `FE-UNKNOWN-MODULE`:
-- Xilinx: `ICAPE2`/`ICAPE3`, `PCIE*`, `CMAC*`, `HBM*`;
+- Xilinx: `PCIE*`, `CMAC*`, `HBM*`;
 - Intel: transceiver IP, `altlvds`, `altiobuf`;
 - Lattice: SERDES (`DCUA`), gearing DDR (`IDDRX2F`, `ODDRX2F`, …), `PDPW16KD`; Gowin: `IDDR`/`ODDR` (name clash with Xilinx), `SP`, `pROM`, SERDES; Microchip: `CCC` and the PolarFire transceivers and I/O cells.
 

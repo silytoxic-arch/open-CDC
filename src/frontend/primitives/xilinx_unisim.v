@@ -686,6 +686,40 @@ endmodule
 // fabric), EOS and PREQ change asynchronously. USRCCLKO drives the
 // configuration clock pin (CCLK) and USRDONEO the DONE pin: outputs of the
 // device, so their inputs are only read here.
+// The configuration access port: commands and data are taken on CLK, the readback data
+// and status are given on CLK (UG470, UG570). The configuration logic itself is not modelled.
+module ICAPE2 #(parameter [31:0] DEVICE_ID = 32'h03651093, parameter ICAP_WIDTH = "X32",
+                parameter SIM_CFG_FILE_NAME = "NONE")
+              (output [31:0] O, input CLK, input CSIB, input [31:0] I, input RDWRB);
+    reg [33:0] cmd;
+    reg [31:0] o_q;
+    always @(posedge CLK) begin
+        cmd <= {CSIB, RDWRB, I};
+        o_q <= cmd[31:0] ^ {30'd0, cmd[33:32]};
+    end
+    assign O = o_q;
+endmodule
+
+module ICAPE3 #(parameter [31:0] DEVICE_ID = 32'h03628093, parameter ICAP_AUTO_SWITCH = "DISABLE",
+                parameter SIM_CFG_FILE_NAME = "NONE")
+              (output AVAIL, output [31:0] O, output PRDONE, output PRERROR, input CLK, input CSIB,
+               input [31:0] I, input RDWRB);
+    reg [33:0] cmd;
+    reg [31:0] o_q;
+    reg avail_q, prdone_q, prerror_q;
+    always @(posedge CLK) begin
+        cmd <= {CSIB, RDWRB, I};
+        o_q <= cmd[31:0] ^ {30'd0, cmd[33:32]};
+        avail_q <= ~cmd[33];
+        prdone_q <= ^cmd;
+        prerror_q <= &cmd;
+    end
+    assign O = o_q;
+    assign AVAIL = avail_q;
+    assign PRDONE = prdone_q;
+    assign PRERROR = prerror_q;
+endmodule
+
 module STARTUPE2 #(parameter PROG_USR = "FALSE", parameter real SIM_CCLK_FREQ = 0.0)
                  (output CFGCLK, output CFGMCLK, output EOS, output PREQ, input CLK, input GSR, input GTS,
                   input KEYCLEARB, input PACK, input USRCCLKO, input USRCCLKTS, input USRDONEO, input USRDONETS);

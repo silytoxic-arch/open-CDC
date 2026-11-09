@@ -1340,6 +1340,37 @@ TEST_CASE("Primitives: STARTUPE2/STARTUPE3 configuration clocks", "[primitives][
         CHECK(c.name.find("USRCCLKO") == std::string::npos);
 }
 
+TEST_CASE("Primitives: ICAPE2/ICAPE3 are registers on CLK", "[primitives][icap]") {
+    // taxi cndm and corundum: the ICAPE3 in the firmware update logic, clocked by the PCIe user clock
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input clk_b, input [31:0] din, input cs, input rw,\n"
+                       "           output reg [31:0] q_a, output reg [31:0] q_b, output reg avail_b, output reg [31:0] q2);\n"
+                       "  reg [31:0] d_a; always @(posedge clk_a) d_a <= din;\n"
+                       "  reg [31:0] d_b; always @(posedge clk_b) d_b <= din;\n"
+                       "  wire [31:0] o3, o2; wire avail;\n"
+                       "  ICAPE3 icap3 (.CLK(clk_a), .CSIB(cs), .RDWRB(rw), .I(d_a), .O(o3), .AVAIL(avail), .PRDONE(),\n"
+                       "                .PRERROR());\n"
+                       "  ICAPE2 icap2 (.CLK(clk_a), .CSIB(cs), .RDWRB(rw), .I(d_b), .O(o2));\n"
+                       "  always @(posedge clk_a) q_a <= o3;\n"
+                       "  always @(posedge clk_b) begin q_b <= o3; avail_b <= avail; end\n"
+                       "  always @(posedge clk_a) q2 <= o2;\n"
+                       "endmodule\n",
+                       "top", kSdc);
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-BLACKBOX-MODULE") == 0);
+    // read back in another clock domain: crossings from the ICAP's registers
+    CHECK(crosses(*run, "top.icap3", "top.q_b"));
+    CHECK(crosses(*run, "top.icap3", "top.avail_b"));
+    // written from another clock domain: the data crosses into CLK
+    CHECK(crosses(*run, "top.d_b", "top.icap2"));
+    // negative: the same clock on both sides is no crossing
+    CHECK_FALSE(crosses(*run, "top.icap3", "top.q_a"));
+    CHECK_FALSE(crosses(*run, "top.d_a", "top.icap3"));
+    CHECK_FALSE(crosses(*run, "top.icap2", "top.q2"));
+}
+
 TEST_CASE("Sources with `timescale and the primitive linker", "[primitives][timescale]") {
     // verilog-ethernet: every file starts with `timescale; the generated
     // wrapper has none, which slang rejected silently (0 errors, no design)

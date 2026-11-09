@@ -204,3 +204,47 @@ TEST_CASE("SV interfaces: functions in interfaces and modport expressions", "[sv
     CHECK(p->syncType == SyncType::Gray); // Gray encoder through the interface function
     CHECK(p->syncStatus == SyncStatus::NecessaryConditionsVerified);
 }
+
+TEST_CASE("SV interfaces: one interface instance on an input and an output port of a module", "[sv][interface][loopback]") {
+    // taxi cndm: cndm_micro_cpl_wr gets the same instance on .s_axis_event (snk) and
+    // .m_axis_event (src); a child drives it through the src port, the module reads it as snk
+    const std::string lib = "interface bus_if; logic [3:0] d; logic v; modport src(output d, v); modport snk(input d, v); "
+                            "endinterface\n"
+                            "module drv(input logic clk_a, bus_if.src o);\n"
+                            "  logic [3:0] r;\n"
+                            "  always_ff @(posedge clk_a) r <= r + 1'b1;\n"
+                            "  assign o.d = r;\n"
+                            "  assign o.v = 1'b1;\n"
+                            "endmodule\n";
+    auto run = analyze(lib + "module m(input logic clk_a, input logic clk_b, bus_if.snk s, bus_if.src o,\n"
+                             "         output logic [3:0] q);\n"
+                             "  drv c(.clk_a(clk_a), .o(o));\n"
+                             "  always_ff @(posedge clk_b) if (s.v) q <= s.d;\n"
+                             "endmodule\n"
+                             "module top(input logic clk_a, input logic clk_b, output logic [3:0] q);\n"
+                             "  bus_if e();\n"
+                             "  m u(.clk_a(clk_a), .clk_b(clk_b), .s(e), .o(e), .q(q));\n"
+                             "endmodule\n");
+    REQUIRE(run->r->cdc);
+    CHECK(run->count("IR-INPUT-DRIVEN") == 0);
+    CHECK(run->has("output var [3:0] s.d")); // named after the first port, driven inside
+    // the loop back carries the counter into the clk_b domain
+    CHECK(run->path("top.u.c.r", "top.u.q") != nullptr);
+
+    // negative: two instances on the two ports keep their modport directions (s.d an input)
+    auto two = analyze(lib + "module m(input logic clk_a, input logic clk_b, bus_if.snk s, bus_if.src o,\n"
+                             "         output logic [3:0] q);\n"
+                             "  drv c(.clk_a(clk_a), .o(o));\n"
+                             "  always_ff @(posedge clk_b) if (s.v) q <= s.d;\n"
+                             "endmodule\n"
+                             "module top(input logic clk_a, input logic clk_b, output logic [3:0] q);\n"
+                             "  bus_if e1();\n"
+                             "  bus_if e2();\n"
+                             "  m u(.clk_a(clk_a), .clk_b(clk_b), .s(e1), .o(e2), .q(q));\n"
+                             "endmodule\n");
+    REQUIRE(two->r->cdc);
+    CHECK(two->count("IR-INPUT-DRIVEN") == 0);
+    CHECK(two->has("input var [3:0] s.d"));
+    CHECK(two->has("output var [3:0] o.d"));
+    CHECK(two->path("top.u.c.r", "top.u.q") == nullptr);
+}

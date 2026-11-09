@@ -263,7 +263,9 @@ private:
     struct VirtualPort {
         ir::NetId net;
         std::string name;
+        bool byUse = false; ///< the instance is on several interface ports: no single modport direction
     };
+    std::unordered_set<const sast::Symbol*> ifaceOnSeveralPorts_; ///< e.g. .s_axis_event(e), .m_axis_event(e)
     std::vector<VirtualPort> virtualPorts_;
     std::unordered_map<const sast::Symbol*, ir::PortDir> modportDir_; ///< interface member -> modport direction
     std::unordered_set<std::uint32_t> drivenByChild_;                 ///< nets driven through a child's interface port

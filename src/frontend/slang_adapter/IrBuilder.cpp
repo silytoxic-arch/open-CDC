@@ -412,6 +412,7 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
 
     // members of interfaces: flattened here, or reached through an interface port
     std::optional<std::string> virtualName;
+    bool byUse = false;
     if (auto r = ifaceRef(s)) {
         const std::string ipath = r->inst->getHierarchicalPath();
         if (prefix_.empty() || !(ipath + ".").starts_with(prefix_)) {
@@ -419,6 +420,7 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
             if (it == portOfIface_.end())
                 return std::nullopt; // another instance's interface: a plain hierarchical reference
             virtualName = it->second + "." + r->rel;
+            byUse = ifaceOnSeveralPorts_.contains(r->inst);
         }
     }
 
@@ -486,7 +488,7 @@ std::optional<NetId> BodyBuilder::netFor(const sast::ValueSymbol& s) {
     const NetId id = body_.addNet(std::move(n));
     netOf_.emplace(&s, id);
     if (virtualName)
-        virtualPorts_.push_back({id, *virtualName});
+        virtualPorts_.push_back({id, *virtualName, byUse});
     return id;
 }
 
@@ -655,7 +657,9 @@ void BodyBuilder::finishVirtualPorts() {
     for (const auto& vp : virtualPorts_) {
         // modport direction when one applies, otherwise how this body uses it
         PortDir dir = written.contains(vp.net.value) ? PortDir::Out : PortDir::In;
-        for (const auto& [sym, d] : modportDir_) {
+        // an interface instance on two ports of this module (an input of one modport, an
+        // output of the other: taxi cndm's event loopback): as this body uses it
+        for (const auto& [sym, d] : vp.byUse ? decltype(modportDir_){} : modportDir_) {
             auto it = netOf_.find(sym);
             if (it != netOf_.end() && it->second == vp.net && d != PortDir::InOut)
                 dir = d;
@@ -670,12 +674,14 @@ void BodyBuilder::declarePorts() {
         if (p->kind == sast::SymbolKind::InterfacePort) {
             const auto conn = p->as<sast::InterfacePortSymbol>().getConnection();
             if (conn.first && conn.first->kind == sast::SymbolKind::Instance) {
-                portOfIface_.emplace(conn.first, std::string(p->name));
+                if (!portOfIface_.emplace(conn.first, std::string(p->name)).second)
+                    ifaceOnSeveralPorts_.insert(conn.first); // one instance on two ports: named after the first
                 continue; // ports per used member: finishVirtualPorts()
             }
             if (conn.first && conn.first->kind == sast::SymbolKind::InstanceArray) {
                 for (const auto& [suffix, elem] : interfaceArrayElements(*conn.first))
-                    portOfIface_.emplace(elem, std::string(p->name) + suffix);
+                    if (!portOfIface_.emplace(elem, std::string(p->name) + suffix).second)
+                        ifaceOnSeveralPorts_.insert(elem);
                 continue;
             }
             unsupported("IR-UNSUPPORTED-PORT", "interface port '" + std::string(p->name) + "' (unconnected)",
