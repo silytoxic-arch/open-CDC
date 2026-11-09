@@ -676,6 +676,7 @@ private:
         model_->registers.assign(view_.registerCount(), RegisterClocking{});
         std::map<std::string, std::pair<std::size_t, std::string>> unresolvedByReason; // reason -> count, example
         std::map<std::string, std::pair<std::size_t, SourceLocation>> constantByReg;
+        std::map<std::string, std::pair<std::size_t, SourceLocation>> constantInModel;
         std::size_t gated = 0;
         std::size_t muxed = 0;
 
@@ -727,6 +728,13 @@ private:
                     if (e.first++ == 0)
                         e.second = qName;
                 }
+                else if (rc.status == ClockStatus::Constant && body.vendorModel) {
+                    // a tied-off clock of a vendor primitive (the unused port B of a RAM used as a
+                    // ROM, MachXO2 DP8KC in Lattice SCUBA netlists): that interface is not used
+                    auto& e = constantInModel[rc.reason + " (in '" + body.name + "')"];
+                    if (e.first++ == 0)
+                        e.second = reg.origin;
+                }
                 else if (rc.status == ClockStatus::Constant) {
                     auto& e = constantByReg[rc.reason];
                     if (e.first++ == 0)
@@ -749,6 +757,11 @@ private:
                                   e.second + "'); they are excluded from CDC analysis",
                               {}, {}});
         }
+        for (const auto& [why, e] : constantInModel)
+            sink_.report({"CLK-UNUSED-INTERFACE", Severity::Info,
+                          std::to_string(e.first) + " register(s) in a built-in primitive model never toggle: " + why +
+                              ": the interface it clocks is not used",
+                          {}, {}});
         for (const auto& [why, e] : constantByReg)
             sink_.report({"CLK-CONSTANT", Severity::Warning,
                           std::to_string(e.first) + " register(s) never toggle: " + why, e.second, {}});

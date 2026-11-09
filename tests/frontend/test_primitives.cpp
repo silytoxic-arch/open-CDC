@@ -98,9 +98,9 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
     std::set<std::string> libs;
     for (const auto& pkg : lib.vhdlPackages())
         libs.insert(pkg.library);
-    for (const char* l : {"unisim", "xpm", "altera_mf", "ecp5u", "sb_ice40_components_syn", "ice40up", "gw1n", "gw2a"})
+    for (const char* l : {"unisim", "xpm", "altera_mf", "ecp5u", "machxo2", "sb_ice40_components_syn", "ice40up", "gw1n", "gw2a"})
         CHECK(libs.contains(l));
-    for (const char* n : {"DP16KD", "IDDRX1F", "ODDRX1F", "SB_RAM40_4K", "SB_RAM40_4KNRNW", "SDPB", "DPB"})
+    for (const char* n : {"DP16KD", "DP8KC", "PDPW8KC", "SP8KC", "VHI", "VLO", "USRMCLK", "IDDRX1F", "ODDRX1F", "SB_RAM40_4K", "SB_RAM40_4KNRNW", "SDPB", "DPB"})
         CHECK(lib.find(n).has_value());
 }
 
@@ -1620,4 +1620,41 @@ TEST_CASE("Simulation netlists: Vivado's escaped cell paths in attribute strings
     // negative: in any other source the escape is reported
     auto other = analyze("ip.v", text, "top");
     CHECK(other->count("FE-SLANG-UnknownEscapeCode") >= 1);
+}
+
+TEST_CASE("Primitives: MachXO2 9 kbit RAMs, a tied-off port of a ROM", "[primitives][lattice]") {
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_a, input clk_b, input [7:0] din, input [9:0] a, output [8:0] q, output [17:0] q2,\n"
+        "           output [8:0] q3, output [8:0] rom_q);\n"
+        "  reg [7:0] dr; reg [9:0] ar, br;\n"
+        "  always @(posedge clk_a) begin dr <= din; ar <= a; end\n"
+        "  always @(posedge clk_b) br <= a;\n"
+        "  DP8KC ram (.CLKA(clk_a), .CEA(1'b1), .WEA(1'b1), .DIA0(dr[0]), .DIA1(dr[1]), .ADA3(ar[0]), .ADA4(ar[1]),\n"
+        "    .CLKB(clk_b), .CEB(1'b1), .WEB(1'b0), .ADB3(br[0]), .ADB4(br[1]), .DOB0(q[0]), .DOB1(q[1]));\n"
+        "  PDPW8KC pdp (.CLKW(clk_a), .CEW(1'b1), .DI0(dr[0]), .ADW0(ar[0]), .CLKR(clk_b), .CER(1'b1),\n"
+        "    .ADR4(br[0]), .DO0(q2[0]));\n"
+        "  SP8KC sp (.CLK(clk_a), .CE(1'b1), .WE(1'b1), .DI0(dr[0]), .AD3(ar[0]), .DO0(q3[0]));\n"
+        // a ROM (SCUBA): port B's clock tied to 0, the contents set by defparams
+        "  defparam rom.INITVAL_00 = \"0x0123456789\";\n"
+        "  DP8KC rom (.CLKA(clk_a), .CEA(1'b1), .WEA(1'b0), .ADA3(ar[0]), .DOA0(rom_q[0]), .CLKB(1'b0), .CEB(1'b0));\n"
+        "endmodule\n",
+        "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-DEFPARAM-FORWARD") == 0); // the model is known: the defparam resolves as it is
+    CHECK(crosses(*run, "top.ram.mem_a", "top.ram.dob"));
+    CHECK_FALSE(crosses(*run, "top.ram.mem_b", "top.ram.doa"));
+    CHECK(crosses(*run, "top.pdp.mem", "top.pdp.q"));
+    CHECK_FALSE(crosses(*run, "top.sp.mem", "top.sp.q")); // one clock
+    // the ROM's port B: an unused interface of the model, not a design problem
+    CHECK(run->count("CLK-UNUSED-INTERFACE") == 1);
+    CHECK(run->count("CLK-CONSTANT") == 0);
+
+    // negative: a design register with a constant clock is still reported
+    auto user = analyze("t.v",
+                        "module top(input d, output reg q); always @(posedge 1'b0) q <= d; endmodule\n", "top");
+    CHECK(user->count("CLK-CONSTANT") == 1);
+    CHECK(user->count("CLK-UNUSED-INTERFACE") == 0);
 }

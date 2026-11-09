@@ -321,7 +321,9 @@ Reported: missing files (`PRJ-LDF-MISSING`), excluded and other files (`PRJ-LDF-
 
 Preference files (`.lpf`, also listed directly in an OpenCDC project) are read for their timing preferences: `FREQUENCY PORT|NET "<name>" <value> MHZ` and `PERIOD PORT|NET "<name>" <value> NS` define clocks; `BLOCK PATH FROM CLKNET "a" TO CLKNET "b"` (also `PORT`, `NET`, `CELL` endpoints) is a false path, so the two clocks are checked as asynchronous. Other timing preferences (`MULTICYCLE`, `MAXDELAY`, `INPUT_SETUP`, the global `FREQUENCY`, ...) are listed in one `CON-LPF-IGNORED` note; physical preferences (`LOCATE`, `IOBUF`, `SYSCONFIG`, ...) are skipped. `BLOCK INTERCLOCKDOMAIN PATHS` is not read (`CON-LPF-PARSE`): name the unrelated clocks with `BLOCK PATH`.
 
-Verified with the f32c SoC on the ULX3S (ECP5, VHDL: 350 registers, two PLLs, the DVI framebuffer's crossings into the pixel clock).
+Verified with the f32c SoC on the ULX3S (ECP5, VHDL: 350 registers, two PLLs, the DVI framebuffer's crossings into the pixel clock) and the Yellowstone/Liron disk controller (MachXO2: a SCUBA ROM of four `DP8KC`, registers clocked by the Apple II bus strobe).
+
+SCUBA netlists (the HDL that IPexpress generates) set the parameters of their cells with `defparam` lines before the instances. When such a cell has no model and is analyzed as a black box (`unknownModules: blackbox`), the defparams of the module are read after its instances (`FE-DEFPARAM-FORWARD`), as Verilog tools read them. A clock input of a built-in model that is tied to a constant (the unused port B of a RAM used as a ROM) is reported as an unused interface (`CLK-UNUSED-INTERFACE`, info), not as `CLK-CONSTANT`.
 
 Quartus' `set_clock_groups -exclusive` (an old alias of `-logically_exclusive`, used to cut paths between unrelated clocks; Quartus' Timing Analyzer treats all clock groups alike) is read as `-asynchronous` (`CON-EXCLUSIVE-AS-ASYNC`), so that the crossings between the groups are checked.
 

@@ -169,3 +169,41 @@ TEST_CASE("Mixed language: ordered parameters of a VHDL entity keep their positi
         CHECK_FALSE(a.has("VHDL-GENERIC", "generic 'DEF'"));
     }
 }
+
+TEST_CASE("defparam before a black-box instance it names (Lattice SCUBA netlists)", "[defparam][lattice]") {
+    // codeROM.v (SCUBA, MachXO2) before DP8KC was modelled: defparam codeROM_0_0_0_3.DATA_WIDTH_A = 2;
+    // then DP8KC codeROM_0_0_0_3 (...); with unknownModules: blackbox
+    const std::string v = "module top(input clk, input d, output q, output reg r);\n"
+                          "  defparam u.W = 4;\n"
+                          "  XYZ_CELL u (.C(clk), .D(d), .Q(q));\n"
+                          "  always @(posedge clk) r <= d;\n"
+                          "endmodule\n";
+    const auto run = [&](const std::string& text) {
+        test::TempDir dir;
+        dir.write("t.v", text);
+        const auto p = dir.write("p.ocdc.json", "{\"format\": \"opencdc-project\", \"version\": 1, \"name\": \"p\", "
+                                                "\"top\": \"top\", \"sources\": [\"t.v\"], "
+                                                "\"options\": {\"unknownModules\": \"blackbox\"}}");
+        auto cfg = engine::loadProjectFile(p);
+        REQUIRE(cfg);
+        engine::AnalysisSession session;
+        NullProgressSink progress;
+        CancellationToken cancel;
+        Analysis a{session.run(cfg.value(), progress, cancel)};
+        for (const auto& d : a.r->diagnostics)
+            UNSCOPED_INFO(format(d));
+        return a;
+    };
+    auto a = run(v);
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-DEFPARAM-FORWARD") == 1);
+    CHECK(a.count("FE-BLACKBOX-MODULE") == 1);
+    REQUIRE(a.r->cdc);
+    // negative: a defparam of an instance that does not exist stays an error
+    auto b = run("module top(input clk, input d, output reg q);\n"
+                 "  defparam nope.W = 4;\n"
+                 "  always @(posedge clk) q <= d;\n"
+                 "endmodule\n");
+    CHECK(b.errors() >= 1);
+    CHECK(b.count("FE-DEFPARAM-FORWARD") == 0);
+}

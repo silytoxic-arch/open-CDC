@@ -411,8 +411,11 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
     // ---- nets assigned in procedural blocks ----
     std::map<std::uint32_t, std::vector<std::pair<std::size_t, std::string>>> netUses;
     std::vector<std::pair<slang::SourceLocation, std::string>> undeclared;
+    std::vector<slang::SourceLocation> forwardDefparams;
     for (const auto& d : diags) {
         const auto loc = sm.getFullyOriginalLoc(d.location);
+        if (d.code == slang::diag::UsedBeforeDeclared)
+            forwardDefparams.push_back(loc);
         if (d.code == slang::diag::AssignToNet) {
             if (auto id = identifierAt(sm, loc); !id.empty())
                 netUses[loc.buffer().getId()].emplace_back(loc.offset(), std::move(id));
@@ -584,6 +587,67 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
                                      "declare it as a variable (logic or reg) to make the design portable",
                                      convertLocation(sm, best->loc)});
             }
+    }
+    // ---- defparams naming an instance declared after them that slang cannot see yet (an
+    // instance of an unknown module analyzed as a black box; Lattice SCUBA netlists put
+    // defparam codeROM_0_0_0_3.INITVAL_00 = "..." before the DP8KC instance): every
+    // defparam of the module moves to its end, as Verilog tools resolve them ----
+    if (!forwardDefparams.empty()) {
+        std::function<void(const SyntaxNode&)> walkModules = [&](const SyntaxNode& node) {
+            if (node.kind == SyntaxKind::ModuleDeclaration) {
+                const auto& md = node.as<ModuleDeclarationSyntax>();
+                std::vector<const DefParamSyntax*> dps;
+                bool forward = false;
+                for (const auto* m : md.members) {
+                    if (m->kind != SyntaxKind::DefParam)
+                        continue;
+                    const auto& dp = m->as<DefParamSyntax>();
+                    const auto b = sm.getFullyOriginalLoc(dp.sourceRange().start());
+                    const auto e = sm.getFullyOriginalLoc(dp.sourceRange().end());
+                    if (b.buffer() != e.buffer())
+                        return; // from a macro: left as it is
+                    dps.push_back(&dp);
+                    for (const auto& f : forwardDefparams)
+                        if (f.buffer() == b.buffer() && f.offset() >= b.offset() && f.offset() < e.offset())
+                            forward = true;
+                }
+                const auto end = sm.getFullyOriginalLoc(md.endmodule.location());
+                if (!forward || dps.empty() || md.endmodule.isMissing())
+                    return;
+                const auto key = bufferKey(sm, end.buffer());
+                const auto text = sm.getSourceText(end.buffer());
+                std::string moved;
+                for (const auto* dp : dps) {
+                    const auto b = sm.getFullyOriginalLoc(dp->sourceRange().start());
+                    const auto e = sm.getFullyOriginalLoc(dp->sourceRange().end());
+                    if (b.buffer() != end.buffer())
+                        return;
+                    std::string stmt(text.substr(b.offset(), e.offset() - b.offset()));
+                    // the statement becomes spaces (lines keep their numbers); its text, on one
+                    // line, goes before endmodule
+                    std::string blank = stmt;
+                    for (char& c : blank)
+                        if (c != '\n')
+                            c = ' ';
+                    for (char& c : stmt)
+                        if (c == '\n' || c == '\r')
+                            c = ' ';
+                    edits.push_back({key, b.offset(), stmt.size(), blank, "", "", "", {}});
+                    moved += stmt + " ";
+                }
+                edits.push_back({key, end.offset(), 0, moved, "FE-DEFPARAM-FORWARD",
+                                 "defparam names an instance declared after it that is not elaborated yet (a "
+                                 "black box): the module's defparams are read after its instances, as Verilog "
+                                 "tools read them",
+                                 "declare the instance before its defparams to make the design portable",
+                                 convertLocation(sm, sm.getFullyOriginalLoc(dps.front()->sourceRange().start()))});
+                return;
+            }
+            for (std::size_t i = 0; i < node.getChildCount(); ++i)
+                if (const auto* c = node.childNode(i))
+                    walkModules(*c);
+        };
+        walkModules(tree.root());
     }
     // ---- names of generate blocks used in the enclosing module: their declarations are moved out ----
     if (!undeclared.empty()) {

@@ -113,6 +113,7 @@ Sources:
 | `EHXPLLL` (ECP5) | `CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3` derived from `CLKI`: f(VCO) = f(CLKI) × `CLKFB_DIV` × DIV(feedback output) / `CLKI_DIV`, f(CLKx) = f(VCO) / `CLKx_DIV`; the feedback output is selected by `FEEDBK_PATH` (`CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3`, or the `INT_` variants); input period from the input clock or `FREQUENCY_PIN_CLKI` (MHz); `LOCK` has no clock domain |
 | `SB_PLL40_CORE`, `SB_PLL40_PAD` (iCE40) | `PLLOUTCORE`/`PLLOUTGLOBAL` derived from the reference: f = f(ref) × (`DIVF`+1) / ((`DIVR`+1) × 2^`DIVQ`); `LOCK` has no clock domain |
 | `SB_GB`, `SB_DFF`, `SB_DFFE`, `SB_DFFR`, `SB_DFFS`, `SB_DFFER` (iCE40) | Global buffer (wire) and flip-flops |
+| `DP8KC`, `PDPW8KC`, `SP8KC` (MachXO2/XO3) | 9 kbit RAM: true dual-port (per-port write arrays as `DP16KD`), pseudo dual-port (write on `CLKW`, read on `CLKR`), single-port |
 | `VHI`, `VLO` | Constant 1 and 0 (the constants of IPexpress/Clarity modules) |
 | `USRMCLK` (ECP5) | Drives the configuration SPI clock pin from logic: inputs only |
 | `IDDRX1F`, `ODDRX1F` (ECP5) | DDR input (falling-edge capture) and output registers on `SCLK` |

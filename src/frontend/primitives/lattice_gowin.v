@@ -181,6 +181,68 @@ module ODDRX1F (input D0, input D1, input SCLK, input RST, output Q);
     assign Q = SCLK ? r0 : r1;
 endmodule
 
+// MachXO2/XO3 true dual-port 9 kbit RAM (EBR): port A on CLKA, port B on CLKB, per-port write
+// arrays as for DP16KD; the word address is the upper address bits (ADx12..ADx3).
+module DP8KC #(parameter DATA_WIDTH_A = 9, parameter DATA_WIDTH_B = 9, parameter REGMODE_A = "NOREG",
+              parameter REGMODE_B = "NOREG", parameter CSDECODE_A = "0b000", parameter CSDECODE_B = "0b000",
+              parameter WRITEMODE_A = "NORMAL", parameter WRITEMODE_B = "NORMAL", parameter GSR = "ENABLED",
+              parameter RESETMODE = "SYNC", parameter ASYNC_RESET_RELEASE = "SYNC", parameter INIT_DATA = "STATIC",
+    parameter INITVAL_00 = "0x0", parameter INITVAL_01 = "0x0", parameter INITVAL_02 = "0x0", parameter INITVAL_03 = "0x0", parameter INITVAL_04 = "0x0", parameter INITVAL_05 = "0x0", parameter INITVAL_06 = "0x0", parameter INITVAL_07 = "0x0", parameter INITVAL_08 = "0x0", parameter INITVAL_09 = "0x0", parameter INITVAL_0A = "0x0", parameter INITVAL_0B = "0x0", parameter INITVAL_0C = "0x0", parameter INITVAL_0D = "0x0", parameter INITVAL_0E = "0x0", parameter INITVAL_0F = "0x0", parameter INITVAL_10 = "0x0", parameter INITVAL_11 = "0x0", parameter INITVAL_12 = "0x0", parameter INITVAL_13 = "0x0", parameter INITVAL_14 = "0x0", parameter INITVAL_15 = "0x0", parameter INITVAL_16 = "0x0", parameter INITVAL_17 = "0x0", parameter INITVAL_18 = "0x0", parameter INITVAL_19 = "0x0", parameter INITVAL_1A = "0x0", parameter INITVAL_1B = "0x0", parameter INITVAL_1C = "0x0", parameter INITVAL_1D = "0x0", parameter INITVAL_1E = "0x0", parameter INITVAL_1F = "0x0")
+             (input DIA0, input DIA1, input DIA2, input DIA3, input DIA4, input DIA5, input DIA6, input DIA7, input DIA8, input ADA0, input ADA1, input ADA2, input ADA3, input ADA4, input ADA5, input ADA6, input ADA7, input ADA8, input ADA9, input ADA10, input ADA11, input ADA12,
+              input CEA, input OCEA, input CLKA, input WEA, input CSA0, input CSA1, input CSA2, input RSTA,
+              input DIB0, input DIB1, input DIB2, input DIB3, input DIB4, input DIB5, input DIB6, input DIB7, input DIB8, input ADB0, input ADB1, input ADB2, input ADB3, input ADB4, input ADB5, input ADB6, input ADB7, input ADB8, input ADB9, input ADB10, input ADB11, input ADB12,
+              input CEB, input OCEB, input CLKB, input WEB, input CSB0, input CSB1, input CSB2, input RSTB,
+              output DOA0, output DOA1, output DOA2, output DOA3, output DOA4, output DOA5, output DOA6, output DOA7, output DOA8, output DOB0, output DOB1, output DOB2, output DOB3, output DOB4, output DOB5, output DOB6, output DOB7, output DOB8);
+    wire [8:0] dia = {DIA8, DIA7, DIA6, DIA5, DIA4, DIA3, DIA2, DIA1, DIA0};
+    wire [8:0] dib = {DIB8, DIB7, DIB6, DIB5, DIB4, DIB3, DIB2, DIB1, DIB0};
+    wire [9:0] ada = {ADA12, ADA11, ADA10, ADA9, ADA8, ADA7, ADA6, ADA5, ADA4, ADA3};
+    wire [9:0] adb = {ADB12, ADB11, ADB10, ADB9, ADB8, ADB7, ADB6, ADB5, ADB4, ADB3};
+    reg [8:0] mem_a [0:1023];
+    reg [8:0] mem_b [0:1023];
+    reg [8:0] doa, dob;
+    always @(posedge CLKA) if (CEA && WEA) mem_a[ada] <= dia;
+    always @(posedge CLKB) if (CEB && WEB) mem_b[adb] <= dib;
+    always @(posedge CLKA) if (CEA) doa <= mem_a[ada] ^ mem_b[ada];
+    always @(posedge CLKB) if (CEB) dob <= mem_a[adb] ^ mem_b[adb];
+    assign {DOA8, DOA7, DOA6, DOA5, DOA4, DOA3, DOA2, DOA1, DOA0} = doa;
+    assign {DOB8, DOB7, DOB6, DOB5, DOB4, DOB3, DOB2, DOB1, DOB0} = dob;
+endmodule
+
+// MachXO2/XO3 pseudo dual-port 9 kbit RAM: write port on CLKW, read port on CLKR.
+module PDPW8KC #(parameter DATA_WIDTH_W = 18, parameter DATA_WIDTH_R = 9, parameter REGMODE = "NOREG",
+                 parameter CSDECODE_W = "0b000", parameter CSDECODE_R = "0b000", parameter GSR = "ENABLED",
+                 parameter RESETMODE = "SYNC", parameter ASYNC_RESET_RELEASE = "SYNC", parameter INIT_DATA = "STATIC",
+    parameter INITVAL_00 = "0x0", parameter INITVAL_01 = "0x0", parameter INITVAL_02 = "0x0", parameter INITVAL_03 = "0x0", parameter INITVAL_04 = "0x0", parameter INITVAL_05 = "0x0", parameter INITVAL_06 = "0x0", parameter INITVAL_07 = "0x0", parameter INITVAL_08 = "0x0", parameter INITVAL_09 = "0x0", parameter INITVAL_0A = "0x0", parameter INITVAL_0B = "0x0", parameter INITVAL_0C = "0x0", parameter INITVAL_0D = "0x0", parameter INITVAL_0E = "0x0", parameter INITVAL_0F = "0x0", parameter INITVAL_10 = "0x0", parameter INITVAL_11 = "0x0", parameter INITVAL_12 = "0x0", parameter INITVAL_13 = "0x0", parameter INITVAL_14 = "0x0", parameter INITVAL_15 = "0x0", parameter INITVAL_16 = "0x0", parameter INITVAL_17 = "0x0", parameter INITVAL_18 = "0x0", parameter INITVAL_19 = "0x0", parameter INITVAL_1A = "0x0", parameter INITVAL_1B = "0x0", parameter INITVAL_1C = "0x0", parameter INITVAL_1D = "0x0", parameter INITVAL_1E = "0x0", parameter INITVAL_1F = "0x0")
+               (input DI0, input DI1, input DI2, input DI3, input DI4, input DI5, input DI6, input DI7, input DI8, input DI9, input DI10, input DI11, input DI12, input DI13, input DI14, input DI15, input DI16, input DI17, input ADW0, input ADW1, input ADW2, input ADW3, input ADW4, input ADW5, input ADW6, input ADW7, input ADW8, input BE0, input BE1,
+                input CEW, input CLKW, input CSW0, input CSW1, input CSW2,
+                input ADR0, input ADR1, input ADR2, input ADR3, input ADR4, input ADR5, input ADR6, input ADR7, input ADR8, input ADR9, input ADR10, input ADR11, input ADR12, input CER, input OCER, input CLKR, input CSR0, input CSR1, input CSR2,
+                input RST, output DO0, output DO1, output DO2, output DO3, output DO4, output DO5, output DO6, output DO7, output DO8, output DO9, output DO10, output DO11, output DO12, output DO13, output DO14, output DO15, output DO16, output DO17);
+    wire [17:0] di = {DI17, DI16, DI15, DI14, DI13, DI12, DI11, DI10, DI9, DI8, DI7, DI6, DI5, DI4, DI3, DI2, DI1, DI0};
+    wire [8:0] adw = {ADW8, ADW7, ADW6, ADW5, ADW4, ADW3, ADW2, ADW1, ADW0};
+    wire [8:0] adr = {ADR12, ADR11, ADR10, ADR9, ADR8, ADR7, ADR6, ADR5, ADR4};
+    reg [17:0] mem [0:511];
+    reg [17:0] q;
+    always @(posedge CLKW) if (CEW) mem[adw] <= di;
+    always @(posedge CLKR) if (CER) q <= mem[adr];
+    assign {DO17, DO16, DO15, DO14, DO13, DO12, DO11, DO10, DO9, DO8, DO7, DO6, DO5, DO4, DO3, DO2, DO1, DO0} = q;
+endmodule
+
+// MachXO2/XO3 single-port 9 kbit RAM on CLK.
+module SP8KC #(parameter DATA_WIDTH = 9, parameter REGMODE = "NOREG", parameter CSDECODE = "0b000",
+               parameter WRITEMODE = "NORMAL", parameter GSR = "ENABLED", parameter RESETMODE = "SYNC",
+               parameter ASYNC_RESET_RELEASE = "SYNC", parameter INIT_DATA = "STATIC",
+    parameter INITVAL_00 = "0x0", parameter INITVAL_01 = "0x0", parameter INITVAL_02 = "0x0", parameter INITVAL_03 = "0x0", parameter INITVAL_04 = "0x0", parameter INITVAL_05 = "0x0", parameter INITVAL_06 = "0x0", parameter INITVAL_07 = "0x0", parameter INITVAL_08 = "0x0", parameter INITVAL_09 = "0x0", parameter INITVAL_0A = "0x0", parameter INITVAL_0B = "0x0", parameter INITVAL_0C = "0x0", parameter INITVAL_0D = "0x0", parameter INITVAL_0E = "0x0", parameter INITVAL_0F = "0x0", parameter INITVAL_10 = "0x0", parameter INITVAL_11 = "0x0", parameter INITVAL_12 = "0x0", parameter INITVAL_13 = "0x0", parameter INITVAL_14 = "0x0", parameter INITVAL_15 = "0x0", parameter INITVAL_16 = "0x0", parameter INITVAL_17 = "0x0", parameter INITVAL_18 = "0x0", parameter INITVAL_19 = "0x0", parameter INITVAL_1A = "0x0", parameter INITVAL_1B = "0x0", parameter INITVAL_1C = "0x0", parameter INITVAL_1D = "0x0", parameter INITVAL_1E = "0x0", parameter INITVAL_1F = "0x0")
+             (input DI0, input DI1, input DI2, input DI3, input DI4, input DI5, input DI6, input DI7, input DI8, input AD0, input AD1, input AD2, input AD3, input AD4, input AD5, input AD6, input AD7, input AD8, input AD9, input AD10, input AD11, input AD12, input CE, input OCE, input CLK, input WE, input CS0, input CS1,
+              input CS2, input RST, output DO0, output DO1, output DO2, output DO3, output DO4, output DO5, output DO6, output DO7, output DO8);
+    wire [8:0] di = {DI8, DI7, DI6, DI5, DI4, DI3, DI2, DI1, DI0};
+    wire [9:0] ad = {AD12, AD11, AD10, AD9, AD8, AD7, AD6, AD5, AD4, AD3};
+    reg [8:0] mem [0:1023];
+    reg [8:0] q;
+    always @(posedge CLK) if (CE && WE) mem[ad] <= di;
+    always @(posedge CLK) if (CE) q <= mem[ad];
+    assign {DO8, DO7, DO6, DO5, DO4, DO3, DO2, DO1, DO0} = q;
+endmodule
+
 // True dual-port 16 kbit RAM: port A on CLKA, port B on CLKB. Each port has
 // its own write array; a read sees both (the crossing goes through the RAM).
 module DP16KD #(parameter DATA_WIDTH_A = 18, parameter DATA_WIDTH_B = 18,
@@ -188,7 +250,8 @@ module DP16KD #(parameter DATA_WIDTH_A = 18, parameter DATA_WIDTH_B = 18,
                 parameter WRITEMODE_A = "NORMAL", parameter WRITEMODE_B = "NORMAL",
                 parameter RESETMODE = "SYNC", parameter ASYNC_RESET_RELEASE = "SYNC",
                 parameter CSDECODE_A = "0b000", parameter CSDECODE_B = "0b000", parameter GSR = "ENABLED",
-                parameter INITVAL_DATA = "NONE")
+                parameter INITVAL_DATA = "NONE",
+    parameter INITVAL_00 = "0x0", parameter INITVAL_01 = "0x0", parameter INITVAL_02 = "0x0", parameter INITVAL_03 = "0x0", parameter INITVAL_04 = "0x0", parameter INITVAL_05 = "0x0", parameter INITVAL_06 = "0x0", parameter INITVAL_07 = "0x0", parameter INITVAL_08 = "0x0", parameter INITVAL_09 = "0x0", parameter INITVAL_0A = "0x0", parameter INITVAL_0B = "0x0", parameter INITVAL_0C = "0x0", parameter INITVAL_0D = "0x0", parameter INITVAL_0E = "0x0", parameter INITVAL_0F = "0x0", parameter INITVAL_10 = "0x0", parameter INITVAL_11 = "0x0", parameter INITVAL_12 = "0x0", parameter INITVAL_13 = "0x0", parameter INITVAL_14 = "0x0", parameter INITVAL_15 = "0x0", parameter INITVAL_16 = "0x0", parameter INITVAL_17 = "0x0", parameter INITVAL_18 = "0x0", parameter INITVAL_19 = "0x0", parameter INITVAL_1A = "0x0", parameter INITVAL_1B = "0x0", parameter INITVAL_1C = "0x0", parameter INITVAL_1D = "0x0", parameter INITVAL_1E = "0x0", parameter INITVAL_1F = "0x0", parameter INITVAL_20 = "0x0", parameter INITVAL_21 = "0x0", parameter INITVAL_22 = "0x0", parameter INITVAL_23 = "0x0", parameter INITVAL_24 = "0x0", parameter INITVAL_25 = "0x0", parameter INITVAL_26 = "0x0", parameter INITVAL_27 = "0x0", parameter INITVAL_28 = "0x0", parameter INITVAL_29 = "0x0", parameter INITVAL_2A = "0x0", parameter INITVAL_2B = "0x0", parameter INITVAL_2C = "0x0", parameter INITVAL_2D = "0x0", parameter INITVAL_2E = "0x0", parameter INITVAL_2F = "0x0", parameter INITVAL_30 = "0x0", parameter INITVAL_31 = "0x0", parameter INITVAL_32 = "0x0", parameter INITVAL_33 = "0x0", parameter INITVAL_34 = "0x0", parameter INITVAL_35 = "0x0", parameter INITVAL_36 = "0x0", parameter INITVAL_37 = "0x0", parameter INITVAL_38 = "0x0", parameter INITVAL_39 = "0x0", parameter INITVAL_3A = "0x0", parameter INITVAL_3B = "0x0", parameter INITVAL_3C = "0x0", parameter INITVAL_3D = "0x0", parameter INITVAL_3E = "0x0", parameter INITVAL_3F = "0x0")
               (input DIA0, input DIA1, input DIA2, input DIA3, input DIA4, input DIA5, input DIA6, input DIA7, input DIA8, input DIA9, input DIA10, input DIA11, input DIA12, input DIA13, input DIA14, input DIA15, input DIA16, input DIA17, input ADA0, input ADA1, input ADA2, input ADA3, input ADA4, input ADA5, input ADA6, input ADA7, input ADA8, input ADA9, input ADA10, input ADA11, input ADA12, input ADA13,
                input CEA, input OCEA, input CLKA, input WEA, input CSA0, input CSA1, input CSA2, input RSTA,
                input DIB0, input DIB1, input DIB2, input DIB3, input DIB4, input DIB5, input DIB6, input DIB7, input DIB8, input DIB9, input DIB10, input DIB11, input DIB12, input DIB13, input DIB14, input DIB15, input DIB16, input DIB17, input ADB0, input ADB1, input ADB2, input ADB3, input ADB4, input ADB5, input ADB6, input ADB7, input ADB8, input ADB9, input ADB10, input ADB11, input ADB12, input ADB13,
