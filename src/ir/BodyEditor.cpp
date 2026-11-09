@@ -716,6 +716,46 @@ void BodyEditor::checkMultipleDrivers(DiagnosticSink& sink) {
         }
         return true;
     };
+    // an input port that the module drives itself on every bit (no2ice40 ice40_spi_wb.v: the
+    // SB_IO's D_IN_0 drives the input port sio_mosi_i, which instances leave unconnected, as
+    // yosys accepts it): the port is read as an output of the module (IR-INPUT-DRIVEN)
+    {
+        std::vector<std::vector<bool>> inside(body_.nets.size());
+        auto mark = [&](const SigSpec& s) {
+            for (const auto& c : s.chunks())
+                if (!c.isConst()) {
+                    auto& m = inside[c.net.index()];
+                    if (m.size() < body_.net(c.net).width)
+                        m.resize(body_.net(c.net).width, false);
+                    for (std::uint32_t i = 0; i < c.width; ++i)
+                        m[c.offset + i] = true;
+                }
+        };
+        for (const auto& c : body_.connections)
+            mark(c.lhs);
+        for (const auto& r : body_.registers)
+            mark(r.q);
+        for (const auto& l : body_.latches)
+            mark(l.q);
+        for (const auto& ch : body_.children)
+            for (const auto& pb : ch.ports)
+                if (pb.dir == PortDir::Out)
+                    mark(pb.actual);
+        for (auto& p : body_.ports) {
+            if (p.dir != PortDir::In)
+                continue;
+            const auto& m = inside[p.net.index()];
+            const auto w = body_.net(p.net).width;
+            if (w == 0 || m.size() < w || !std::all_of(m.begin(), m.begin() + w, [](bool b) { return b; }))
+                continue;
+            p.dir = PortDir::Out;
+            sink.report({"IR-INPUT-DRIVEN", Severity::Warning,
+                         "input port '" + p.name + "' of module '" + body_.name +
+                             "' is driven inside the module: read as an output (a value connected to it from outside "
+                             "is not analyzed)",
+                         body_.net(p.net).loc, {}});
+        }
+    }
     for (const auto& p : body_.ports)
         if (p.dir == PortDir::In)
             add(body_.netSig(p.net), "input port");

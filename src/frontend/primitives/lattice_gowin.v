@@ -76,6 +76,192 @@ module SB_PLL40_PAD #(parameter FEEDBACK_PATH = "SIMPLE", parameter [3:0] DIVR =
     assign SDO = 1'b0;
 endmodule
 
+// iCE40 SB_PLL40_2F_PAD: two outputs of the PLL; port A/B: GENCLK = f(ref) x (DIVF+1) / ((DIVR+1) x 2^DIVQ),
+// GENCLK_HALF = half of it
+module SB_PLL40_2F_PAD #(parameter FEEDBACK_PATH = "SIMPLE", parameter [3:0] DIVR = 4'd0, parameter [6:0] DIVF = 7'd0,
+                parameter [2:0] DIVQ = 3'd0, parameter [2:0] FILTER_RANGE = 3'd0,
+                parameter DELAY_ADJUSTMENT_MODE_FEEDBACK = "FIXED", parameter DELAY_ADJUSTMENT_MODE_RELATIVE = "FIXED",
+                parameter [3:0] FDA_FEEDBACK = 4'd0, parameter [3:0] FDA_RELATIVE = 4'd0,
+                parameter [1:0] SHIFTREG_DIV_MODE = 2'b00, parameter PLLOUT_SELECT_PORTA = "GENCLK",
+                parameter PLLOUT_SELECT_PORTB = "GENCLK", parameter ENABLE_ICEGATE_PORTA = 1'b0,
+                parameter ENABLE_ICEGATE_PORTB = 1'b0, parameter TEST_MODE = 1'b0, parameter EXTERNAL_DIVIDE_FACTOR = 1)
+               (input PACKAGEPIN, output PLLOUTCOREA, output PLLOUTGLOBALA, output PLLOUTCOREB, output PLLOUTGLOBALB,
+                input EXTFEEDBACK, input [7:0] DYNAMICDELAY, output LOCK, input BYPASS, input RESETB,
+                input LATCHINPUTVALUE, output SDO, input SDI, input SCLK);
+    localparam real R = (1.0 * (DIVR + 1) * (1 << DIVQ)) / (DIVF + 1);
+    localparam real RA = PLLOUT_SELECT_PORTA == "GENCLK_HALF" ? 2.0 * R : R;
+    localparam real RB = PLLOUT_SELECT_PORTB == "GENCLK_HALF" ? 2.0 * R : R;
+    (* OPENCDC_CLOCK_PIN = "PLLOUTGLOBALA", OPENCDC_CLOCK_RATIO = RA *) reg a = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "PLLOUTGLOBALB", OPENCDC_CLOCK_RATIO = RB *) reg b = 1'b0;
+    always @(posedge PACKAGEPIN) begin a <= ~a; b <= ~b; end
+    assign PLLOUTCOREA = a;
+    assign PLLOUTGLOBALA = a;
+    assign PLLOUTCOREB = b;
+    assign PLLOUTGLOBALB = b;
+    opencdc_async_source u_lock (LOCK);
+    assign SDO = 1'b0;
+endmodule
+
+// iCE40 SB_PLL40_2F_CORE: two outputs of the PLL; port A/B: GENCLK = f(ref) x (DIVF+1) / ((DIVR+1) x 2^DIVQ),
+// GENCLK_HALF = half of it
+module SB_PLL40_2F_CORE #(parameter FEEDBACK_PATH = "SIMPLE", parameter [3:0] DIVR = 4'd0, parameter [6:0] DIVF = 7'd0,
+                parameter [2:0] DIVQ = 3'd0, parameter [2:0] FILTER_RANGE = 3'd0,
+                parameter DELAY_ADJUSTMENT_MODE_FEEDBACK = "FIXED", parameter DELAY_ADJUSTMENT_MODE_RELATIVE = "FIXED",
+                parameter [3:0] FDA_FEEDBACK = 4'd0, parameter [3:0] FDA_RELATIVE = 4'd0,
+                parameter [1:0] SHIFTREG_DIV_MODE = 2'b00, parameter PLLOUT_SELECT_PORTA = "GENCLK",
+                parameter PLLOUT_SELECT_PORTB = "GENCLK", parameter ENABLE_ICEGATE_PORTA = 1'b0,
+                parameter ENABLE_ICEGATE_PORTB = 1'b0, parameter TEST_MODE = 1'b0, parameter EXTERNAL_DIVIDE_FACTOR = 1)
+               (input REFERENCECLK, output PLLOUTCOREA, output PLLOUTGLOBALA, output PLLOUTCOREB, output PLLOUTGLOBALB,
+                input EXTFEEDBACK, input [7:0] DYNAMICDELAY, output LOCK, input BYPASS, input RESETB,
+                input LATCHINPUTVALUE, output SDO, input SDI, input SCLK);
+    localparam real R = (1.0 * (DIVR + 1) * (1 << DIVQ)) / (DIVF + 1);
+    localparam real RA = PLLOUT_SELECT_PORTA == "GENCLK_HALF" ? 2.0 * R : R;
+    localparam real RB = PLLOUT_SELECT_PORTB == "GENCLK_HALF" ? 2.0 * R : R;
+    (* OPENCDC_CLOCK_PIN = "PLLOUTGLOBALA", OPENCDC_CLOCK_RATIO = RA *) reg a = 1'b0;
+    (* OPENCDC_CLOCK_PIN = "PLLOUTGLOBALB", OPENCDC_CLOCK_RATIO = RB *) reg b = 1'b0;
+    always @(posedge REFERENCECLK) begin a <= ~a; b <= ~b; end
+    assign PLLOUTCOREA = a;
+    assign PLLOUTGLOBALA = a;
+    assign PLLOUTCOREB = b;
+    assign PLLOUTGLOBALB = b;
+    opencdc_async_source u_lock (LOCK);
+    assign SDO = 1'b0;
+endmodule
+
+// iCE40 SB_PLL40_2_PAD: port A is the input clock itself, port B the PLL output
+module SB_PLL40_2_PAD #(parameter FEEDBACK_PATH = "SIMPLE", parameter [3:0] DIVR = 4'd0, parameter [6:0] DIVF = 7'd0,
+                parameter [2:0] DIVQ = 3'd0, parameter [2:0] FILTER_RANGE = 3'd0,
+                parameter DELAY_ADJUSTMENT_MODE_FEEDBACK = "FIXED", parameter DELAY_ADJUSTMENT_MODE_RELATIVE = "FIXED",
+                parameter [3:0] FDA_FEEDBACK = 4'd0, parameter [3:0] FDA_RELATIVE = 4'd0,
+                parameter [1:0] SHIFTREG_DIV_MODE = 2'b00, parameter PLLOUT_SELECT_PORTA = "GENCLK",
+                parameter PLLOUT_SELECT_PORTB = "GENCLK", parameter ENABLE_ICEGATE_PORTA = 1'b0,
+                parameter ENABLE_ICEGATE_PORTB = 1'b0, parameter TEST_MODE = 1'b0, parameter EXTERNAL_DIVIDE_FACTOR = 1)
+               (input PACKAGEPIN, output PLLOUTCOREA, output PLLOUTGLOBALA, output PLLOUTCOREB, output PLLOUTGLOBALB,
+                input EXTFEEDBACK, input [7:0] DYNAMICDELAY, output LOCK, input BYPASS, input RESETB,
+                input LATCHINPUTVALUE, output SDO, input SDI, input SCLK);
+    localparam real R = (1.0 * (DIVR + 1) * (1 << DIVQ)) / (DIVF + 1);
+    localparam real RB = PLLOUT_SELECT_PORTB == "GENCLK_HALF" ? 2.0 * R : R;
+    (* OPENCDC_CLOCK_PIN = "PLLOUTGLOBALB", OPENCDC_CLOCK_RATIO = RB *) reg b = 1'b0;
+    always @(posedge PACKAGEPIN) b <= ~b;
+    assign PLLOUTCOREA = PACKAGEPIN;
+    assign PLLOUTGLOBALA = PACKAGEPIN;
+    assign PLLOUTCOREB = b;
+    assign PLLOUTGLOBALB = b;
+    opencdc_async_source u_lock (LOCK);
+    assign SDO = 1'b0;
+endmodule
+
+// iCE40 SB_IO: PIN_TYPE[1:0] input (01: direct; otherwise registered on INPUT_CLK, D_IN_1 on its other edge),
+// PIN_TYPE[3:2] output (10: direct; 01: registered on OUTPUT_CLK; 11: registered, inverted; 00: DDR),
+// PIN_TYPE[5:4] output enable (00: never; 01: always; 10: OUTPUT_ENABLE; 11: OUTPUT_ENABLE registered)
+module SB_IO #(parameter [5:0] PIN_TYPE = 6'b000000, parameter [0:0] PULLUP = 1'b0,
+               parameter [0:0] NEG_TRIGGER = 1'b0, parameter IO_STANDARD = "SB_LVCMOS")
+              (inout PACKAGE_PIN, input LATCH_INPUT_VALUE, input CLOCK_ENABLE, input INPUT_CLK, input OUTPUT_CLK,
+               input OUTPUT_ENABLE, input D_OUT_0, input D_OUT_1, output D_IN_0, output D_IN_1);
+    wire ice = CLOCK_ENABLE !== 1'b0;
+    generate
+        if (PIN_TYPE[1:0] == 2'b01) begin : g_in_direct
+            assign D_IN_0 = PACKAGE_PIN;
+            assign D_IN_1 = 1'b0;
+        end else begin : g_in_reg
+            reg q0, q1;
+            if (NEG_TRIGGER) begin : g_neg
+                always @(negedge INPUT_CLK) if (ice) q0 <= PACKAGE_PIN;
+                always @(posedge INPUT_CLK) if (ice) q1 <= PACKAGE_PIN;
+            end else begin : g_pos
+                always @(posedge INPUT_CLK) if (ice) q0 <= PACKAGE_PIN;
+                always @(negedge INPUT_CLK) if (ice) q1 <= PACKAGE_PIN;
+            end
+            assign D_IN_0 = q0;
+            assign D_IN_1 = q1;
+        end
+        wire dout;
+        if (PIN_TYPE[5:4] == 2'b00) begin : g_no_out // output never enabled: no output registers
+            assign dout = 1'b0;
+        end else if (PIN_TYPE[3:2] == 2'b10) begin : g_out_direct
+            assign dout = D_OUT_0;
+        end else begin : g_out_reg
+            reg o0, o1;
+            if (NEG_TRIGGER) begin : g_neg
+                always @(negedge OUTPUT_CLK) if (ice) o0 <= D_OUT_0;
+                always @(posedge OUTPUT_CLK) if (ice) o1 <= D_OUT_1;
+            end else begin : g_pos
+                always @(posedge OUTPUT_CLK) if (ice) o0 <= D_OUT_0;
+                always @(negedge OUTPUT_CLK) if (ice) o1 <= D_OUT_1;
+            end
+            assign dout = PIN_TYPE[3:2] == 2'b01 ? o0 : PIN_TYPE[3:2] == 2'b11 ? ~o0 : (OUTPUT_CLK ? o0 : o1);
+        end
+        if (PIN_TYPE[5:4] == 2'b01) begin : g_oe_on
+            assign PACKAGE_PIN = dout;
+        end else if (PIN_TYPE[5:4] == 2'b10) begin : g_oe
+            assign PACKAGE_PIN = OUTPUT_ENABLE ? dout : 1'bz;
+        end else if (PIN_TYPE[5:4] == 2'b11) begin : g_oe_reg
+            reg oe;
+            always @(posedge OUTPUT_CLK) if (ice) oe <= OUTPUT_ENABLE;
+            assign PACKAGE_PIN = oe ? dout : 1'bz;
+        end
+    endgenerate
+endmodule
+
+// iCE40 UltraPlus SB_SPRAM256KA: 16k x 16 single-port RAM on CLOCK, registered read
+module SB_SPRAM256KA (input [13:0] ADDRESS, input [15:0] DATAIN, input [3:0] MASKWREN, input WREN,
+                      input CHIPSELECT, input CLOCK, input STANDBY, input SLEEP, input POWEROFF,
+                      output [15:0] DATAOUT);
+    reg [15:0] mem [0:16383];
+    reg [15:0] q;
+    always @(posedge CLOCK) if (CHIPSELECT && WREN) mem[ADDRESS] <= DATAIN;
+    always @(posedge CLOCK) if (CHIPSELECT && !WREN) q <= mem[ADDRESS];
+    assign DATAOUT = q;
+endmodule
+
+// iCE40 UltraPlus SB_SPI / SB_I2C: the system bus and every output in SBCLKI; the serial
+// inputs are sampled there
+module SB_SPI #(parameter BUS_ADDR74 = "0b0000")
+              (input SBCLKI, input SBRWI, input SBSTBI, input SBADRI7, input SBADRI6, input SBADRI5, input SBADRI4, input SBADRI3, input SBADRI2, input SBADRI1, input SBADRI0, input SBDATI7, input SBDATI6, input SBDATI5, input SBDATI4, input SBDATI3, input SBDATI2, input SBDATI1, input SBDATI0,
+               input MI, input SI, input SCKI, input SCSNI, output SBDATO7, output SBDATO6, output SBDATO5, output SBDATO4, output SBDATO3, output SBDATO2, output SBDATO1, output SBDATO0, output SBACKO,
+               output SPIIRQ, output SPIWKUP, output SO, output SOE, output MO, output MOE, output SCKO,
+               output SCKOE, output MCSNO3, output MCSNO2, output MCSNO1, output MCSNO0, output MCSNOE3, output MCSNOE2, output MCSNOE1, output MCSNOE0);
+    reg [7:0] q;
+    always @(posedge SBCLKI) q <= ^{SBRWI, SBSTBI, {SBADRI7, SBADRI6, SBADRI5, SBADRI4, SBADRI3, SBADRI2, SBADRI1, SBADRI0}, {SBDATI7, SBDATI6, SBDATI5, SBDATI4, SBDATI3, SBDATI2, SBDATI1, SBDATI0}, MI, SI, SCKI, SCSNI} ? q + 8'd1 : q;
+    assign {SBDATO7, SBDATO6, SBDATO5, SBDATO4, SBDATO3, SBDATO2, SBDATO1, SBDATO0} = q;
+    assign {SBACKO, SPIIRQ, SPIWKUP, SO, SOE, MO, MOE, SCKO, SCKOE} = {9{q[0]}};
+    assign {MCSNO3, MCSNO2, MCSNO1, MCSNO0} = q[3:0];
+    assign {MCSNOE3, MCSNOE2, MCSNOE1, MCSNOE0} = q[7:4];
+endmodule
+
+module SB_I2C #(parameter BUS_ADDR74 = "0b0001", parameter I2C_SLAVE_INIT_ADDR = "0b1111100001")
+              (input SBCLKI, input SBRWI, input SBSTBI, input SBADRI7, input SBADRI6, input SBADRI5, input SBADRI4, input SBADRI3, input SBADRI2, input SBADRI1, input SBADRI0, input SBDATI7, input SBDATI6, input SBDATI5, input SBDATI4, input SBDATI3, input SBDATI2, input SBDATI1, input SBDATI0,
+               input SCLI, input SDAI, output SBDATO7, output SBDATO6, output SBDATO5, output SBDATO4, output SBDATO3, output SBDATO2, output SBDATO1, output SBDATO0, output SBACKO, output I2CIRQ, output I2CWKUP,
+               output SCLO, output SCLOE, output SDAO, output SDAOE);
+    reg [7:0] q;
+    always @(posedge SBCLKI) q <= ^{SBRWI, SBSTBI, {SBADRI7, SBADRI6, SBADRI5, SBADRI4, SBADRI3, SBADRI2, SBADRI1, SBADRI0}, {SBDATI7, SBDATI6, SBDATI5, SBDATI4, SBDATI3, SBDATI2, SBDATI1, SBDATI0}, SCLI, SDAI} ? q + 8'd1 : q;
+    assign {SBDATO7, SBDATO6, SBDATO5, SBDATO4, SBDATO3, SBDATO2, SBDATO1, SBDATO0} = q;
+    assign {SBACKO, I2CIRQ, I2CWKUP, SCLO, SCLOE, SDAO, SDAOE} = {7{q[0]}};
+endmodule
+
+// iCE40 UltraPlus SB_LEDDA_IP: the LED PWM controller, registers and outputs on LEDDCLK
+module SB_LEDDA_IP (input LEDDCS, input LEDDCLK, input LEDDDAT7, input LEDDDAT6, input LEDDDAT5, input LEDDDAT4, input LEDDDAT3, input LEDDDAT2, input LEDDDAT1, input LEDDDAT0, input LEDDADDR3, input LEDDADDR2, input LEDDADDR1, input LEDDADDR0,
+                    input LEDDDEN, input LEDDEXE, input LEDDRST, output PWMOUT0, output PWMOUT1, output PWMOUT2,
+                    output LEDDON);
+    reg [3:0] q;
+    always @(posedge LEDDCLK) q <= ^{LEDDCS, {LEDDDAT7, LEDDDAT6, LEDDDAT5, LEDDDAT4, LEDDDAT3, LEDDDAT2, LEDDDAT1, LEDDDAT0}, {LEDDADDR3, LEDDADDR2, LEDDADDR1, LEDDADDR0}, LEDDDEN, LEDDEXE, LEDDRST} ? q + 4'd1 : q;
+    assign {LEDDON, PWMOUT2, PWMOUT1, PWMOUT0} = q;
+endmodule
+
+// iCE40 UltraPlus SB_RGBA_DRV: the RGB current drivers (combinational)
+module SB_RGBA_DRV #(parameter CURRENT_MODE = "0b0", parameter RGB0_CURRENT = "0b000000",
+                     parameter RGB1_CURRENT = "0b000000", parameter RGB2_CURRENT = "0b000000")
+                    (input CURREN, input RGBLEDEN, input RGB0PWM, input RGB1PWM, input RGB2PWM, output RGB0,
+                     output RGB1, output RGB2);
+    assign RGB0 = CURREN & RGBLEDEN & RGB0PWM;
+    assign RGB1 = CURREN & RGBLEDEN & RGB1PWM;
+    assign RGB2 = CURREN & RGBLEDEN & RGB2PWM;
+endmodule
+
+// iCE40 SB_WARMBOOT: reconfiguration request, inputs only
+module SB_WARMBOOT (input BOOT, input S1, input S0);
+endmodule
+
 module SB_GB (input USER_SIGNAL_TO_GLOBAL_BUFFER, output GLOBAL_BUFFER_OUTPUT);
     assign GLOBAL_BUFFER_OUTPUT = USER_SIGNAL_TO_GLOBAL_BUFFER;
 endmodule

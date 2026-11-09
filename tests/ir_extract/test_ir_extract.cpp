@@ -1375,3 +1375,78 @@ TEST_CASE("Writing mem[i][j][k] with two variable indexes and a constant one", "
     CHECK(e.countCode("IR-UNSUPPORTED-LVALUE") == 0);
     CHECK(e.contains("reg buf_ <= "));
 }
+
+TEST_CASE("(* full_case *) on a case that lists only some values", "[extract][case]") {
+    // picorv32.v: (* full_case *) case (mem_wordsize) 0: ... 1: ... 2: ... endcase (a 2-bit selector)
+    const std::string body = "  always @* begin\n"
+                             "    case (s)\n"
+                             "      2'd0: y = a;\n"
+                             "      2'd1: y = ~a;\n"
+                             "      2'd2: y = 4'd0;\n"
+                             "    endcase\n"
+                             "  end\n"
+                             "endmodule\n";
+    auto full = extract("module m(input [1:0] s, input [3:0] a, output reg [3:0] y);\n"
+                        "  always @* begin\n"
+                        "    (* full_case *)\n"
+                        "    case (s)\n"
+                        "      2'd0: y = a;\n"
+                        "      2'd1: y = ~a;\n"
+                        "      2'd2: y = 4'd0;\n"
+                        "    endcase\n"
+                        "  end\n"
+                        "endmodule\n",
+                        LanguageStd::Verilog2005, "m");
+    CHECK(full.countCode("IR-LATCH-INFERRED") == 0);
+    // negative: without the attribute the value 3 keeps y: a latch
+    auto plain = extract("module m(input [1:0] s, input [3:0] a, output reg [3:0] y);\n" + body,
+                         LanguageStd::Verilog2005, "m");
+    CHECK(plain.countCode("IR-LATCH-INFERRED") == 1);
+}
+
+TEST_CASE("A constant if around the reset of an edge-sensitive block", "[extract][reset]") {
+    // no2usb usb.v: always @(posedge clk or posedge rst) if (IRQ) begin if (rst) ... else ... end
+    const auto src = [](const char* irq) {
+        return std::string("module m #(parameter IRQ = ") + irq +
+               ") (input clk, input rst, input d, output reg q);\n"
+               "  always @(posedge clk or posedge rst)\n"
+               "    if (IRQ) begin\n"
+               "      if (rst) q <= 1'b0; else q <= d;\n"
+               "    end\n"
+               "endmodule\n";
+    };
+    auto on = extract(src("1"), LanguageStd::Verilog2005, "m");
+    CHECK(on.countCode("IR-AMBIGUOUS-CLOCK") == 0);
+    CHECK(on.has("reg q <= d @(posedge clk) arst(rst -> 1'b0)"));
+    auto off = extract(src("0"), LanguageStd::Verilog2005, "m");
+    CHECK(off.countCode("IR-AMBIGUOUS-CLOCK") == 0);
+    CHECK_FALSE(off.contains("reg q <="));
+    // negative: a condition that is not constant is still ambiguous
+    auto bad = extract("module m(input clk, input rst, input en, input d, output reg q);\n"
+                       "  always @(posedge clk or posedge rst)\n"
+                       "    if (en) begin if (rst) q <= 1'b0; else q <= d; end\n"
+                       "endmodule\n",
+                       LanguageStd::Verilog2005, "m");
+    CHECK(bad.countCode("IR-AMBIGUOUS-CLOCK") == 1);
+}
+
+TEST_CASE("An input port driven inside its module", "[extract][ports]") {
+    // no2ice40 ice40_spi_wb.v: the SB_IO's D_IN_0 drives the input port sio_mosi_i
+    auto e = extract("module c(input clk, input d, output reg q); always @(posedge clk) q <= d; endmodule\n"
+                     "module m(input clk, input d, input pin_i, output y);\n"
+                     "  c u (.clk(clk), .d(d), .q(pin_i));\n"
+                     "  assign y = pin_i;\n"
+                     "endmodule\n"
+                     "module top(input clk, input d, output y); m x (.clk(clk), .d(d), .y(y)); endmodule\n",
+                     LanguageStd::Verilog2005, "top");
+    CHECK_FALSE(e.hasErrors());
+    CHECK(e.countCode("IR-INPUT-DRIVEN") == 1);
+    // negative: an input driven inside on only some bits is still a multiple driver
+    auto bad = extract("module m(input [1:0] p, output [1:0] y);\n"
+                       "  assign p[0] = 1'b1;\n"
+                       "  assign y = p;\n"
+                       "endmodule\n",
+                       LanguageStd::Verilog2005, "m");
+    CHECK(bad.countCode("IR-INPUT-DRIVEN") == 0);
+    CHECK(bad.countCode("IR-MULTIDRIVER") == 1);
+}

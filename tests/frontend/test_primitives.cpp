@@ -100,7 +100,9 @@ TEST_CASE("Primitive library: models and component packages are embedded", "[pri
         libs.insert(pkg.library);
     for (const char* l : {"unisim", "xpm", "altera_mf", "ecp5u", "machxo2", "sb_ice40_components_syn", "ice40up", "gw1n", "gw2a"})
         CHECK(libs.contains(l));
-    for (const char* n : {"DP16KD", "DP8KC", "PDPW8KC", "SP8KC", "VHI", "VLO", "USRMCLK", "IDDRX1F", "ODDRX1F", "SB_RAM40_4K", "SB_RAM40_4KNRNW", "SDPB", "DPB"})
+    for (const char* n : {"DP16KD", "DP8KC", "PDPW8KC", "SP8KC", "VHI", "VLO", "USRMCLK", "SB_IO", "SB_SPRAM256KA",
+                          "SB_PLL40_2F_PAD", "SB_PLL40_2F_CORE", "SB_PLL40_2_PAD", "SB_SPI", "SB_I2C", "SB_LEDDA_IP",
+                          "SB_RGBA_DRV", "SB_WARMBOOT", "OSCH", "OSCG", "SB_HFOSC", "SB_LFOSC", "IDDRX1F", "ODDRX1F", "SB_RAM40_4K", "SB_RAM40_4KNRNW", "SDPB", "DPB"})
         CHECK(lib.find(n).has_value());
 }
 
@@ -1699,4 +1701,46 @@ TEST_CASE("Primitives: internal oscillators are clocks of their own", "[primitiv
                              "  always @(posedge o) q <= ~q; endmodule\n",
                       "top");
     CHECK(gw->count("FE-SLANG-UnknownModule") == 1);
+}
+
+TEST_CASE("Primitives: iCE40 UltraPlus IOs, PLL, SPRAM and hard IP", "[primitives][lattice][ice40]") {
+    // ice40-playground riscv_usb: SB_PLL40_2F_PAD (48 MHz and its half), SB_IO with registered input,
+    // SB_SPRAM256KA, SB_SPI, SB_LEDDA_IP, SB_RGBA_DRV, SB_WARMBOOT
+    auto run = analyze(
+        "t.v",
+        "module top(input clk_in, inout pad, input [13:0] a, input [15:0] din, output [15:0] dout, output r0,\n"
+        "           output reg q);\n"
+        "  wire c48, c24, pin_d;\n"
+        "  SB_PLL40_2F_PAD #(.DIVR(4'b0000), .DIVF(7'b0111111), .DIVQ(3'b100), .FILTER_RANGE(3'b001),\n"
+        "    .PLLOUT_SELECT_PORTA(\"GENCLK\"), .PLLOUT_SELECT_PORTB(\"GENCLK_HALF\")) pll (.PACKAGEPIN(clk_in),\n"
+        "    .PLLOUTGLOBALA(c48), .PLLOUTGLOBALB(c24), .RESETB(1'b1), .BYPASS(1'b0));\n"
+        "  SB_IO #(.PIN_TYPE(6'b110100)) io (.PACKAGE_PIN(pad), .CLOCK_ENABLE(1'b1), .INPUT_CLK(c48),\n"
+        "    .OUTPUT_CLK(c48), .OUTPUT_ENABLE(1'b0), .D_OUT_0(1'b0), .D_OUT_1(1'b0), .D_IN_0(pin_d));\n"
+        "  always @(posedge c24) q <= pin_d;\n"
+        "  SB_SPRAM256KA ram (.ADDRESS(a), .DATAIN(din), .MASKWREN(4'hf), .WREN(1'b1), .CHIPSELECT(1'b1),\n"
+        "    .CLOCK(c24), .STANDBY(1'b0), .SLEEP(1'b0), .POWEROFF(1'b1), .DATAOUT(dout));\n"
+        "  wire [7:0] sbo;\n"
+        "  SB_SPI spi (.SBCLKI(c24), .SBRWI(1'b0), .SBSTBI(1'b0), .MI(pad), .SBDATO0(sbo[0]));\n"
+        "  wire p0;\n"
+        "  SB_LEDDA_IP led (.LEDDCLK(c24), .LEDDCS(1'b0), .PWMOUT0(p0));\n"
+        "  SB_RGBA_DRV rgb (.CURREN(1'b1), .RGBLEDEN(1'b1), .RGB0PWM(p0), .RGB0(r0));\n"
+        "  SB_WARMBOOT wb (.BOOT(1'b0), .S0(1'b0), .S1(1'b0));\n"
+        "endmodule\n",
+        "top", "create_clock -name clk_in -period 83.333 [get_ports clk_in]\n");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    CHECK(run->count("FE-SLANG-UnknownModule") == 0);
+    const auto period = [&](std::string_view name) -> double {
+        for (const auto& c : run->r->clocks->clocks)
+            if (c.name == name && c.periodNs)
+                return *c.periodNs;
+        return 0.0;
+    };
+    // 12 MHz x 64 / 16 = 48 MHz; port B: GENCLK_HALF
+    CHECK(std::abs(period("top.pll.PLLOUTGLOBALA") - 83.333 / 4) < 1e-3);
+    CHECK(std::abs(period("top.pll.PLLOUTGLOBALB") - 83.333 / 2) < 1e-3);
+    // the registered input is in c48; it reaches c24, a related clock: no crossing
+    CHECK_FALSE(crosses(*run, "top.io", "top.q"));
+    CHECK(run->r->cdc->stats.unsynchronized == 0);
 }

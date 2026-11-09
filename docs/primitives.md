@@ -112,6 +112,11 @@ Sources:
 |---|---|
 | `EHXPLLL` (ECP5) | `CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3` derived from `CLKI`: f(VCO) = f(CLKI) × `CLKFB_DIV` × DIV(feedback output) / `CLKI_DIV`, f(CLKx) = f(VCO) / `CLKx_DIV`; the feedback output is selected by `FEEDBK_PATH` (`CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3`, or the `INT_` variants); input period from the input clock or `FREQUENCY_PIN_CLKI` (MHz); `LOCK` has no clock domain |
 | `SB_PLL40_CORE`, `SB_PLL40_PAD` (iCE40) | `PLLOUTCORE`/`PLLOUTGLOBAL` derived from the reference: f = f(ref) × (`DIVF`+1) / ((`DIVR`+1) × 2^`DIVQ`); `LOCK` has no clock domain |
+| `SB_PLL40_2F_PAD`, `SB_PLL40_2F_CORE`, `SB_PLL40_2_PAD` (iCE40) | Two outputs: `GENCLK` = f(ref) × (`DIVF`+1) / ((`DIVR`+1) × 2^`DIVQ`), `GENCLK_HALF` half of it (`PLLOUT_SELECT_PORTA/B`); `SB_PLL40_2_PAD` port A is the input clock; `LOCK` has no clock domain |
+| `SB_IO` (iCE40) | Pad with `PIN_TYPE`: input direct or registered on `INPUT_CLK` (`D_IN_1` on its other edge), output direct, registered on `OUTPUT_CLK` or DDR, output enable never/always/`OUTPUT_ENABLE`/registered; `NEG_TRIGGER` swaps the edges |
+| `SB_SPRAM256KA` (iCE40 UltraPlus) | 16k × 16 single-port RAM on `CLOCK` |
+| `SB_SPI`, `SB_I2C`, `SB_LEDDA_IP` (iCE40 UltraPlus) | Hard IP: the system bus, the serial inputs and every output in the bus clock (`SBCLKI`, `LEDDCLK`) |
+| `SB_RGBA_DRV`, `SB_WARMBOOT` (iCE40 UltraPlus) | RGB current drivers (combinational), warm boot (inputs only) |
 | `SB_GB`, `SB_DFF`, `SB_DFFE`, `SB_DFFR`, `SB_DFFS`, `SB_DFFER` (iCE40) | Global buffer (wire) and flip-flops |
 | `DP8KC`, `PDPW8KC`, `SP8KC` (MachXO2/XO3) | 9 kbit RAM: true dual-port (per-port write arrays as `DP16KD`), pseudo dual-port (write on `CLKW`, read on `CLKR`), single-port |
 | `OSCH` (MachXO2/XO3), `OSCG` (ECP5), `SB_HFOSC`, `SB_LFOSC` (iCE40 UltraPlus) | Internal oscillators: a clock of their own with the nominal frequency (`OSCH`: `NOM_FREQ` MHz; `OSCG`: 310 MHz / `DIV`; `SB_HFOSC`: 48 MHz / 2^`CLKHF_DIV`; `SB_LFOSC`: 10 kHz), unrelated to the other clocks |

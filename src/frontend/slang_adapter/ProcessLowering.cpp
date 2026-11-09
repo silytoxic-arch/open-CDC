@@ -15,6 +15,7 @@
 #include "ir/ConstFold.h"
 
 #include <slang/ast/ASTVisitor.h>
+#include <slang/ast/EvalContext.h>
 #include <slang/ast/TimingControl.h>
 #include <slang/ast/expressions/AssignmentExpressions.h>
 #include <slang/ast/expressions/CallExpression.h>
@@ -623,8 +624,14 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
     // unique case / priority case: an item always matches (no match is a violation
     // at run time); synthesis reads it as a full case: the last item takes the rest
     // (unique0 makes no such promise)
+    // (* full_case *) (picorv32: case (mem_wordsize) 0, 1, 2 of a 2-bit selector): the
+    // values not listed are don't-cares for synthesis, read the same way
+    const bool fullCaseAttr = std::ranges::any_of(sym_.getCompilation().getAttributes(c), [](const auto* a) {
+        return a->name == "full_case" || a->name == "FULL_CASE";
+    });
     if (!c.defaultCase && !conds.empty() &&
-        (c.check == sast::UniquePriorityCheck::Unique || c.check == sast::UniquePriorityCheck::Priority))
+        (c.check == sast::UniquePriorityCheck::Unique || c.check == sast::UniquePriorityCheck::Priority ||
+         fullCaseAttr))
         conds.back() = SigSpec::constant(1, 1);
 
     // without a default, the case is still complete when its constant items
@@ -1286,12 +1293,30 @@ void BodyBuilder::lowerSequential(const sast::Statement& body, std::vector<std::
 
     // Peel the asynchronous controls: if (rst) ... else if (set) ... else <clocked>
     const sast::Statement* rest = &body;
+    bool constantBranch = false; // a constant condition selected the statement (or nothing)
     while (ev.size() > 1) {
+        if (!rest && constantBranch)
+            return; // if (0) ...: the block assigns nothing
         if (!rest) {
             unsupported("IR-AMBIGUOUS-CLOCK", "edge-sensitive block with several events but no clocked branch", l);
             return;
         }
         const auto& s = unwrap(*rest);
+        // if (PARAM) around the reset if (no2usb usb.v: always @(posedge clk or posedge rst)
+        // if (IRQ) begin if (rst) ... end): the branch the constant selects
+        if (s.kind == sast::StatementKind::Conditional) {
+            const auto& c = s.as<sast::ConditionalStatement>();
+            if (c.conditions.size() == 1 && !c.conditions[0].pattern) {
+                // evaluated, not lowered: no cells for a condition that is not constant
+                sast::EvalContext ctx(sym_);
+                const auto cv = c.conditions[0].expr->eval(ctx);
+                if (cv.isInteger() && !cv.integer().hasUnknown()) {
+                    rest = cv.isTrue() ? &c.ifTrue : c.ifFalse;
+                    constantBranch = true;
+                    continue;
+                }
+            }
+        }
         std::optional<std::pair<SigSpec, bool>> rc;
         if (s.kind == sast::StatementKind::Conditional) {
             const auto& c = s.as<sast::ConditionalStatement>();

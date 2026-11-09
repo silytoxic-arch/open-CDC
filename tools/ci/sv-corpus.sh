@@ -168,6 +168,32 @@ files = re.search(r"^VERILOG\s*=\s*(.*)$", mk, re.M).group(1).split()
 json.dump({"format": "opencdc-project", "version": 1, "name": "zx_spectrum", "top": "spectrum",
            "sources": files, "constraints": ["ulx3s_v20.lpf"]}, open(d + "zx.ocdc.json", "w"), indent=1)
 PY
+# smunaut/ice40-playground riscv_usb (CERN-OHL-P-2.0 / LGPL, only fetched for this check): a PicoRV32 SoC with USB on
+# the iCEBreaker (iCE40 UltraPlus), yosys/nextpnr; the no2fpga cores are git submodules, fetched at the pinned commits;
+# the OpenCDC project takes the Makefiles' source lists (no clock constraint: nextpnr's clocks.py is not read)
+fetch_sparse ice40-playground https://github.com/smunaut/ice40-playground d2fa0050129c14a7fc42f64f115366f6f2a51669 \
+    projects/riscv_usb
+for m in no2ice40:97413633237ef5ad899f04e0b4b22679c5f6f6bb no2misc:eb5448b60a2de550c01c6002be4531c2495af8da \
+         no2usb:d359102614762fbd6506024ab19331e30da27cf5; do
+    fetch_sparse "ice40-playground/cores/${m%%:*}" "https://github.com/no2fpga/${m%%:*}" "${m##*:}" rtl
+done
+python3 - <<'PY'
+import json
+r = "ice40-playground/"
+def files(d, names):
+    return [d + n + ".v" for n in names.split()]
+src = (files("cores/no2misc/rtl/", "delay fifo_sync_ram fifo_sync_shift glitch_filter i2c_master i2c_master_wb "
+             "muacm2wb prims pdm pwm ram_sdp stream2wb uart2wb uart_rx uart_tx uart_wb xclk_strobe xclk_wb") +
+       files("cores/no2ice40/rtl/", "ice40_ebr ice40_i2c_wb ice40_rgb_wb ice40_spi_wb ice40_spram_gen ice40_spram_wb "
+             "ice40_iserdes ice40_oserdes ice40_serdes_crg ice40_serdes_dff ice40_serdes_sync") +
+       files("cores/no2usb/rtl/", "usb usb_crc usb_ep_buf usb_ep_status usb_phy usb_rx_ll usb_rx_pkt usb_trans "
+             "usb_tx_ll usb_tx_pkt") +
+       files("projects/riscv_usb/rtl/", "dfu_helper picorv32 picorv32_ice40_regs soc_bram soc_picorv32_base "
+             "soc_picorv32_bridge soc_spram soc_usb sysmgr top"))
+json.dump({"format": "opencdc-project", "version": 1, "name": "riscv_usb", "top": "top", "sources": src,
+           "includeDirs": ["cores/no2usb/rtl", "projects/riscv_usb/rtl"], "defines": {"BOARD_ICEBREAKER": "1"}},
+          open(r + "riscv_usb.ocdc.json", "w"), indent=1)
+PY
 # corundum/corundum (BSD-2-Clause-Views, only fetched for this check): the open-source NIC on the ZCU106 (UltraScale+),
 # PCIe and 10G Ethernet; the Vivado IP (PCIe, transceivers) is generated from Tcl and not part of the sources: black
 # boxes. Zero-width selects in branches of 'if (constant)' that are never taken, a 2^14 x 128 bit RAM, and the
@@ -510,6 +536,7 @@ check SNES_MiSTer/SNES.qpf "Instances: 367.*RTL     : 234 module bodies, 3496 re
 check ao486_MiSTer/ao486.qpf "Instances: 661.*RTL     : 302 module bodies, 4487 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 13 \(4437/4487 registers resolved\).*Summary : 0 error\(s\).*CDC     : 1556 crossing path\(s\), 704 synchronized, 852 unsynchronized.*213 unsynchronized path\(s\) covered by a timing exception"
 check C64_MiSTer/C64.qpf "Instances: 317.*RTL     : 190 module bodies, 4328 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(4278/4328 registers resolved\).*FE-WIRE-FUNCTION-PORT.*Summary : 0 error\(s\).*CDC     : 515 crossing path\(s\), 65 synchronized, 450 unsynchronized.*113 unsynchronized path\(s\) covered by a timing exception"
 check Atari800_MiSTer/Atari800.qpf "Instances: 514.*RTL     : 241 module bodies, 3608 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(3535/3608 registers resolved\).*address_decoder.vhdl:159:2: warning\[IR-SAME-DRIVERS\].*Summary : 0 error\(s\).*CDC     : 516 crossing path\(s\), 53 synchronized, 463 unsynchronized.*118 unsynchronized path\(s\) covered by a timing exception"
+check ice40-playground/riscv_usb.ocdc.json "RTL     : 50 module bodies, 359 registers .* 0 latches, .* 0 unsupported construct\\(s\\).*Clocks  : 3 \\(358/359 registers resolved\\).*IR-INPUT-DRIVEN\\]: input port 'sio_mosi_i'.*built-in models used for vendor primitives: SB_GB, SB_IO, SB_LEDDA_IP, SB_PLL40_2F_PAD, SB_RAM40_4K, SB_RAM40_4KNR, SB_RGBA_DRV, SB_SPI, SB_SPRAM256KA, SB_WARMBOOT.*Summary : 0 error\\(s\\), 8 warning\\(s\\).*CDC     : 1 crossing path\\(s\\), 0 synchronized, 1 unsynchronized"
 check fpga-disk-controller/yellowstone_blink.ldf "Clocks  : 1 \(1/1 registers resolved\).*blink.internal_oscillator_inst.OSC  \[black-box\].*period=480.769ns \(2.08 MHz\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 check ulx3s_zx_spectrum/ulx3s/zx.ocdc.json "Instances: 39.*RTL     : 29 module bodies, 270 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 6 \(270/270 registers resolved\).*clk25_mhz  \[constraint\].*period=40ns.*built-in models used for vendor primitives: EHXPLLL, ODDRX1F.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 1 crossing path\(s\), 0 synchronized, 1 unsynchronized"
 check fpga-disk-controller/lattice/liron.ldf "RTL     : 10 module bodies, 31 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 2 \(23/31 registers resolved\).*Lattice Diamond project imported: 4 source\(s\), 1 constraint file\(s\), top 'top' \(implementation 'fpgatop', device LCMXO2-1200HC-4TG100C\).*built-in models used for vendor primitives: DP8KC, VHI, VLO.*CLK-UNUSED-INTERFACE\]: 8 register\(s\).*DP8KC.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 17 crossing path\(s\), 0 synchronized, 17 unsynchronized"
