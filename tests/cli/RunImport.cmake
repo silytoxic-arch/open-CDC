@@ -38,7 +38,7 @@ run(0 "OpenCDC project written" import "${xpr}" --force)
 run(0 "CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized" analyze "${WORK}/demo.ocdc.json" -q)
 run(0 "Vivado project imported.*CDC     : 2 crossing path\\(s\\), 1 synchronized, 1 unsynchronized" analyze "${xpr}" -q)
 # negatives: waivers need an OpenCDC project; the output must not be a .xpr; the input must be one
-run(2 "is a Vivado, Quartus or Gowin project: waivers belong to an OpenCDC project" waive "${xpr}" --fingerprint 0 --rule CDC-003 --reason x)
+run(2 "is a vendor project .Vivado, Quartus, Gowin, Diamond.: waivers belong to an OpenCDC project" waive "${xpr}" --fingerprint 0 --rule CDC-003 --reason x)
 run(2 "must be an OpenCDC project" import "${xpr}" -o "${WORK}/other.xpr")
 run(2 "not a Vivado \\(.xpr\\), Quartus" import "${WORK}/demo.ocdc.json" -o "${WORK}/x.ocdc.json")
 
@@ -62,5 +62,5 @@ run(3 "1 hit\\(s\\) waived.*'demo_top.mode_ext' \\(clk_ext\\) \\[waived by W-1\\
 run(0 "waiver 'W-2' added" waive "${WORK}/q/demo.ocdc.json" --timing-exception "*other.sdc*" --rule "CDC-*" --reason x)
 run(3 "WAIVER-UNUSED[^\n]*W-2" analyze "${WORK}/q/demo.ocdc.json")
 # negative: waivers need an OpenCDC project; a .qsf is not an output
-run(2 "is a Vivado, Quartus or Gowin project" waive "${WORK}/q/demo.qsf" --fingerprint 0 --rule CDC-003 --reason x)
+run(2 "is a vendor project" waive "${WORK}/q/demo.qsf" --fingerprint 0 --rule CDC-003 --reason x)
 run(2 "must be an OpenCDC project" import "${WORK}/q/demo.qpf" -o "${WORK}/q/other.qsf")

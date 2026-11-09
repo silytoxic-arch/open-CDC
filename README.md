@@ -12,6 +12,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
 | Quartus projects (`.qpf`, `.qsf`): analyzed directly or imported (`opencdc import`): the revision's settings evaluated as Quartus does (sourced scripts, IP file lists `.qip` with `$::quartus(qip_path)`, Platform Designer systems by their generated `.qip`), design files with their VHDL libraries, include directories, macros, top parameters, SystemVerilog mode, SDC files; what is not read is reported. Constructs that are errors in (System)Verilog but that Quartus accepts are read as Quartus does, with a warning each: nets assigned in procedural blocks, names of a generate block used in its module, `always` blocks without an event control (combinational, as synthesis tools read them). Verified with the MiSTer framework (Template_MiSTer: Cyclone V with its HPS, three PLLs, 414 crossings) and a whole core on it (NES_MiSTer: SystemVerilog and VHDL, 457 instances, 3754 registers, 523 crossings) | ✅ |
+| Lattice Diamond projects (`.ldf`): analyzed directly or imported: the default implementation's design files, IPexpress modules by their generated HDL, preference files (`.lpf`: `FREQUENCY`/`PERIOD` clocks, `BLOCK PATH` between clock nets) and Synplify constraints, the top. Verified with the f32c SoC (ULX3S, ECP5) | ✅ |
 | Gowin EDA projects (`.gprj`): analyzed directly or imported: the enabled design and SDC files, the top module, Verilog standard and include directories of the synthesis settings (`impl/*process_config.json`); without a top module, the root with the deepest hierarchy; Gowin cells (`CLKDIV`, `OSER4/8/10`, `IDES4/8/10`, LVDS buffers) modelled in Gowin projects. Verified with NESTang (Tang Nano 20K) | ✅ |
 | Vivado projects (`.xpr`): analyzed directly (CLI, GUI) or imported into an OpenCDC project (`opencdc import`): the sources, IP and block designs, VHDL libraries, Verilog headers, defines, generics, top and constraints (with their module scopes) of the current synthesis run; disabled, simulation-only, missing and unreadable files reported. Verified with the Vivado projects of ArtyS7-RPU-SoC, the Loongson chiplab SoC, the Fuxi SoC and five Zynq-7000 block design projects (same results as their hand-written projects) | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
@@ -244,6 +245,8 @@ In the HTML report, a design with more than 5000 paths lists only the paths that
 
 Different clock names alone never make two clocks asynchronous.
 
+A clock-level `set_false_path` or `set_max_delay -datapath_only` between two clocks makes them asynchronous for the analysis, also when they are derived from the same source (two outputs of one PLL): their paths are not timed, so the crossings between them are checked, as Vivado's `report_cdc` does. Register-level exceptions do not change clock relations.
+
 `options.minSyncStages` (default 2) is the minimum flop-chain length accepted by CDC-002, and the minimum reset synchronizer length for CDC-006.
 
 `options.topSelection` applies when `top` is not given: `all` (default) analyzes every root module (one that no other module instantiates); `deepest` analyzes only the root with the deepest hierarchy, then the most instances (`FE-AUTO-TOP` names it and the roots left out), as a synthesis tool elaborates one top. `options.gowinPrimitives` (default false) models the Gowin cells with generic names (`CLKDIV`, `OSER10`, …, see [docs/primitives.md](docs/primitives.md)). Both are set when a Gowin project is imported.
@@ -306,6 +309,20 @@ Reported: missing files (`PRJ-GPRJ-MISSING`), disabled files, physical constrain
 
 Verified with NESTang on the Tang Nano 20K (GW2AR-18C: rPLL, CLKDIV, OSER10 HDMI output; 122 instances, 638 registers, all clocks resolved). An `input reg` port that its module assigns (NESTang's autofire) is read as an output (`FE-NET-PROCEDURAL-ASSIGN`).
 
+#### Lattice Diamond projects
+
+A Lattice Diamond project (`.ldf`) can be given wherever a project is expected; `opencdc import` writes it as an OpenCDC project. Its default implementation is imported:
+* the design files in order (Verilog, SystemVerilog, VHDL with the library of `<Options lib="..."/>`), except those marked `excluded`;
+* an IPexpress module (`.ipx`) by the HDL it generated (its `top_level_verilog` or `top_level_vhdl` file);
+* the constraints: preference files (`.lpf`) and Synplify constraints (`.sdc`, `.fdc`);
+* the top: the implementation's `top`, else its `def_top`, else the source marked `top_module`.
+
+Reported: missing files (`PRJ-LDF-MISSING`), excluded and other files (`PRJ-LDF-SKIPPED`), IP modules without generated HDL (`PRJ-LDF-IPX`), the implementations not imported (`PRJ-LDF-IMPLEMENTATION`).
+
+Preference files (`.lpf`, also listed directly in an OpenCDC project) are read for their timing preferences: `FREQUENCY PORT|NET "<name>" <value> MHZ` and `PERIOD PORT|NET "<name>" <value> NS` define clocks; `BLOCK PATH FROM CLKNET "a" TO CLKNET "b"` (also `PORT`, `NET`, `CELL` endpoints) is a false path, so the two clocks are checked as asynchronous. Other timing preferences (`MULTICYCLE`, `MAXDELAY`, `INPUT_SETUP`, the global `FREQUENCY`, ...) are listed in one `CON-LPF-IGNORED` note; physical preferences (`LOCATE`, `IOBUF`, `SYSCONFIG`, ...) are skipped. `BLOCK INTERCLOCKDOMAIN PATHS` is not read (`CON-LPF-PARSE`): name the unrelated clocks with `BLOCK PATH`.
+
+Verified with the f32c SoC on the ULX3S (ECP5, VHDL: 350 registers, two PLLs, the DVI framebuffer's crossings into the pixel clock).
+
 Quartus' `set_clock_groups -exclusive` (an old alias of `-logically_exclusive`, used to cut paths between unrelated clocks; Quartus' Timing Analyzer treats all clock groups alike) is read as `-asynchronous` (`CON-EXCLUSIVE-AS-ASYNC`), so that the crossings between the groups are checked.
 
 #### VHDL and mixed designs
@@ -322,6 +339,8 @@ Files ending in `.vhd` or `.vhdl` are VHDL (VHDL-2008, which also accepts VHDL-9
 ```
 
 `parameters` overrides generics (VHDL) or parameters (Verilog) of the top level; values are written in the syntax of the top's language. VHDL and Verilog files can be mixed freely: Verilog can instantiate VHDL entities and VHDL can instantiate Verilog modules (as a component or with `entity work.name`), nested to any depth. Names are matched case-insensitively across the border, and port width differences follow the Verilog rule. A VHDL record port connects to a SystemVerilog packed struct (first field = most significant bits, as in both languages), and VHDL can associate fields, elements and slices of a Verilog port separately (`i.hdr.len => x`, `d(0 to 3) => y`). Black boxes are reported as `IR-UNRESOLVED-INSTANCE`.
+
+Clocked processes as synthesis tools read them: an edge ANDed with enables (`if rising_edge(clk) and ce = '1' and (not C_cache or w = '0') then`); a process made only of clocked ifs (one per edge, or several on the same edge with different enables, where a later assignment still wins); a shared variable array written by several processes (a true dual-port RAM: each port writes its own copy and every read sees all of them, as for the vendor RAM models). A function that reads a file at elaboration (a ROM loaded from an SREC or hex file) stops at the first read: its result is unknown (`IR-UNSUPPORTED-INIT`).
 
 #### Vendor primitives
 

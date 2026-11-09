@@ -1,6 +1,7 @@
 #include "engine/ProjectConfig.h"
 
 #include "core/PathUtil.h"
+#include "engine/DiamondProject.h"
 #include "engine/GowinProject.h"
 #include "engine/QuartusProject.h"
 #include "engine/VivadoProject.h"
@@ -292,7 +293,8 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
 }
 
 bool isVendorProjectFile(const std::filesystem::path& file) {
-    return isVivadoProjectFile(file) || isQuartusProjectFile(file) || isGowinProjectFile(file);
+    return isVivadoProjectFile(file) || isQuartusProjectFile(file) || isGowinProjectFile(file) ||
+           isDiamondProjectFile(file);
 }
 
 bool isQuartusProject(const ProjectConfig& config) {
@@ -306,6 +308,8 @@ Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file) {
         return projectFromQuartusFile(file);
     if (isGowinProjectFile(file))
         return projectFromGprjFile(file);
+    if (isDiamondProjectFile(file))
+        return projectFromLdfFile(file);
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return projectError("PRJ-OPEN", "cannot open project file", file);

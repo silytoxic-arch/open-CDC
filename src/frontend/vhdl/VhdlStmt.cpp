@@ -187,7 +187,10 @@ void Elaborator::assign(const std::vector<Target>& targets, const SVal& value, b
         base = SigSpec::allX(*W);
     }
     else {
+        const bool saved = ownRead_; // a write modifies this writer's copy of a shared memory
+        ownRead_ = true;
         base = bitsOf(readObject(t.object, ctx, l), l);
+        ownRead_ = saved;
     }
     if (base.width() != *W)
         base = base.resized(*W, false);
@@ -775,7 +778,7 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
                         break;
                     if (s.loopKind == Stmt::LoopKind::While) {
                         SVal c = condBit(*s.cond);
-                        if (!c.valid())
+                        if (!c.valid() || isZero(st.alive)) // the condition read a file: the subprogram stopped
                             break;
                         if (!c.known()) {
                             unsupported("IR-UNSUPPORTED-LOOP", "while loop whose condition is not static", s.loc);
@@ -900,9 +903,10 @@ void Elaborator::exec(const Stmt& s, Ctx& ctx) {
 // Clock edges
 // ---------------------------------------------------------------------------
 
-std::optional<std::pair<ir::SigSpec, ir::Edge>> Elaborator::clockEdge(const Expr& e, Ctx& ctx, const Expr** rest) {
+std::optional<std::pair<ir::SigSpec, ir::Edge>> Elaborator::clockEdge(const Expr& e, Ctx& ctx,
+                                                                      std::vector<const Expr*>* rest) {
     if (rest)
-        *rest = nullptr;
+        rest->clear();
     const Expr* x = &e;
     while (x->parenthesized && false)
         break;
@@ -965,16 +969,21 @@ std::optional<std::pair<ir::SigSpec, ir::Edge>> Elaborator::clockEdge(const Expr
             return std::make_pair(bitsOf(clk, x->loc).extract(0, 1), *lv ? ir::Edge::Pos : ir::Edge::Neg);
         }
     }
-    // EDGE and enable / enable and EDGE
-    const Expr* r = nullptr;
-    if (auto ce = clockEdge(*x->lhs, ctx, &r); ce && !r) {
-        if (rest)
-            *rest = x->rhs.get();
+    // EDGE and enable / enable and EDGE, also with several enables
+    // (f32c: rising_edge(clk) and clk_enable = '1' and (not C_cache or dmem_cache_wait = '0'))
+    std::vector<const Expr*> r;
+    if (auto ce = clockEdge(*x->lhs, ctx, &r)) {
+        if (rest) {
+            *rest = std::move(r);
+            rest->push_back(x->rhs.get());
+        }
         return ce;
     }
-    if (auto ce = clockEdge(*x->rhs, ctx, &r); ce && !r) {
-        if (rest)
-            *rest = x->lhs.get();
+    if (auto ce = clockEdge(*x->rhs, ctx, &r)) {
+        if (rest) {
+            *rest = std::move(r);
+            rest->push_back(x->lhs.get());
+        }
         return ce;
     }
     return std::nullopt;
@@ -1001,7 +1010,211 @@ void forEachNetPiece(const SigSpec& storage, std::uint32_t off, std::uint32_t w,
 
 } // namespace
 
+void Elaborator::findSharedMemories(const std::vector<StmtPtr>& stmts, Scope& archScope) {
+    // the variables of the architecture (shared) that a process assigns
+    std::map<int, std::vector<const Stmt*>> writers;
+    std::function<void(const std::vector<StmtPtr>&, std::set<int>&)> assigned =
+        [&](const std::vector<StmtPtr>& list, std::set<int>& out) {
+            for (const auto& sp : list) {
+                const Stmt& s = *sp;
+                if (s.kind == StmtKind::VariableAssign && s.target) {
+                    const Expr* tgt = s.target.get();
+                    while (tgt && (tgt->kind == ExprKind::Call ||
+                                    tgt->kind == ExprKind::Selected) && tgt->prefix)
+                        tgt = tgt->prefix.get();
+                    if (tgt && tgt->kind == ExprKind::Simple)
+                        if (const auto* syms = archScope.local(tgt->ident.key))
+                            for (const Symbol* sym : *syms)
+                                if (sym->kind == SymKind::Variable && sym->object >= 0 && sym->type &&
+                                    sym->type->kind == TypeKind::Array)
+                                    out.insert(sym->object);
+                }
+                for (const auto& b : s.branches)
+                    assigned(b.body, out);
+                for (const auto& a : s.caseAlts)
+                    assigned(a.body, out);
+                assigned(s.body, out);
+            }
+        };
+    std::function<void(const std::vector<StmtPtr>&, Scope&)> walk = [&](const std::vector<StmtPtr>& list,
+                                                                        Scope& sc) {
+        for (const auto& sp : list) {
+            const Stmt& s = *sp;
+            if (s.kind == StmtKind::Process) {
+                std::set<int> objs;
+                assigned(s.body, objs);
+                for (int o : objs)
+                    writers[o].push_back(&s);
+            }
+            else if (s.kind == StmtKind::IfGenerate) {
+                // every branch (the conditions are evaluated later, in their scopes): a writer in a
+                // branch not taken keeps a copy that nothing drives, tied to 0 after the elaboration
+                for (const auto& br : s.branches)
+                    walk(br.body, sc);
+            }
+            else if (s.kind == StmtKind::Block || s.kind == StmtKind::ForGenerate) {
+                walk(s.body, sc);
+            }
+            else if (s.kind == StmtKind::CaseGenerate) {
+                for (const auto& a : s.caseAlts)
+                    walk(a.body, sc);
+            }
+        }
+    };
+    walk(stmts, archScope);
+    for (auto& [idx, list] : writers) {
+        if (list.size() < 2)
+            continue;
+        SharedMemory m;
+        m.writers = list;
+        m.used.assign(list.size(), false);
+        const Object& o = object(idx);
+        m.copies.push_back(o.storage);
+        for (std::size_t k = 1; k < list.size(); ++k) {
+            SigSpec copy;
+            for (const auto& ch : o.storage.chunks()) {
+                if (ch.isConst()) {
+                    copy.append(ch);
+                    continue;
+                }
+                ir::Net n = body->body.net(ch.net);
+                n.name += "#" + std::to_string(k + 1);
+                const ir::NetId id = body->body.addNet(std::move(n));
+                body->netOwner[static_cast<std::uint32_t>(id.index())] = static_cast<std::uint32_t>(idx);
+                copy.append(SigSpec::net(id, ch.width, ch.offset));
+            }
+            m.copies.push_back(std::move(copy));
+        }
+        sharedMem_.emplace(idx, std::move(m));
+    }
+}
+
 void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
+    // a writer of a shared memory works on its own copy (restored when the outermost call ends)
+    struct ProcGuard {
+        Elaborator& e;
+        const Stmt* saved;
+        std::vector<std::pair<int, SigSpec>> restore;
+        ~ProcGuard() {
+            for (auto& [idx, st] : restore)
+                e.object(idx).storage = std::move(st);
+            e.curProc_ = saved;
+        }
+    } procGuard{*this, curProc_, {}};
+    if (!curProc_) {
+        curProc_ = &p;
+        for (auto& [idx, m] : sharedMem_)
+            for (std::size_t k = 0; k < m.writers.size(); ++k)
+                if (m.writers[k] == &p) {
+                    procGuard.restore.emplace_back(idx, object(idx).storage);
+                    object(idx).storage = m.copies[k];
+                    m.used[k] = true;
+                }
+    }
+    // only clocked ifs (f32c: if falling_edge(clk) ... end if; if rising_edge(clk) and en1 then ... end if;
+    // if rising_edge(clk) and en2 then ... end if;): one clocked process per clock edge, whose body holds
+    // the ifs of that edge in order, each under its enables (a later assignment still wins)
+    if (p.decls.empty() && p.body.size() >= 2) {
+        struct Member {
+            const Stmt* ifs;
+            const Expr* edge;                 // the edge term of the condition
+            std::vector<const Expr*> enables; // the other terms
+        };
+        struct Group {
+            std::pair<SigSpec, ir::Edge> clock;
+            std::vector<Member> members;
+        };
+        std::vector<Group> groups;
+        bool split = true;
+        for (const auto& st0 : p.body) {
+            if (st0->kind != StmtKind::If || st0->branches.size() != 1 || !st0->branches[0].cond) {
+                split = false;
+                break;
+            }
+            ProcState probeSt;
+            probeSt.alive = one();
+            probeSt.returned = zero();
+            Ctx probe;
+            probe.scope = &scope;
+            probe.st = &probeSt;
+            std::vector<const Expr*> rest;
+            auto ce = clockEdge(*st0->branches[0].cond, probe, &rest);
+            // the edge term: the conjunct that is an edge alone
+            const Expr* edge = nullptr;
+            std::function<void(const Expr&)> find = [&](const Expr& x) {
+                std::vector<const Expr*> r;
+                if (edge || !clockEdge(x, probe, &r))
+                    return;
+                if (r.empty())
+                    edge = &x;
+                else if (x.kind == ExprKind::Binary && x.op == Op::And) {
+                    find(*x.lhs);
+                    find(*x.rhs);
+                }
+            };
+            if (ce)
+                find(*st0->branches[0].cond);
+            if (!ce || !edge) {
+                split = false;
+                break;
+            }
+            auto g = std::ranges::find_if(groups, [&](const Group& x) { return x.clock == *ce; });
+            if (g == groups.end()) {
+                groups.push_back({*ce, {}});
+                g = std::prev(groups.end());
+            }
+            g->members.push_back({st0.get(), edge, std::move(rest)});
+        }
+        if (split) {
+            const std::string base = p.label.empty() ? "proc" + std::to_string(body->processCounter++) : p.label.text;
+            for (std::size_t k = 0; k < groups.size(); ++k) {
+                // non-owning views of the AST, released below
+                std::vector<ExprPtr*> borrowedExprs;
+                std::vector<std::pair<std::vector<StmtPtr>*, std::size_t>> borrowedStmts; // vectors grow: indexes
+                Stmt part;
+                part.kind = StmtKind::Process;
+                part.loc = groups[k].members.front().ifs->loc;
+                part.label.text = groups.size() == 1 ? base : base + "_" + std::to_string(k);
+                part.label.key = part.label.text;
+                std::ranges::transform(part.label.key, part.label.key.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                auto outer = std::make_unique<Stmt>();
+                outer->kind = StmtKind::If;
+                outer->loc = part.loc;
+                IfBranch ob;
+                ob.loc = part.loc;
+                ob.cond.reset(const_cast<Expr*>(groups[k].members.front().edge));
+                outer->branches.push_back(std::move(ob));
+                borrowedExprs.push_back(&outer->branches.back().cond);
+                for (const auto& m : groups[k].members) {
+                    std::vector<StmtPtr>* into = &outer->branches.back().body;
+                    for (const Expr* en : m.enables) {
+                        auto inner = std::make_unique<Stmt>();
+                        inner->kind = StmtKind::If;
+                        inner->loc = m.ifs->loc;
+                        IfBranch ib;
+                        ib.loc = m.ifs->loc;
+                        ib.cond.reset(const_cast<Expr*>(en));
+                        inner->branches.push_back(std::move(ib));
+                        borrowedExprs.push_back(&inner->branches.back().cond);
+                        into->push_back(std::move(inner));
+                        into = &into->back()->branches.back().body;
+                    }
+                    for (const auto& st1 : m.ifs->branches[0].body) {
+                        into->push_back(StmtPtr(st1.get()));
+                        borrowedStmts.emplace_back(into, into->size() - 1);
+                    }
+                }
+                part.body.push_back(std::move(outer));
+                lowerProcess(part, scope);
+                for (auto* e : borrowedExprs)
+                    (void)e->release();
+                for (const auto& [vec, idx] : borrowedStmts)
+                    (void)(*vec)[idx].release();
+            }
+            return;
+        }
+    }
     const std::string label = p.label.empty() ? "proc" + std::to_string(body->processCounter++) : p.label.text;
     Scope* ps = newScope(&scope, label);
     ProcState st;
@@ -1023,7 +1236,7 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
     const std::vector<StmtPtr>* clockedBody = nullptr;
     std::vector<const Stmt*> prefix; // statements before the clocked if (variables only)
     std::vector<const Stmt*> tail; // signal assignments after the clocked if that read process variables
-    const Expr* enableExpr = nullptr;
+    std::vector<const Expr*> enableExprs; // all must hold
     std::optional<std::pair<SigSpec, ir::Edge>> clock;
     std::vector<StmtPtr> waitBody; // unused holder
 
@@ -1031,10 +1244,10 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
     std::size_t clockedIndex = stmts.size();
     if (!stmts.empty() && stmts.front()->kind == StmtKind::Wait && stmts.front()->cond) {
         // process ... begin wait until rising_edge(clk); ... end process;
-        const Expr* rest = nullptr;
+        std::vector<const Expr*> rest;
         clock = clockEdge(*stmts.front()->cond, ctx, &rest);
         if (clock) {
-            enableExpr = rest;
+            enableExprs = std::move(rest);
             clockedIndex = 0;
         }
     }
@@ -1046,12 +1259,12 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
             for (std::size_t b = 0; b < s.branches.size(); ++b) {
                 if (!s.branches[b].cond)
                     break;
-                const Expr* rest = nullptr;
+                std::vector<const Expr*> rest;
                 auto ce = clockEdge(*s.branches[b].cond, ctx, &rest);
                 if (!ce)
                     continue;
                 clock = ce;
-                enableExpr = rest;
+                enableExprs = std::move(rest);
                 clockedIndex = k;
                 clockedBody = &s.branches[b].body;
                 for (std::size_t a = 0; a < b; ++a)
@@ -1067,9 +1280,8 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
         if (clock && clockedBody) {
             for (std::size_t k = clockedIndex + 1; k < stmts.size(); ++k) {
                 const Stmt& s = *stmts[k];
-                const Expr* rest = nullptr;
                 if (s.kind == StmtKind::If && s.branches.size() == 1 && s.branches[0].cond &&
-                    !clockEdge(*s.branches[0].cond, ctx, &rest)) {
+                    !clockEdge(*s.branches[0].cond, ctx, nullptr)) {
                     asyncs.insert(asyncs.begin(), {s.branches[0].cond.get(), &s.branches[0].body});
                     continue;
                 }
@@ -1243,9 +1455,10 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
         execList(*asyncs[k].body, ac);
     }
     SigSpec enable;
-    if (enableExpr) {
-        SVal ev = eval(*enableExpr, ctx, std_.boolean);
-        enable = toBool(bitsOf(ev, l), l);
+    for (const Expr* en : enableExprs) {
+        SVal ev = eval(*en, ctx, std_.boolean);
+        const SigSpec b = toBool(bitsOf(ev, l), l);
+        enable = enable.width() == 0 ? b : cell(ir::CellKind::And, {enable, b}, 1, l);
     }
 
     // signal assignments after the clocked if: executed on the variables' registers
@@ -1408,8 +1621,7 @@ void Elaborator::lowerConcurrentAssign(const Stmt& s, Scope& scope) {
         Ctx probe;
         probe.scope = &scope;
         probe.st = &probeSt;
-        const Expr* rest = nullptr;
-        if (shape && clockEdge(*s.alts[n - 1].cond, probe, &rest)) {
+        if (shape && clockEdge(*s.alts[n - 1].cond, probe, nullptr)) {
             // non-owning views of the AST, released below
             Stmt proc;
             proc.kind = StmtKind::Process;

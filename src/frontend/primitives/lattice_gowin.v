@@ -148,6 +148,21 @@ endmodule
 // Generic Gowin names (CLKDIV, OSER10, ...) are modelled in gowin.v, used only
 // in Gowin projects: elsewhere they could hide a missing user module.
 
+// ---- Lattice constants and configuration ports ---------------------------
+
+// VHI / VLO: constant 1 / 0 (the "scuba" constants of IPexpress and Clarity modules)
+module VHI (output Z);
+    assign Z = 1'b1;
+endmodule
+
+module VLO (output Z);
+    assign Z = 1'b0;
+endmodule
+
+// USRMCLK (ECP5): drives the configuration SPI clock pin (MCLK) from logic; no outputs
+module USRMCLK (input USRMCLKI, input USRMCLKTS);
+endmodule
+
 // ---- Lattice ECP5 DDR and block RAM -------------------------------------
 
 module IDDRX1F (input D, input SCLK, input RST, output reg Q0, output reg Q1);

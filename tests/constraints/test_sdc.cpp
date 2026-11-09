@@ -1,3 +1,4 @@
+#include "constraints/Lpf.h"
 #include "constraints/Sdc.h"
 #include "core/PathUtil.h"
 
@@ -5,6 +6,8 @@
 #include "../TestUtil.h"
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <sstream>
 
 using namespace opencdc;
 using namespace opencdc::constraints;
@@ -1015,4 +1018,66 @@ TEST_CASE("Gowin SDC: '//' comments on their own line and after a command", "[co
     auto q = parse("create_clock -name {a//b} -period 10 [get_ports clk]\n", r);
     REQUIRE(q.set.clocks.size() == 1);
     CHECK(q.set.clocks[0].name == "a//b");
+}
+
+TEST_CASE("Lattice preferences (.lpf): clocks and blocked clock paths as SDC", "[constraints][lpf]") {
+    // f32c ulx3s_fer.lpf
+    CollectingDiagnosticSink sink;
+    const std::string lpf = "COMMERCIAL;\n"
+                            "BLOCK RESETPATHS;\n"
+                            "BLOCK ASYNCPATHS;\n"
+                            "# a comment\n"
+                            "FREQUENCY PORT \"clk\" 25 MHZ;\n"
+                            "FREQUENCY NET \"u/pll_out\" 100.0 MHz HOLD_MARGIN 1 ns;\n"
+                            "PERIOD PORT \"clk_b\" 8 NS;\n"
+                            "LOCATE COMP \"clk\" SITE \"G2\";\n"
+                            "IOBUF PORT \"clk\" IO_TYPE=LVCMOS33;\n"
+                            "BLOCK PATH FROM CLKNET \"clk_90m\"\n"
+                            "  TO CLKNET \"pixclk\";\n"
+                            "MULTICYCLE FROM CLKNET \"a\" TO CLKNET \"b\" 2 X;\n"
+                            "FREQUENCY 50 MHZ;\n";
+    const std::string sdc = lpfToSdc(lpf, "t.lpf", sink);
+    const auto diags = sink.take();
+    for (const auto& d : diags)
+        UNSCOPED_INFO(format(d));
+    UNSCOPED_INFO(sdc);
+    // one SDC line per preference line: diagnostics keep the preference's line
+    std::vector<std::string> lines;
+    std::istringstream in(sdc);
+    for (std::string l; std::getline(in, l);)
+        lines.push_back(l);
+    REQUIRE(lines.size() >= 12);
+    CHECK(lines[4] == "create_clock -name {clk} -period 40 [get_ports {clk}]");
+    CHECK(lines[5] == "create_clock -name {u/pll_out} -period 10 [get_nets {u/pll_out}]");
+    CHECK(lines[6] == "create_clock -name {clk_b} -period 8 [get_ports {clk_b}]");
+    CHECK(lines[7].empty()); // LOCATE: physical
+    CHECK(lines[9] == "set_false_path -from [get_clocks -of_objects [get_nets {clk_90m}]] -to "
+                      "[get_clocks -of_objects [get_nets {pixclk}]]");
+    CHECK(lines[11].empty());
+    REQUIRE(std::ranges::count_if(diags, [](const Diagnostic& d) { return d.code == "CON-LPF-IGNORED"; }) == 1);
+    const auto ign = std::ranges::find(diags, "CON-LPF-IGNORED", &Diagnostic::code);
+    CHECK(std::ranges::find(ign->notes, "MULTICYCLE") != ign->notes.end());
+    CHECK(std::ranges::find(ign->notes, "FREQUENCY (global)") != ign->notes.end());
+    CHECK(std::ranges::none_of(diags, [](const Diagnostic& d) { return d.code == "CON-LPF-PARSE"; }));
+
+    // the SDC reader takes the clocks
+    FakeResolver r;
+    auto p = parse(sdc, r);
+    REQUIRE(p.set.clocks.size() >= 2);
+    CHECK(p.set.clocks[0].name == "clk");
+    CHECK(p.set.clocks[0].periodNs == 40.0);
+    CHECK(isLpfFile("a/B.LPF"));
+    CHECK_FALSE(isLpfFile("a.sdc"));
+}
+
+TEST_CASE("Lattice preferences negative: malformed and unsupported timing preferences", "[constraints][lpf]") {
+    CollectingDiagnosticSink sink;
+    const std::string sdc = lpfToSdc("FREQUENCY PORT \"clk\" fast;\n"
+                                     "BLOCK PATH FROM GROUP \"g\" TO CLKNET \"b\";\n"
+                                     "BLOCK INTERCLOCKDOMAIN PATHS;\n",
+                                     "t.lpf", sink);
+    const auto diags = sink.take();
+    CHECK(std::ranges::count_if(diags, [](const Diagnostic& d) { return d.code == "CON-LPF-PARSE"; }) == 3);
+    CHECK(sdc.find("create_clock") == std::string::npos);
+    CHECK(sdc.find("set_false_path") == std::string::npos);
 }

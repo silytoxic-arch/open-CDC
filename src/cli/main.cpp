@@ -7,7 +7,8 @@
 //   opencdc analyze <project.xpr> ...            (a Vivado project, imported)
 //   opencdc analyze <project.qpf|.qsf> ...       (a Quartus project, imported)
 //   opencdc analyze <project.gprj> ...           (a Gowin project, imported)
-//   opencdc import <project.xpr|.qpf|.qsf|.gprj> [-o <project.ocdc.json>] [--force]
+//   opencdc analyze <project.ldf> ...            (a Lattice Diamond project, imported)
+//   opencdc import <project.xpr|.qpf|.qsf|.gprj|.ldf> [-o <project.ocdc.json>] [--force]
 //
 // Exit codes: 0 = ran, no errors and no error-severity CDC violations;
 //             1 = ran, errors reported (HDL/constraint errors);
@@ -376,7 +377,7 @@ int runWaive(WaiveArgs args) {
     auto& cfg = project.value();
     if (!cfg.importedFrom.empty()) {
         std::cerr << "error: " << args.project
-                  << " is a Vivado, Quartus or Gowin project: waivers belong to an OpenCDC project; create one with 'opencdc import "
+                  << " is a vendor project (Vivado, Quartus, Gowin, Diamond): waivers belong to an OpenCDC project; create one with 'opencdc import "
                   << args.project << "'\n";
         return kExitUsage;
     }
@@ -423,11 +424,11 @@ struct ImportArgs {
     bool force = false;
 };
 
-/// opencdc import: writes the OpenCDC project of a Vivado, Quartus or Gowin project.
+/// opencdc import: writes the OpenCDC project of a vendor project.
 int runImport(const ImportArgs& args) {
     const auto in = fromUtf8(args.project);
     if (!engine::isVendorProjectFile(in)) {
-        std::cerr << "error: " << args.project << ": not a Vivado (.xpr), Quartus (.qpf, .qsf) or Gowin (.gprj) project\n";
+        std::cerr << "error: " << args.project << ": not a Vivado (.xpr), Quartus (.qpf, .qsf), Gowin (.gprj) or Lattice Diamond (.ldf) project\n";
         return kExitUsage;
     }
     auto project = engine::loadProjectFile(in);
@@ -578,7 +579,7 @@ int main(int argc, char** argv) {
     std::string projectPath;
     Outputs outs;
     bool quiet = false;
-    auto* analyze = app.add_subcommand("analyze", "Analyze a project (*.ocdc.json, a Vivado project *.xpr, a Quartus project *.qpf/*.qsf or a Gowin project *.gprj)");
+    auto* analyze = app.add_subcommand("analyze", "Analyze a project (*.ocdc.json, a Vivado project *.xpr, a Quartus project *.qpf/*.qsf, a Gowin project *.gprj or a Lattice Diamond project *.ldf)");
     analyze->add_option("project", projectPath, "Project file")->required();
     analyze->add_option("--json", outs.json, "Write the result as JSON to this file");
     analyze->add_option("--dump-ir", outs.ir, "Write a text dump of the extracted Design IR to this file");
@@ -629,8 +630,8 @@ int main(int argc, char** argv) {
     ImportArgs importArgs;
     auto* importCmd = app.add_subcommand(
         "import", "Write the OpenCDC project of a Vivado project (*.xpr: the sources, IP and constraints of its "
-                  "current synthesis run) or of a Quartus project (*.qpf: its first revision, or a revision *.qsf) or of a Gowin project (*.gprj)");
-    importCmd->add_option("project", importArgs.project, "Vivado, Quartus or Gowin project (*.xpr, *.qpf, *.qsf, *.gprj)")
+                  "current synthesis run) or of a Quartus project (*.qpf: its first revision, or a revision *.qsf), of a Gowin project (*.gprj) or of a Lattice Diamond project (*.ldf: its default implementation)");
+    importCmd->add_option("project", importArgs.project, "Vivado, Quartus, Gowin or Diamond project (*.xpr, *.qpf, *.qsf, *.gprj, *.ldf)")
         ->required();
     importCmd->add_option("-o,--output", importArgs.output,
                           "OpenCDC project to write (default: <name>.ocdc.json next to the vendor project)");

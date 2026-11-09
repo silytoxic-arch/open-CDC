@@ -22,7 +22,7 @@ add_library(opencdc_engine STATIC
     WaiverFile.h
     Xml.cpp
     Xml.h
-    GowinProject.cpp
+    DiamondProject.cpp DiamondProject.h GowinProject.cpp
     GowinProject.h)
 
 target_link_libraries(opencdc_engine

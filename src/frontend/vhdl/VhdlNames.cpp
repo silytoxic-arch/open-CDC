@@ -883,6 +883,14 @@ SVal Elaborator::callSubprogram(Symbol& sym, std::vector<SVal>& args, std::vecto
             }
             return SVal{};
         }
+        if (sym.builtin == Builtin::Ignored && sym.key == "endfile" && ctx.inlineDepth > 0 && ctx.st) {
+            // endfile(f) in a function that reads a file (f32c rom.vhd: a ROM initialized from an SREC
+            // file): the contents are not read, so the function stops here, its result unknown
+            ++fileReads_;
+            ctx.st->returned = ir::SigSpec::constant(1, 1);
+            ctx.st->alive = ir::SigSpec::constant(0, 1);
+            return SVal{std_.boolean, std::nullopt, ir::SigSpec::allX(1)};
+        }
         return callBuiltin(sym.builtin, sym, args, result, ctx, l);
     }
     if (!sym.body) {

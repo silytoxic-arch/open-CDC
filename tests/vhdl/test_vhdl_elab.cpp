@@ -1368,3 +1368,141 @@ TEST_CASE("VHDL: 'if TRUE_GENERIC then comb elsif rising_edge' is combinational"
     REQUIRE(f.design->body(f.design->instance(f.design->tops.front()).body).registers.size() == 1);
     CHECK(f.has("reg q <= a @(posedge clk)"));
 }
+
+// ===========================================================================
+// Stage 78: f32c (Lattice Diamond, ECP5)
+// ===========================================================================
+
+TEST_CASE("VHDL: a clock edge with several enables", "[vhdl][elab][f32c]") {
+    // f32c_core.vhd: if rising_edge(clk) and clk_enable = '1' and (not C_cache or dmem_cache_wait = '0') then
+    auto r = elaborate(lib("entity t is generic (C_cache : boolean := true);\n"
+                           "  port (clk, ce, w, d : in std_logic; q : out std_logic); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk, ce, w) begin\n"
+                           "    if rising_edge(clk) and ce = '1' and (not C_cache or w = '0') then q <= d; end if;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-EDGE") == 0);
+    CHECK(r.count("IR-LATCH-INFERRED") == 0);
+    CHECK(r.has("reg q <= d @(posedge clk) en("));
+}
+
+TEST_CASE("VHDL: several clocked ifs in one process", "[vhdl][elab][f32c]") {
+    // f32c_cache.vhd: if falling_edge(clk) ... end if; if rising_edge(clk) ... end if;
+    // f32c_core.vhd: two ifs on the same edge with different enables, a later assignment wins
+    auto r = elaborate(lib("entity t is port (clk, en1, en2, a, b, c : in std_logic; x, y, z : out std_logic); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk) begin\n"
+                           "    if falling_edge(clk) then x <= a; end if;\n"
+                           "    if rising_edge(clk) then y <= b; end if;\n"
+                           "  end process;\n"
+                           "  process (clk, en1, en2) begin\n"
+                           "    if rising_edge(clk) and en1 = '1' then z <= a; end if;\n"
+                           "    if rising_edge(clk) and en2 = '1' then z <= c; end if;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("VHDL-CLOCKED-TAIL") == 0);
+    CHECK(r.has("reg x <= a @(negedge clk)"));
+    CHECK(r.has("reg y <= b @(posedge clk)"));
+    // one register for z: en2 wins over en1
+    CHECK(r.count("IR-MULTIDRIVER") == 0);
+    CHECK(r.has("reg z <= "));
+
+    // negative: a statement that is not a clocked if keeps the process as it was
+    auto n = elaborate(lib("entity t is port (clk, a, b : in std_logic; x, y : out std_logic); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (clk) begin\n"
+                           "    if rising_edge(clk) then x <= a; end if;\n"
+                           "    y <= b;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    CHECK(n.count("VHDL-CLOCKED-TAIL") == 1);
+}
+
+TEST_CASE("VHDL: a shared variable RAM written by two processes", "[vhdl][elab][f32c]") {
+    // f32c bram_true2p_1clk.vhd: one process per port, the ports in generate branches
+    const std::string src = lib("entity t is generic (dual : boolean := true);\n"
+                                "  port (clk, ka, kb, we_a, we_b : in std_logic; aa, ab : in unsigned(1 downto 0);\n"
+                                "  da, db : in std_logic_vector(7 downto 0); qa, qb : out std_logic_vector(7 downto 0)); end;\n"
+                                "architecture rtl of t is\n"
+                                "  type mem_t is array (0 to 3) of std_logic_vector(7 downto 0);\n"
+                                "  shared variable ram : mem_t;\n"
+                                "begin\n"
+                                "  g_a: if true generate\n"
+                                "  process (clk) begin if rising_edge(clk) then\n"
+                                "    if we_a = '1' then ram(to_integer(aa)) := da; end if;\n"
+                                "    qa <= ram(to_integer(aa)); end if; end process;\n"
+                                "  end generate;\n"
+                                "  g_b: if dual generate\n"
+                                "  process (kb) begin if rising_edge(kb) then\n"
+                                "    if we_b = '1' then ram(to_integer(ab)) := db; end if;\n"
+                                "    qb <= ram(to_integer(ab)); end if; end process;\n"
+                                "  end generate;\n"
+                                "  g_b2: if not dual generate\n"
+                                "  process (kb) begin if rising_edge(kb) then qb <= ram(to_integer(ab)); end if; end process;\n"
+                                "  end generate;\n"
+                                "end;\n");
+    auto r = elaborate(src, "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-MULTIDRIVER") == 0);
+    CHECK(r.has("reg ram <= "));
+    CHECK(r.has("reg ram#2 <= "));
+    CHECK(r.has("xor")); // every read sees both copies
+
+    // only one port elaborated: the second writer's copy is tied to 0
+    auto single = elaborate(src, "t", {{"dual", "false"}});
+    REQUIRE(single.design);
+    CHECK(single.errors() == 0);
+    CHECK_FALSE(single.has("reg ram#2 <= "));
+
+    // negative: a signal driven by two processes is still a multiple driver
+    auto bad = elaborate(lib("entity t is port (clk, kb, a, b : in std_logic; q : out std_logic); end;\n"
+                             "architecture rtl of t is signal s : std_logic; begin\n"
+                             "  process (clk) begin if rising_edge(clk) then s <= a; end if; end process;\n"
+                             "  process (kb) begin if rising_edge(kb) then s <= b; end if; end process;\n"
+                             "  q <= s;\n"
+                             "end;\n"),
+                         "t");
+    CHECK(bad.count("IR-MULTIDRIVER") >= 1);
+}
+
+TEST_CASE("VHDL: a ROM initialized from a file, a partly open output", "[vhdl][elab][f32c]") {
+    // f32c rom.vhd: while not endfile(f) loop readline(f, l); ... (the file is not read);
+    // glue_sdram_dv.vhd: spi_cen(0) => spi_ss(i), spi_cen(3 downto 1) => open
+    auto r = elaborate("library ieee; use std.textio.all; use ieee.std_logic_1164.all;\n"
+                       "entity c is port (clk : in std_logic; o : out std_logic_vector(3 downto 0)); end;\n"
+                       "architecture x of c is\n"
+                       "  type T_rom is array(0 to 3) of std_logic_vector(3 downto 0);\n"
+                       "  impure function f(constant fname : string) return T_rom is\n"
+                       "    file fh : text open read_mode is fname;\n"
+                       "    variable m : T_rom; variable l : line;\n"
+                       "  begin\n"
+                       "    m := (others => (others => '0'));\n"
+                       "    while not endfile(fh) loop readline(fh, l); end loop;\n"
+                       "    return m;\n"
+                       "  end f;\n"
+                       "  signal rom : T_rom := f(\"boot.srec\");\n"
+                       "begin\n"
+                       "  o <= rom(0) when rising_edge(clk);\n"
+                       "end x;\n"
+                       "library ieee; use ieee.std_logic_1164.all;\n"
+                       "entity top is port (clk : in std_logic; s : out std_logic); end;\n"
+                       "architecture x of top is begin\n"
+                       "  u : entity work.c port map (clk => clk, o(0) => s, o(3 downto 1) => open);\n"
+                       "end x;\n",
+                       "top");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-LOOP") == 0);
+    CHECK(r.count("IR-UNSUPPORTED-PORT") == 0);
+    CHECK(r.count("IR-UNSUPPORTED-INIT") == 1); // the file is not read: the initial value is unknown
+    CHECK(r.has("inst u : c (.clk(clk), .o({3'bxxx, s}))"));
+}

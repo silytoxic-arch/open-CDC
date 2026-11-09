@@ -721,8 +721,8 @@ void MainWindow::runAnalysis() {
 void MainWindow::onOpenProject() {
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open Project"), QString(),
-        tr("OpenCDC, Vivado, Quartus and Gowin projects (*.ocdc.json *.json *.xpr *.qpf *.qsf *.gprj);;"
-           "OpenCDC projects (*.ocdc.json *.json);;Vivado projects (*.xpr);;Quartus projects (*.qpf *.qsf);;Gowin projects (*.gprj)"));
+        tr("OpenCDC and vendor projects (*.ocdc.json *.json *.xpr *.qpf *.qsf *.gprj *.ldf);;"
+           "OpenCDC projects (*.ocdc.json *.json);;Vivado projects (*.xpr);;Quartus projects (*.qpf *.qsf);;Gowin projects (*.gprj);;Lattice Diamond projects (*.ldf)"));
     if (!path.isEmpty() && openProject(path))
         runAnalysis();
 }

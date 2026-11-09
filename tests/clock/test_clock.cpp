@@ -462,3 +462,25 @@ TEST_CASE("A strobe register gated by an inverted enable register of its domain"
     CHECK(r.clock("top.strobe").kind == ClockKind::Divider);
     CHECK(r.reg("top.p").status != ClockStatus::Resolved);
 }
+
+TEST_CASE("A clock-level false path between two outputs of one PLL makes them asynchronous", "[clock][constraints]") {
+    // f32c ulx3s_fer.lpf: BLOCK PATH FROM CLKNET "clk_90m" TO CLKNET "pixclk" (both from one EHXPLLL);
+    // ao486_MiSTer ao486.sdc: set_false_path between the CPU and the VGA PLL clocks
+    const char* design = "module top(input clk, input d, output reg q1, output reg q2, output reg q3);\n"
+                         "  reg c2 = 0, c4 = 0;\n"
+                         "  always @(posedge clk) c2 <= ~c2;\n"
+                         "  always @(posedge c2) c4 <= ~c4;\n"
+                         "  always @(posedge c2) q1 <= d;\n"
+                         "  always @(posedge c4) q2 <= q1;\n"
+                         "  always @(posedge clk) q3 <= q2;\n"
+                         "endmodule\n";
+    auto r = analyze(design, "create_clock -name clk -period 10 [get_ports clk]\n"
+                             "set_false_path -from [get_clocks -of_objects [get_nets c2]] -to [get_clocks -of_objects [get_nets c4]]\n");
+    CHECK(r.rel("top.c2", "top.c4") == ClockRelation::Asynchronous);
+    CHECK(r.model->reason(r.id("top.c2"), r.id("top.c4")).find("not timed") != std::string::npos);
+    // negative: the other pairs stay synchronous; a register-level false path relates nothing
+    CHECK(r.rel("clk", "top.c4") == ClockRelation::Synchronous);
+    auto reg = analyze(design, "create_clock -name clk -period 10 [get_ports clk]\n"
+                               "set_false_path -from [get_pins q1_reg/C] -to [get_pins q2_reg/D]\n");
+    CHECK(reg.rel("top.c2", "top.c4") == ClockRelation::Synchronous);
+}

@@ -113,6 +113,8 @@ Sources:
 | `EHXPLLL` (ECP5) | `CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3` derived from `CLKI`: f(VCO) = f(CLKI) × `CLKFB_DIV` × DIV(feedback output) / `CLKI_DIV`, f(CLKx) = f(VCO) / `CLKx_DIV`; the feedback output is selected by `FEEDBK_PATH` (`CLKOP`, `CLKOS`, `CLKOS2`, `CLKOS3`, or the `INT_` variants); input period from the input clock or `FREQUENCY_PIN_CLKI` (MHz); `LOCK` has no clock domain |
 | `SB_PLL40_CORE`, `SB_PLL40_PAD` (iCE40) | `PLLOUTCORE`/`PLLOUTGLOBAL` derived from the reference: f = f(ref) × (`DIVF`+1) / ((`DIVR`+1) × 2^`DIVQ`); `LOCK` has no clock domain |
 | `SB_GB`, `SB_DFF`, `SB_DFFE`, `SB_DFFR`, `SB_DFFS`, `SB_DFFER` (iCE40) | Global buffer (wire) and flip-flops |
+| `VHI`, `VLO` | Constant 1 and 0 (the constants of IPexpress/Clarity modules) |
+| `USRMCLK` (ECP5) | Drives the configuration SPI clock pin from logic: inputs only |
 | `IDDRX1F`, `ODDRX1F` (ECP5) | DDR input (falling-edge capture) and output registers on `SCLK` |
 | `DP16KD` (ECP5) | True dual-port RAM: port A on `CLKA`, port B on `CLKB`, per-port write arrays as for Xilinx block RAM; bit-level ports (`DIA0`…, `ADA0`…, `DOA0`…) |
 | `SB_RAM40_4K`, `SB_RAM40_4KNR`, `SB_RAM40_4KNW`, `SB_RAM40_4KNRNW` (iCE40) | Write port on `WCLK`/`WCLKN`, read port on `RCLK`/`RCLKN` (N: falling edge) |

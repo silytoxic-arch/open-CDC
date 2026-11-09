@@ -10,6 +10,7 @@
 // reported.
 
 #include "constraints/Sdc.h"
+#include "constraints/Lpf.h"
 
 #include "core/PathUtil.h"
 #include "core/TextEncoding.h"
@@ -4119,6 +4120,10 @@ bool SdcReader::readFile(const std::filesystem::path& file) {
         impl_->sink.report({"CON-ENCODING", Severity::Info,
                             "file is not UTF-8: read as " + text->encoding + " (and converted to UTF-8)",
                             {toUtf8(file), 0, 0}, {}});
+    if (isLpfFile(toUtf8(file.filename()))) { // Lattice preferences: their timing preferences as SDC
+        parse(lpfToSdc(text->utf8, toUtf8(file), impl_->sink), toUtf8(file));
+        return true;
+    }
     parse(text->utf8, toUtf8(file));
     return true;
 }

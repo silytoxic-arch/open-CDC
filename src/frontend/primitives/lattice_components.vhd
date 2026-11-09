@@ -8,6 +8,9 @@ use ieee.std_logic_1164.all;
 package components is
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component EHXPLLL port (CLKI : in std_ulogic); end component;
+  component VHI port (Z : out std_ulogic); end component;
+  component VLO port (Z : out std_ulogic); end component;
+  component USRMCLK port (USRMCLKI : in std_ulogic; USRMCLKTS : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)
   component IDDRX1F port (SCLK : in std_ulogic); end component;
   -- generics and ports are taken from the instance (bound to the Verilog model)

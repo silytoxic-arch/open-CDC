@@ -318,6 +318,22 @@ SVal Elaborator::initialValue(const Object& o, Loc l) {
 }
 
 SVal Elaborator::readObject(int idx, Ctx& ctx, Loc l) {
+    if (!ownRead_ && !sharedMem_.empty()) {
+        if (const auto it = sharedMem_.find(idx); it != sharedMem_.end()) {
+            // a shared memory: this writer's copy (or the first one) and every other copy
+            ownRead_ = true;
+            SVal own = readObject(idx, ctx, l);
+            ownRead_ = false;
+            if (!own.valid())
+                return own;
+            const Object& o = object(idx);
+            ir::SigSpec v = bitsOf(own, l);
+            for (const auto& c : it->second.copies)
+                if (!(c == o.storage) && c.width() == v.width())
+                    v = cell(ir::CellKind::Xor, {v, c}, v.width(), l);
+            return SVal{o.type, std::nullopt, v};
+        }
+    }
     Object& o = object(idx);
     if (!o.isSignal) {
         for (ProcState* st = ctx.st; st; st = nullptr) {
@@ -788,6 +804,10 @@ TypeSet Elaborator::typesOf(const Expr& e, Ctx& ctx) {
                     if (f->kind != SymKind::Subprogram || !f->isFunction)
                         continue;
                     resolveParams(*f);
+                    if (f->builtin == Builtin::Ignored && f->params.empty()) {
+                        s.add(f->type); // textio functions declared without a profile (endfile)
+                        continue;
+                    }
                     if (e.args.size() > f->params.size())
                         continue;
                     bool fits = true;

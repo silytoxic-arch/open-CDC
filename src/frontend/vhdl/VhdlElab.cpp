@@ -517,7 +517,22 @@ ir::ModuleId Elaborator::bodyFor(const DesignUnit& entity, const DesignUnit& arc
     Ctx actx;
     actx.scope = as;
     elaborateDeclarativePart(*as, arch.decls, actx);
-    elaborateConcurrent(arch.stmts, *as);
+    {
+        auto savedShared = std::move(sharedMem_); // a body elaborated inside another one
+        sharedMem_.clear();
+        findSharedMemories(arch.stmts, *as);
+        elaborateConcurrent(arch.stmts, *as);
+        // the copies of writers that were not elaborated: constant 0 (the reads XOR them)
+        for (const auto& [idx, m] : sharedMem_)
+            for (std::size_t k = 1; k < m.copies.size(); ++k)
+                if (!m.used[k])
+                    for (const auto& ch : m.copies[k].chunks())
+                        if (!ch.isConst())
+                            body->body.connections.push_back({ir::SigSpec::net(ch.net, ch.width, ch.offset),
+                                                              ir::SigSpec::constant(0, ch.width), ir::ConnKind::Assign,
+                                                              srcLoc(arch.name.loc)});
+        sharedMem_ = std::move(savedShared);
+    }
 
     // inputs must not be driven inside
     bs.ed->finish(sink_, [](const std::vector<std::uint32_t>&) {});
@@ -1161,12 +1176,10 @@ void Elaborator::elaborateInstance(const Stmt& s, Scope& scope) {
                 all = all && h[i];
                 none = none && !h[i];
             }
-            if (all || (!none && pb.dir == ir::PortDir::In))
+            // a partly connected output (f32c: spi_cen(0) => spi_ss(i), spi_cen(3 downto 1) => open):
+            // its other bits are X constants, which drive nothing
+            if (!none)
                 pb.actual = formalBits[pc.port].extract(pc.offset, pc.width);
-            else if (!none)
-                unsupported("IR-UNSUPPORTED-PORT", "output port '" + pb.port + "' of '" + instName +
-                                                       "' is only partially connected",
-                            s.loc);
         }
         ci.ports.push_back(std::move(pb));
     }

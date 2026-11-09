@@ -532,9 +532,13 @@ public:
     void assign(const std::vector<Target>& targets, const SVal& value, bool signal, Ctx& ctx, Loc l);
     void mergeStates(const ir::SigSpec& cond, ProcState& t, ProcState& f, ProcState& out, Loc l);
     void lowerProcess(const Stmt& p, Scope& scope);
+    /// Shared variables of an array type written by several processes (f32c bram_true2p_1clk:
+    /// a true dual-port RAM, one process per port): each writer gets its own copy of the
+    /// storage, and every read sees all copies (as the vendor memory models)
+    void findSharedMemories(const std::vector<StmtPtr>& stmts, Scope& archScope);
     void lowerConcurrentAssign(const Stmt& s, Scope& scope);
     SVal initialValue(const Object& o, Loc l);
-    std::optional<std::pair<ir::SigSpec, ir::Edge>> clockEdge(const Expr& e, Ctx& ctx, const Expr** rest);
+    std::optional<std::pair<ir::SigSpec, ir::Edge>> clockEdge(const Expr& e, Ctx& ctx, std::vector<const Expr*>* rest);
 
     // ---- bodies & hierarchy (VhdlElab.cpp) --------------------------------
     struct BodyState {
@@ -547,6 +551,14 @@ public:
         int processCounter = 0;
     };
     BodyState* body = nullptr;       ///< body under construction
+    struct SharedMemory {
+        std::vector<const Stmt*> writers;
+        std::vector<ir::SigSpec> copies; ///< parallel to writers; copies[0] is the object's storage
+        std::vector<bool> used;          ///< the writer was elaborated (not in a generate branch not taken)
+    };
+    std::map<int, SharedMemory> sharedMem_; ///< object -> writers, for the architecture being elaborated
+    const Stmt* curProc_ = nullptr;         ///< the process statement being lowered (as written)
+    bool ownRead_ = false;                  ///< readObject: only the current writer's copy
     std::vector<Object> frameObjects; ///< subprogram locals (no storage); indices offset by kFrameBase
     static constexpr int kFrameBase = 1 << 24;
     static constexpr std::uint32_t kMaxObjectBits = 1U << 24; ///< guards against absurd generic values

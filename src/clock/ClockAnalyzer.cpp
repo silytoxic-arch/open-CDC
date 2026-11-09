@@ -1167,6 +1167,17 @@ private:
 
                 const auto ancA = ancestors(a);
                 const auto ancB = ancestors(b);
+                // a clock-level false path (or datapath-only max delay) between related clocks: their
+                // paths are not timed, so the crossings are checked as asynchronous (as Vivado's
+                // report_cdc does; f32c ulx3s_fer.lpf: BLOCK PATH FROM CLKNET "clk_90m" TO CLKNET "pixclk")
+                if (std::ranges::find(ancB, a) != ancB.end() || std::ranges::find(ancA, b) != ancA.end() ||
+                    ancA.back() == ancB.back()) {
+                    if (const auto why = exceptionBetween(a, b)) {
+                        m.setRelation(a, b, ClockRelation::Asynchronous,
+                                      *why + " (the clocks are related, but these paths are not timed)");
+                        continue;
+                    }
+                }
                 if (std::ranges::find(ancB, a) != ancB.end()) {
                     m.setRelation(a, b, ClockRelation::Synchronous,
                                   "'" + m.clocks[j].name + "' is derived from '" + m.clocks[i].name + "'");
