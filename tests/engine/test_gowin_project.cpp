@@ -286,3 +286,24 @@ TEST_CASE("Gowin project: SystemVerilog in .v files, an input port driven by its
     CHECK(std::ranges::any_of(b->diagnostics, [](const Diagnostic& d) { return d.isError(); }));
     CHECK(count(*b, "FE-NET-PROCEDURAL-ASSIGN") == 0);
 }
+
+TEST_CASE("Gowin project: the internal oscillator OSC", "[engine][gowin]") {
+    test::TempDir dir;
+    dir.write("src/top.v", "module top(input clk, input d, output reg q);\n"
+                           "  wire o; reg a;\n"
+                           "  OSC #(.FREQ_DIV(10), .DEVICE(\"GW2AR-18C\")) osc (.OSCOUT(o));\n"
+                           "  always @(posedge clk) a <= d;\n"
+                           "  always @(posedge o) q <= a;\n"
+                           "endmodule\n");
+    dir.write("p.gprj", gprj("<File path=\"src/top.v\" type=\"file.verilog\" enable=\"1\"/>\n"));
+    auto cfg = loadProjectFile(dir.path() / "p.gprj");
+    REQUIRE(cfg);
+    const auto r = run(cfg.value());
+    REQUIRE(r->clocks);
+    const auto osc = std::ranges::find_if(r->clocks->clocks, [](const auto& c) { return c.name == "top.osc.OSCOUT"; });
+    REQUIRE(osc != r->clocks->clocks.end());
+    REQUIRE(osc->periodNs);
+    CHECK(*osc->periodNs == 40.0); // 250 MHz / 10
+    REQUIRE(r->cdc);
+    CHECK(r->cdc->stats.unsynchronized == 1);
+}

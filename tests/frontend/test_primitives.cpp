@@ -1658,3 +1658,45 @@ TEST_CASE("Primitives: MachXO2 9 kbit RAMs, a tied-off port of a ROM", "[primiti
     CHECK(user->count("CLK-CONSTANT") == 1);
     CHECK(user->count("CLK-UNUSED-INTERFACE") == 0);
 }
+
+TEST_CASE("Primitives: internal oscillators are clocks of their own", "[primitives][lattice]") {
+    // fpga-disk-controller yellowstone_blink: OSCH #(.NOM_FREQ("2.08")) internal_oscillator_inst (.STDBY(1'b0), .OSC(clk))
+    auto run = analyze("t.v",
+                       "module top(input clk_a, input d, output reg q1, output reg q2, output reg q3, output reg q4);\n"
+                       "  wire o1, o2, o3, o4;\n"
+                       "  OSCH #(.NOM_FREQ(\"2.08\")) osch (.STDBY(1'b0), .OSC(o1));\n"
+                       "  OSCG #(.DIV(31)) oscg (.OSC(o2));\n"
+                       "  SB_HFOSC #(.CLKHF_DIV(\"0b10\")) hf (.CLKHFPU(1'b1), .CLKHFEN(1'b1), .CLKHF(o3));\n"
+                       "  SB_LFOSC lf (.CLKLFPU(1'b1), .CLKLFEN(1'b1), .CLKLF(o4));\n"
+                       "  reg a;\n"
+                       "  always @(posedge clk_a) a <= d;\n"
+                       "  always @(posedge o1) q1 <= a;\n"
+                       "  always @(posedge o2) q2 <= q1;\n"
+                       "  always @(posedge o3) q3 <= d;\n"
+                       "  always @(posedge o4) q4 <= d;\n"
+                       "endmodule\n",
+                       "top", "create_clock -name clk_a -period 10 [get_ports clk_a]\n");
+    REQUIRE(run->r->clocks);
+    const auto period = [&](std::string_view name) -> double {
+        for (const auto& c : run->r->clocks->clocks)
+            if (c.name == name && c.periodNs)
+                return *c.periodNs;
+        for (const auto& c : run->r->clocks->clocks)
+            UNSCOPED_INFO("clock " << c.name);
+        return 0.0;
+    };
+    CHECK(std::abs(period("top.osch.OSC") - 1000.0 / 2.08) < 1e-3);
+    CHECK(std::abs(period("top.oscg.OSC") - 100.0) < 1e-6);
+    CHECK(std::abs(period("top.hf.CLKHF") - 1000.0 / 12.0) < 1e-6);
+    CHECK(std::abs(period("top.lf.CLKLF") - 100000.0) < 1e-3);
+    REQUIRE(run->r->cdc);
+    // an oscillator is unrelated to the other clocks: the crossings are checked
+    CHECK(crosses(*run, "top.a", "top.q1"));
+    CHECK(crosses(*run, "top.q1", "top.q2"));
+    CHECK(run->count("FE-UNKNOWN-MODULE") == 0);
+    // negative: Gowin's generic OSC is modelled only in Gowin projects
+    auto gw = analyze("t.v", "module top(output reg q); wire o; OSC #(.FREQ_DIV(10)) osc (.OSCOUT(o));\n"
+                             "  always @(posedge o) q <= ~q; endmodule\n",
+                      "top");
+    CHECK(gw->count("FE-SLANG-UnknownModule") == 1);
+}

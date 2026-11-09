@@ -11,6 +11,10 @@ package components is
   component DP8KC port (CLKA : in std_ulogic); end component;
   component PDPW8KC port (CLKW : in std_ulogic); end component;
   component SP8KC port (CLK : in std_ulogic); end component;
+  component OSCH port (OSC : out std_ulogic); end component;
+  component OSCG port (OSC : out std_ulogic); end component;
+  component SB_HFOSC port (CLKHF : out std_ulogic); end component;
+  component SB_LFOSC port (CLKLF : out std_ulogic); end component;
   component VHI port (Z : out std_ulogic); end component;
   component VLO port (Z : out std_ulogic); end component;
   component USRMCLK port (USRMCLKI : in std_ulogic; USRMCLKTS : in std_ulogic); end component;

@@ -173,6 +173,18 @@ private:
             catch (const std::exception&) {
             }
         }
+        // a frequency in MHz (the internal oscillators: MachXO2 OSCH NOM_FREQ "2.08")
+        if (const auto* f = net.findAttr("OPENCDC_CLOCK_FREQ"); f && !c.periodNs) {
+            std::string v = f->value;
+            std::erase(v, '"');
+            try {
+                const double mhz = std::stod(v);
+                if (mhz > 0 && std::isfinite(mhz))
+                    c.periodNs = 1000.0 / mhz;
+            }
+            catch (const std::exception&) {
+            }
+        }
         const ClockId id = addClock(std::move(c));
         blackBox_.emplace(b, id);
         return id;

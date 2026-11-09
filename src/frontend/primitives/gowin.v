@@ -120,3 +120,11 @@ endmodule
 module TLVDS_IBUF (output O, input I, input IB);
     assign O = I;
 endmodule
+
+// OSC: the internal oscillator, 250 MHz / FREQ_DIV (GW1N-1/GW1NZ-1: 240 MHz)
+module OSC #(parameter integer FREQ_DIV = 100, parameter DEVICE = "GW1N-4") (output OSCOUT);
+    localparam real MHZ = (DEVICE == "GW1N-1" || DEVICE == "GW1NZ-1" ? 240.0 : 250.0) / FREQ_DIV;
+    (* OPENCDC_CLOCK_PIN = "OSCOUT", OPENCDC_CLOCK_FREQ = MHZ *) wire osc;
+    opencdc_async_source u_osc (osc);
+    assign OSCOUT = osc;
+endmodule

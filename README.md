@@ -323,6 +323,8 @@ Preference files (`.lpf`, also listed directly in an OpenCDC project) are read f
 
 Verified with the f32c SoC on the ULX3S (ECP5, VHDL: 350 registers, two PLLs, the DVI framebuffer's crossings into the pixel clock) and the Yellowstone/Liron disk controller (MachXO2: a SCUBA ROM of four `DP8KC`, registers clocked by the Apple II bus strobe).
 
+Designs built with yosys/nextpnr from a Makefile have no project file: an OpenCDC project lists the Makefile's sources and the `.lpf` (verified with a ZX Spectrum on the ULX3S). The internal oscillators (`OSCH`, `OSCG`, `SB_HFOSC`, `SB_LFOSC`, Gowin `OSC`) are clocks of their own with their nominal frequency.
+
 SCUBA netlists (the HDL that IPexpress generates) set the parameters of their cells with `defparam` lines before the instances. When such a cell has no model and is analyzed as a black box (`unknownModules: blackbox`), the defparams of the module are read after its instances (`FE-DEFPARAM-FORWARD`), as Verilog tools read them. A clock input of a built-in model that is tied to a constant (the unused port B of a RAM used as a ROM) is reported as an unused interface (`CLK-UNUSED-INTERFACE`, info), not as `CLK-CONSTANT`.
 
 Quartus' `set_clock_groups -exclusive` (an old alias of `-logically_exclusive`, used to cut paths between unrelated clocks; Quartus' Timing Analyzer treats all clock groups alike) is read as `-asynchronous` (`CON-EXCLUSIVE-AS-ASYNC`), so that the crossings between the groups are checked.

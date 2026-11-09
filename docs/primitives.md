@@ -114,6 +114,7 @@ Sources:
 | `SB_PLL40_CORE`, `SB_PLL40_PAD` (iCE40) | `PLLOUTCORE`/`PLLOUTGLOBAL` derived from the reference: f = f(ref) × (`DIVF`+1) / ((`DIVR`+1) × 2^`DIVQ`); `LOCK` has no clock domain |
 | `SB_GB`, `SB_DFF`, `SB_DFFE`, `SB_DFFR`, `SB_DFFS`, `SB_DFFER` (iCE40) | Global buffer (wire) and flip-flops |
 | `DP8KC`, `PDPW8KC`, `SP8KC` (MachXO2/XO3) | 9 kbit RAM: true dual-port (per-port write arrays as `DP16KD`), pseudo dual-port (write on `CLKW`, read on `CLKR`), single-port |
+| `OSCH` (MachXO2/XO3), `OSCG` (ECP5), `SB_HFOSC`, `SB_LFOSC` (iCE40 UltraPlus) | Internal oscillators: a clock of their own with the nominal frequency (`OSCH`: `NOM_FREQ` MHz; `OSCG`: 310 MHz / `DIV`; `SB_HFOSC`: 48 MHz / 2^`CLKHF_DIV`; `SB_LFOSC`: 10 kHz), unrelated to the other clocks |
 | `VHI`, `VLO` | Constant 1 and 0 (the constants of IPexpress/Clarity modules) |
 | `USRMCLK` (ECP5) | Drives the configuration SPI clock pin from logic: inputs only |
 | `IDDRX1F`, `ODDRX1F` (ECP5) | DDR input (falling-edge capture) and output registers on `SCLK` |
@@ -138,6 +139,7 @@ Gowin cells with generic names are modelled **only in Gowin projects** (a `.gprj
 | `OSER4`, `OSER8`, `OSER10` | Serializers: the parallel word is registered on `PCLK`, shifted out on `FCLK` |
 | `IDES4`, `IDES8`, `IDES10` | Deserializers: shifted in on `FCLK`, the word is registered on `PCLK` |
 | `ELVDS_OBUF`, `TLVDS_OBUF`, `ELVDS_IBUF`, `TLVDS_IBUF` | Differential buffers (wires) |
+| `OSC` | Internal oscillator: a clock of its own, 250 MHz / `FREQ_DIV` (240 MHz on GW1N-1/GW1NZ-1) |
 
 `DFF`, `DFFE` and the other Gowin flip-flop cells are not modelled; Gowin `IDDR`/`ODDR` are not modelled either: the names are the Xilinx cells.
 

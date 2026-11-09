@@ -155,7 +155,19 @@ fetch_sparse f32c https://github.com/f32c/f32c 546d817ee66a58dd282c44c8cc845b608
 # steve-chamberlin/fpga-disk-controller (only fetched for this check): the Yellowstone/Liron Apple II disk controller
 # on a MachXO2 from its Lattice Diamond project; the ROM is a SCUBA netlist of four DP8KC whose port B is tied off,
 # the IWM registers are clocked by the bus strobe _devsel; lattice/ only
-fetch_sparse fpga-disk-controller https://github.com/steve-chamberlin/fpga-disk-controller 31488767c7ec94b6d9338dc95fc917e2e37d70c5 lattice
+fetch_sparse fpga-disk-controller https://github.com/steve-chamberlin/fpga-disk-controller 31488767c7ec94b6d9338dc95fc917e2e37d70c5 \
+    /lattice/ /top.v /yellowstone_blink.ldf /yellowstone_blink.lpf '!*.ncd'
+# lawrie/ulx3s_zx_spectrum (only fetched for this check): a ZX Spectrum (TV80 Z80, HDMI, USB host, SPI OSD) on the
+# ULX3S, built with yosys/nextpnr from a Makefile: the OpenCDC project takes its VERILOG list and the .lpf
+fetch_sparse ulx3s_zx_spectrum https://github.com/lawrie/ulx3s_zx_spectrum 19f242c057e25b38254004b1ea57306a28d85414 src ulx3s
+python3 - <<'PY'
+import json, re
+d = "ulx3s_zx_spectrum/ulx3s/"
+mk = open(d + "Makefile").read().replace("\\\n", " ")
+files = re.search(r"^VERILOG\s*=\s*(.*)$", mk, re.M).group(1).split()
+json.dump({"format": "opencdc-project", "version": 1, "name": "zx_spectrum", "top": "spectrum",
+           "sources": files, "constraints": ["ulx3s_v20.lpf"]}, open(d + "zx.ocdc.json", "w"), indent=1)
+PY
 # corundum/corundum (BSD-2-Clause-Views, only fetched for this check): the open-source NIC on the ZCU106 (UltraScale+),
 # PCIe and 10G Ethernet; the Vivado IP (PCIe, transceivers) is generated from Tcl and not part of the sources: black
 # boxes. Zero-width selects in branches of 'if (constant)' that are never taken, a 2^14 x 128 bit RAM, and the
@@ -498,6 +510,8 @@ check SNES_MiSTer/SNES.qpf "Instances: 367.*RTL     : 234 module bodies, 3496 re
 check ao486_MiSTer/ao486.qpf "Instances: 661.*RTL     : 302 module bodies, 4487 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 13 \(4437/4487 registers resolved\).*Summary : 0 error\(s\).*CDC     : 1556 crossing path\(s\), 704 synchronized, 852 unsynchronized.*213 unsynchronized path\(s\) covered by a timing exception"
 check C64_MiSTer/C64.qpf "Instances: 317.*RTL     : 190 module bodies, 4328 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(4278/4328 registers resolved\).*FE-WIRE-FUNCTION-PORT.*Summary : 0 error\(s\).*CDC     : 515 crossing path\(s\), 65 synchronized, 450 unsynchronized.*113 unsynchronized path\(s\) covered by a timing exception"
 check Atari800_MiSTer/Atari800.qpf "Instances: 514.*RTL     : 241 module bodies, 3608 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 11 \(3535/3608 registers resolved\).*address_decoder.vhdl:159:2: warning\[IR-SAME-DRIVERS\].*Summary : 0 error\(s\).*CDC     : 516 crossing path\(s\), 53 synchronized, 463 unsynchronized.*118 unsynchronized path\(s\) covered by a timing exception"
+check fpga-disk-controller/yellowstone_blink.ldf "Clocks  : 1 \(1/1 registers resolved\).*blink.internal_oscillator_inst.OSC  \[black-box\].*period=480.769ns \(2.08 MHz\).*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
+check ulx3s_zx_spectrum/ulx3s/zx.ocdc.json "Instances: 39.*RTL     : 29 module bodies, 270 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 6 \(270/270 registers resolved\).*clk25_mhz  \[constraint\].*period=40ns.*built-in models used for vendor primitives: EHXPLLL, ODDRX1F.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 1 crossing path\(s\), 0 synchronized, 1 unsynchronized"
 check fpga-disk-controller/lattice/liron.ldf "RTL     : 10 module bodies, 31 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 2 \(23/31 registers resolved\).*Lattice Diamond project imported: 4 source\(s\), 1 constraint file\(s\), top 'top' \(implementation 'fpgatop', device LCMXO2-1200HC-4TG100C\).*built-in models used for vendor primitives: DP8KC, VHI, VLO.*CLK-UNUSED-INTERFACE\]: 8 register\(s\).*DP8KC.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 17 crossing path\(s\), 0 synchronized, 17 unsynchronized"
 check f32c/rtl/proj/lattice/ulx3s/sdram_dv/ulx3s_sdram_dv.ldf "RTL     : 24 module bodies, 350 registers .* 0 latches, .* 1 unsupported construct\(s\).*Clocks  : 5 \(350/350 registers resolved\).*clk_25m  \[constraint\].*period=40ns.*CLKOS3  \[divider\].*\(74.25 MHz\).*Lattice Diamond project imported: 22 source\(s\), 1 constraint file\(s\), top 'top_sdram_dv'.*rom.vhd:146:12: warning\[IR-UNSUPPORTED-INIT\].*built-in models used for vendor primitives: EHXPLLL, ODDRX1F, USRMCLK, VHI, VLO.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 15 crossing path\(s\), 3 synchronized, 12 unsynchronized"
 check TangNano-20K-example/nestang/nes.gprj "Instances: 122.*RTL     : 89 module bodies, 638 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 12 \(638/638 registers resolved\).*NES_Tang20k.clk_div.clkdiv_inst.CLKOUT  \[divider\].*= clk_p5 x 5.*Gowin project imported: 35 source\(s\), 1 constraint file\(s\), top not set.*FE-AUTO-TOP\]: no top module given: 'NES_Tang20k' is the top.*built-in models used for vendor primitives: CLKDIV, ELVDS_OBUF, OSER10, rPLL.*Summary : 0 error\(s\).*CDC     : 27 crossing path\(s\), 0 synchronized, 27 unsynchronized"

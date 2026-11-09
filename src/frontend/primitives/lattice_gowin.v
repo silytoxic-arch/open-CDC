@@ -148,6 +148,40 @@ endmodule
 // Generic Gowin names (CLKDIV, OSER10, ...) are modelled in gowin.v, used only
 // in Gowin projects: elsewhere they could hide a missing user module.
 
+// ---- internal oscillators: clocks of their own, with their nominal frequency ----
+
+// MachXO2/XO3 OSCH: NOM_FREQ in MHz ("2.08" .. "133.00")
+module OSCH #(parameter NOM_FREQ = "2.08") (input STDBY, output OSC, output SEDSTDBY);
+    (* OPENCDC_CLOCK_PIN = "OSC", OPENCDC_CLOCK_FREQ = NOM_FREQ *) wire osc;
+    opencdc_async_source u_osc (osc);
+    assign OSC = osc;
+    assign SEDSTDBY = 1'b0;
+endmodule
+
+// ECP5 OSCG: 310 MHz / DIV (DIV 2 .. 128)
+module OSCG #(parameter integer DIV = 128) (output OSC);
+    localparam real MHZ = 310.0 / DIV;
+    (* OPENCDC_CLOCK_PIN = "OSC", OPENCDC_CLOCK_FREQ = MHZ *) wire osc;
+    opencdc_async_source u_osc (osc);
+    assign OSC = osc;
+endmodule
+
+// iCE40 UltraPlus SB_HFOSC: 48 MHz / 1, 2, 4, 8 (CLKHF_DIV "0b00" .. "0b11")
+module SB_HFOSC #(parameter CLKHF_DIV = "0b00", parameter TRIM_EN = "0b0")
+                 (input CLKHFPU, input CLKHFEN, input [9:0] TRIM, output CLKHF);
+    localparam real MHZ = CLKHF_DIV == "0b01" ? 24.0 : CLKHF_DIV == "0b10" ? 12.0 : CLKHF_DIV == "0b11" ? 6.0 : 48.0;
+    (* OPENCDC_CLOCK_PIN = "CLKHF", OPENCDC_CLOCK_FREQ = MHZ *) wire osc;
+    opencdc_async_source u_osc (osc);
+    assign CLKHF = osc;
+endmodule
+
+// iCE40 UltraPlus SB_LFOSC: 10 kHz
+module SB_LFOSC (input CLKLFPU, input CLKLFEN, output CLKLF);
+    (* OPENCDC_CLOCK_PIN = "CLKLF", OPENCDC_CLOCK_FREQ = 0.01 *) wire osc;
+    opencdc_async_source u_osc (osc);
+    assign CLKLF = osc;
+endmodule
+
 // ---- Lattice constants and configuration ports ---------------------------
 
 // VHI / VLO: constant 1 / 0 (the "scuba" constants of IPexpress and Clarity modules)
