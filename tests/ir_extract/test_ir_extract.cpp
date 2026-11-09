@@ -1450,3 +1450,58 @@ TEST_CASE("An input port driven inside its module", "[extract][ports]") {
     CHECK(bad.countCode("IR-INPUT-DRIVEN") == 0);
     CHECK(bad.countCode("IR-MULTIDRIVER") == 1);
 }
+
+TEST_CASE("inside expressions compare with each item", "[extract][inside]") {
+    auto e = extract("module m(input logic [3:0] a, input logic [3:0] b, output logic y, output logic u, output logic n);\n"
+                     "  assign y = a inside {4'b1?00, [b:4'd12], 4'd1};\n"
+                     "  assign u = a inside {[$:4'd2]};\n"
+                     "  assign n = 4'd3 inside {4'd1, 4'd2};\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 0);
+    CHECK(e.contains("= eq_wild(A=a, B=4'b1z00)")); // ? bits match anything
+    CHECK(e.contains("= ge(A=a, B=b)"));
+    CHECK(e.contains("= le(A=a, B=4'b1100)"));
+    CHECK(e.contains("= eq(A=a, B=4'b0001)"));
+    CHECK(e.contains("= le(A=a, B=4'b0010)")); // $: no lower bound
+    CHECK_FALSE(e.contains("ge(A=a, B=4'b0000)"));
+    CHECK(e.has("assign n = 1'b0")); // constant: no item matches
+    // negative: an unpacked array item is not analyzed and stays reported
+    auto x = extract("module m(input logic [3:0] a, output logic y);\n"
+                     "  localparam logic [3:0] T [2] = '{4'd1, 4'd2};\n"
+                     "  logic [3:0] v [2];\n"
+                     "  assign v = T;\n"
+                     "  assign y = a inside {v};\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(x.countCode("IR-UNSUPPORTED-EXPR") == 1);
+}
+
+TEST_CASE("case inside items are ranges and wildcard values", "[extract][inside][case]") {
+    auto e = extract("module m(input logic [3:0] a, output logic [1:0] z);\n"
+                     "  always_comb begin\n"
+                     "    case (a) inside\n"
+                     "      [0:3]: z = 2'd0;\n"
+                     "      [4:11], 4'b11??: z = 2'd1;\n"
+                     "      [12:15]: z = 2'd2;\n"
+                     "    endcase\n"
+                     "  end\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(e.countCode("IR-UNSUPPORTED-STMT") == 0);
+    CHECK(e.contains("= ge(A={28'b0000000000000000000000000000, a}, B=32'b00000000000000000000000000000100)"));
+    CHECK(e.contains("= eq_wild(A={28'b0000000000000000000000000000, a}, B=32'b000000000000000000000000000011zz)"));
+    CHECK(e.countCode("IR-LATCH-INFERRED") == 0); // the items cover all 16 values
+    // negative: a value not covered keeps the previous value (a latch)
+    auto l = extract("module m(input logic [3:0] a, output logic [1:0] z);\n"
+                     "  always_comb begin\n"
+                     "    case (a) inside\n"
+                     "      [0:3]: z = 2'd0;\n"
+                     "      [5:$]: z = 2'd1;\n"
+                     "    endcase\n"
+                     "  end\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017);
+    CHECK(l.countCode("IR-UNSUPPORTED-STMT") == 0);
+    CHECK(l.countCode("IR-LATCH-INFERRED") == 1);
+}

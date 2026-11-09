@@ -185,8 +185,24 @@ private:
             catch (const std::exception&) {
             }
         }
+        // one clock source behind several instances (the JTAG TCK of every BSCANE2): the
+        // first instance's clock, the others' names as aliases
+        std::string sharedKey;
+        if (const auto* sh = net.findAttr("OPENCDC_CLOCK_SHARED")) {
+            sharedKey = sh->value;
+            std::erase(sharedKey, '"');
+            if (const auto it = sharedBlackBox_.find(sharedKey); !sharedKey.empty() && it != sharedBlackBox_.end()) {
+                Clock& first = model_->clocks[it->second.index()];
+                if (first.name != c.name && std::ranges::find(first.aliases, c.name) == first.aliases.end())
+                    first.aliases.push_back(c.name);
+                blackBox_.emplace(b, it->second);
+                return it->second;
+            }
+        }
         const ClockId id = addClock(std::move(c));
         blackBox_.emplace(b, id);
+        if (!sharedKey.empty())
+            sharedBlackBox_.emplace(sharedKey, id);
         return id;
     }
 
@@ -1282,6 +1298,7 @@ private:
     };
     std::vector<InputPeriodMismatch> inputPeriodMismatch_;
     std::unordered_map<BitRef, ClockId, BitRefHash> blackBox_;
+    std::unordered_map<std::string, ClockId> sharedBlackBox_; ///< OPENCDC_CLOCK_SHARED key -> clock
     std::unordered_set<BitRef, BitRefHash> knownRoots_;
     std::unordered_map<BitRef, Trace, BitRefHash> memo_;
     std::unordered_set<BitRef, BitRefHash> inProgress_;

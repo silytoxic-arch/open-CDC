@@ -118,16 +118,18 @@ struct ProjectConfig {
 inline constexpr const char* kProjectFormatName = "opencdc-project";
 inline constexpr int kProjectFormatVersion = 1;
 
-/// A Vivado (.xpr) or Quartus (.qpf, .qsf) project, which loadProjectFile imports.
+/// A vendor project, which loadProjectFile imports: Vivado (.xpr), Quartus (.qpf, .qsf),
+/// Gowin (.gprj), Lattice Diamond (.ldf) or a FuseSoC core (.core).
 [[nodiscard]] bool isVendorProjectFile(const std::filesystem::path& file);
 /// A project read from (or imported from) a Quartus project: its constraints are
 /// Quartus SDC.
 [[nodiscard]] bool isQuartusProject(const ProjectConfig& config);
 
-/// Reads and validates a project file. Errors carry codes PRJ-*. A Vivado
-/// project (.xpr) or Quartus project (.qpf, .qsf) is imported
-/// (engine/VivadoProject.h, engine/QuartusProject.h).
-[[nodiscard]] Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file);
+/// Reads and validates a project file. Errors carry codes PRJ-*. A vendor
+/// project (isVendorProjectFile) is imported (engine/VivadoProject.h, ...);
+/// `coreTarget` is the target of a FuseSoC core (empty: synth, else default).
+[[nodiscard]] Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file,
+                                                    const std::string& coreTarget = {});
 
 /// Parses project JSON text; `baseDir` resolves relative paths.
 [[nodiscard]] Result<ProjectConfig> parseProjectJson(std::string_view jsonText,

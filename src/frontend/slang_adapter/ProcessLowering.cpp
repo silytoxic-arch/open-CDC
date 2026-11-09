@@ -585,16 +585,23 @@ void BodyBuilder::execExpressionStatement(const sast::Expression& e, ProcState& 
 void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
     const auto& c = s.as<sast::CaseStatement>();
     const auto l = s.sourceRange.start();
-    if (c.condition == sast::CaseStatementCondition::Inside) {
-        unsupported("IR-UNSUPPORTED-STMT", "case ... inside", l);
-        return;
-    }
+    const bool inside = c.condition == sast::CaseStatementCondition::Inside;
     const bool wildcard = c.condition != sast::CaseStatementCondition::Normal;
     const SigSpec sel = lower(c.expr);
 
     auto itemCond = [&](const sast::CaseStatement::ItemGroup& g) {
         SigSpec acc;
         for (const auto* ie : g.expressions) {
+            if (inside) { // case (x) inside [0:3], 5: like x inside {...}
+                auto m = insideItem(sel, c.expr.type->isSigned(), *ie, l);
+                if (!m) {
+                    unsupported("IR-UNSUPPORTED-STMT",
+                                "case ... inside with an item of type '" + ie->type->toString() + "'", l);
+                    m = cell(CellKind::Opaque, {sel}, 1, l);
+                }
+                acc = acc.empty() ? *m : cell(CellKind::Or, {acc, *m}, 1, l);
+                continue;
+            }
             SigSpec v = lower(*ie);
             const std::uint32_t w = std::max(v.width(), sel.width());
             SigSpec a = sel.resized(w, false);
@@ -661,6 +668,35 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
         bool constant = true;
         for (const auto& g : c.items)
             for (const auto* ie : g.expressions) {
+                if (ie->kind == sast::ExpressionKind::ValueRange) { // case inside [lo:hi]
+                    const auto& r = ie->as<sast::ValueRangeExpression>();
+                    const std::uint64_t maxValue = (std::uint64_t{1} << w) - 1;
+                    std::uint64_t lo = 0;
+                    std::uint64_t hi = maxValue;
+                    bool bounded = r.rangeKind == sast::ValueRangeKind::Simple && !signExtended &&
+                                   !r.left().type->isSigned() && !r.right().type->isSigned();
+                    auto bound = [&](const sast::Expression& x, std::uint64_t& out) {
+                        if (x.unwrapImplicitConversions().kind == sast::ExpressionKind::UnboundedLiteral)
+                            return;
+                        const auto cx = lower(x).asConst();
+                        const auto u = cx ? cx->toUint() : std::nullopt;
+                        if (u)
+                            out = *u;
+                        else
+                            bounded = false;
+                    };
+                    if (bounded) {
+                        bound(r.left(), lo);
+                        bound(r.right(), hi);
+                    }
+                    if (!bounded) {
+                        constant = false;
+                        break;
+                    }
+                    for (std::uint64_t v = lo; v <= std::min(hi, maxValue); ++v)
+                        seen[v] = true;
+                    continue;
+                }
                 const auto full = lower(*ie).resized(sel.width(), false).asConst();
                 if (!full) {
                     constant = false;
@@ -675,7 +711,7 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
                         continue;
                     }
                     const bool wild = b != ir::Logic::L0 && b != ir::Logic::L1 &&
-                                      (c.condition == sast::CaseStatementCondition::WildcardXOrZ ||
+                                      (c.condition == sast::CaseStatementCondition::WildcardXOrZ || inside ||
                                        (c.condition == sast::CaseStatementCondition::WildcardJustZ &&
                                         b == ir::Logic::Z));
                     if (b != ir::Logic::L0 && !wild)
@@ -691,7 +727,7 @@ void BodyBuilder::execCase(const sast::Statement& s, ProcState& st) {
                     if (b == ir::Logic::L1)
                         fixed |= std::uint64_t{1} << i;
                     else if (b != ir::Logic::L0) {
-                        const bool wild = c.condition == sast::CaseStatementCondition::WildcardXOrZ ||
+                        const bool wild = c.condition == sast::CaseStatementCondition::WildcardXOrZ || inside ||
                                           (c.condition == sast::CaseStatementCondition::WildcardJustZ &&
                                            b == ir::Logic::Z);
                         if (wild)

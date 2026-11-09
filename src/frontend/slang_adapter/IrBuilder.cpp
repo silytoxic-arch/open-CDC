@@ -1178,6 +1178,18 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
         }
         case EK::UnaryOp: return lowerUnary(e);
         case EK::BinaryOp: return lowerBinary(e);
+        case EK::Inside: { // x inside {a, [b:c]}: one of the items matches
+            const auto& in = e.as<sast::InsideExpression>();
+            const SigSpec v = lower(in.left());
+            SigSpec acc;
+            for (const auto* item : in.rangeList()) {
+                auto m = insideItem(v, in.left().type->isSigned(), *item, e.sourceRange.start());
+                if (!m)
+                    return opaque(e, "'inside' with an item of type '" + item->type->toString() + "'");
+                acc = acc.empty() ? *m : cell(CellKind::Or, {acc, *m}, 1, e.sourceRange.start());
+            }
+            return (acc.empty() ? SigSpec::constant(0, 1) : acc).resized(w, false);
+        }
         case EK::ConditionalOp: {
             const auto& c = e.as<sast::ConditionalExpression>();
             if (c.conditions.size() != 1 || c.conditions[0].pattern)
@@ -1373,6 +1385,45 @@ SigSpec BodyBuilder::lowerBinary(const sast::Expression& e) {
     if (*kind == CellKind::Sshr || *kind == CellKind::Shl || *kind == CellKind::Shr)
         return cell(*kind, {lhs, rhs}, w, l, b.left().type->isSigned());
     return cell(*kind, {lhs, rhs}, w, l, isSigned);
+}
+
+std::optional<SigSpec> BodyBuilder::insideItem(const SigSpec& v, bool vSigned, const sast::Expression& item,
+                                               slang::SourceLocation l) {
+    if (v.empty())
+        return std::nullopt;
+    // both operands at the wider width, sign-extended only when both are signed
+    auto compare = [&](CellKind k, const sast::Expression& bound) -> SigSpec {
+        SigSpec b = lower(bound);
+        const bool sgn = vSigned && bound.type->isSigned();
+        const std::uint32_t w = std::max(v.width(), b.width());
+        return cell(k, {v.resized(w, sgn), b.resized(w, sgn)}, 1, l, sgn);
+    };
+    if (item.kind == sast::ExpressionKind::ValueRange) {
+        const auto& r = item.as<sast::ValueRangeExpression>();
+        if (r.rangeKind != sast::ValueRangeKind::Simple || !r.left().type->isIntegral() ||
+            !r.right().type->isIntegral())
+            return std::nullopt;
+        const bool openLow = r.left().unwrapImplicitConversions().kind == sast::ExpressionKind::UnboundedLiteral;
+        const bool openHigh = r.right().unwrapImplicitConversions().kind == sast::ExpressionKind::UnboundedLiteral;
+        if (openLow && openHigh)
+            return SigSpec::constant(1, 1);
+        if (openLow)
+            return compare(CellKind::Le, r.right());
+        if (openHigh)
+            return compare(CellKind::Ge, r.left());
+        return cell(CellKind::LogicAnd, {compare(CellKind::Ge, r.left()), compare(CellKind::Le, r.right())}, 1, l);
+    }
+    if (!item.type->isIntegral())
+        return std::nullopt;
+    SigSpec b = lower(item);
+    const bool sgn = vSigned && item.type->isSigned();
+    const std::uint32_t w = std::max(v.width(), b.width());
+    SigSpec a = v.resized(w, sgn);
+    b = b.resized(w, sgn);
+    const auto bc = b.asConst();
+    if (const auto ac = a.asConst(); ac && bc && ac->isFullyDefined() && bc->isFullyDefined())
+        return SigSpec::constant(*ac == *bc ? 1 : 0, 1);
+    return cell(bc && bc->isFullyDefined() ? CellKind::Eq : CellKind::EqWild, {a, b}, 1, l);
 }
 
 SigSpec BodyBuilder::lowerSelect(const sast::Expression& e) {

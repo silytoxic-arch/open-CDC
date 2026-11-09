@@ -1744,3 +1744,30 @@ TEST_CASE("Primitives: iCE40 UltraPlus IOs, PLL, SPRAM and hard IP", "[primitive
     CHECK_FALSE(crosses(*run, "top.io", "top.q"));
     CHECK(run->r->cdc->stats.unsynchronized == 0);
 }
+
+TEST_CASE("Primitives: every BSCANE2 gives the one JTAG TCK", "[primitives][jtag]") {
+    // two TAPs on different chains (pulp riscv-dbg: dtmcs and dmi): one clock, so the
+    // registers of one TAP read by the other do not cross
+    auto run = analyze("t.v",
+                       "module top(input clk, output reg q, output reg c);\n"
+                       "  wire tck1, tck2, sel1, sel2;\n"
+                       "  BSCANE2 #(.JTAG_CHAIN(3)) bs1 (.TCK(tck1), .SEL(sel1), .TDO(1'b0));\n"
+                       "  BSCANE2 #(.JTAG_CHAIN(4)) bs2 (.TCK(tck2), .SEL(sel2), .TDO(1'b0));\n"
+                       "  reg r1; always @(posedge tck1) r1 <= sel1;\n"
+                       "  always @(posedge tck2) q <= r1;\n"
+                       "  always @(posedge clk) c <= r1;\n"
+                       "endmodule\n",
+                       "top");
+    REQUIRE(run->r->cdc);
+    dumpPaths(*run);
+    std::vector<std::string> tcks;
+    for (const auto& c : run->r->clocks->clocks)
+        if (c.kind == clock::ClockKind::BlackBox) {
+            tcks.push_back(c.name);
+            CHECK(std::ranges::find(c.aliases, "top.bs2.TCK") != c.aliases.end());
+        }
+    CHECK(tcks == std::vector<std::string>{"top.bs1.TCK"});
+    CHECK(run->path("top.r1", "top.q") == nullptr); // same clock
+    // negative: a design register is still in another domain
+    CHECK(crosses(*run, "top.r1", "top.c"));
+}

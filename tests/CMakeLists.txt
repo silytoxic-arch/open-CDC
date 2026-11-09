@@ -28,6 +28,8 @@ add_executable(opencdc_tests
     engine/test_quartus_project.cpp
     engine/test_gowin_project.cpp
     engine/test_diamond_project.cpp
+    engine/test_yaml.cpp
+    engine/test_fusesoc_project.cpp
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_quartus_compat.cpp

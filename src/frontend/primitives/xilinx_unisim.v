@@ -1023,7 +1023,8 @@ endmodule
 module BSCANE2 #(parameter DISABLE_JTAG = "FALSE", parameter integer JTAG_CHAIN = 1)
                (output CAPTURE, output DRCK, output RESET, output RUNTEST, output SEL, output SHIFT, output TCK,
                 output TDI, output TMS, output UPDATE, input TDO);
-    (* OPENCDC_CLOCK_PIN = "TCK" *) wire tck_src;
+    // every BSCANE2 (one per JTAG_CHAIN) gives the TCK of the device's one JTAG port
+    (* OPENCDC_CLOCK_PIN = "TCK", OPENCDC_CLOCK_SHARED = "xilinx_jtag_tck" *) wire tck_src;
     opencdc_async_source u_tck (tck_src);
     assign TCK = tck_src;
     assign DRCK = tck_src;

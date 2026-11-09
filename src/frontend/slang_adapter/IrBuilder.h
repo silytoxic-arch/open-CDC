@@ -188,6 +188,11 @@ private:
     ir::SigSpec lowerImpl(const sast::Expression& e);
     ir::SigSpec lowerUnary(const sast::Expression& e);
     ir::SigSpec lowerBinary(const sast::Expression& e);
+    /// `v` matches the item of an `inside` set or a `case ... inside` item: a value
+    /// range [lo:hi] ($ for no bound) compares, a value is a wildcard equality (its x and
+    /// z bits match anything). nullopt: not analyzed (tolerance ranges, unpacked arrays).
+    std::optional<ir::SigSpec> insideItem(const ir::SigSpec& v, bool vSigned, const sast::Expression& item,
+                                          slang::SourceLocation l);
     ir::SigSpec lowerSelect(const sast::Expression& e);
     ir::SigSpec lowerCall(const sast::Expression& e);
     /// The bitstream of a streaming concatenation ({>>{a, b}}, {<<8{x}}); nullopt: not analyzed

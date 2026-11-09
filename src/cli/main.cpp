@@ -8,7 +8,8 @@
 //   opencdc analyze <project.qpf|.qsf> ...       (a Quartus project, imported)
 //   opencdc analyze <project.gprj> ...           (a Gowin project, imported)
 //   opencdc analyze <project.ldf> ...            (a Lattice Diamond project, imported)
-//   opencdc import <project.xpr|.qpf|.qsf|.gprj|.ldf> [-o <project.ocdc.json>] [--force]
+//   opencdc analyze <name.core> [--target <t>] ...  (a FuseSoC core, imported)
+//   opencdc import <project.xpr|.qpf|.qsf|.gprj|.ldf|.core> [-o <project.ocdc.json>] [--force]
 //
 // Exit codes: 0 = ran, no errors and no error-severity CDC violations;
 //             1 = ran, errors reported (HDL/constraint errors);
@@ -21,6 +22,7 @@
 #include "core/Version.h"
 #include "engine/AnalysisSession.h"
 #include "engine/ClockPairs.h"
+#include "engine/FuseSocProject.h"
 #include "engine/ProjectConfig.h"
 #include "engine/Report.h"
 #include "engine/SdcSuggest.h"
@@ -74,6 +76,7 @@ struct Outputs {
     std::string suggestSdc;
     std::vector<std::string> vivadoClocks; ///< extra Vivado report_clocks outputs to compare with
     bool blackBoxUnknown = false;          ///< --blackbox-unknown
+    std::string coreTarget;                ///< --target (FuseSoC core)
 };
 
 bool writeText(const std::filesystem::path& file, const std::string& text) {
@@ -93,7 +96,11 @@ int runAnalyze(const std::string& projectPath, const Outputs& outs, bool quiet) 
     const std::string& jsonOut = outs.json;
     const std::string& irOut = outs.ir;
     const std::string& schematicDir = outs.schematicDir;
-    auto project = engine::loadProjectFile(fromUtf8(projectPath));
+    if (!outs.coreTarget.empty() && !engine::isFuseSocCoreFile(fromUtf8(projectPath))) {
+        std::cerr << "error: --target is for FuseSoC cores (*.core)\n";
+        return kExitUsage;
+    }
+    auto project = engine::loadProjectFile(fromUtf8(projectPath), outs.coreTarget);
     if (!project) {
         std::cerr << format(project.error()) << '\n';
         return kExitUsage;
@@ -421,6 +428,7 @@ int runWaive(WaiveArgs args) {
 struct ImportArgs {
     std::string project;
     std::string output;
+    std::string coreTarget;
     bool force = false;
 };
 
@@ -428,10 +436,14 @@ struct ImportArgs {
 int runImport(const ImportArgs& args) {
     const auto in = fromUtf8(args.project);
     if (!engine::isVendorProjectFile(in)) {
-        std::cerr << "error: " << args.project << ": not a Vivado (.xpr), Quartus (.qpf, .qsf), Gowin (.gprj) or Lattice Diamond (.ldf) project\n";
+        std::cerr << "error: " << args.project << ": not a Vivado (.xpr), Quartus (.qpf, .qsf), Gowin (.gprj) or Lattice Diamond (.ldf) project or a FuseSoC core (.core)\n";
         return kExitUsage;
     }
-    auto project = engine::loadProjectFile(in);
+    if (!args.coreTarget.empty() && !engine::isFuseSocCoreFile(in)) {
+        std::cerr << "error: --target is for FuseSoC cores (*.core)\n";
+        return kExitUsage;
+    }
+    auto project = engine::loadProjectFile(in, args.coreTarget);
     if (!project) {
         std::cerr << format(project.error()) << '\n';
         return kExitUsage;
@@ -579,8 +591,10 @@ int main(int argc, char** argv) {
     std::string projectPath;
     Outputs outs;
     bool quiet = false;
-    auto* analyze = app.add_subcommand("analyze", "Analyze a project (*.ocdc.json, a Vivado project *.xpr, a Quartus project *.qpf/*.qsf, a Gowin project *.gprj or a Lattice Diamond project *.ldf)");
+    auto* analyze = app.add_subcommand("analyze", "Analyze a project (*.ocdc.json, a Vivado project *.xpr, a Quartus project *.qpf/*.qsf, a Gowin project *.gprj, a Lattice Diamond project *.ldf or a FuseSoC core *.core)");
     analyze->add_option("project", projectPath, "Project file")->required();
+    analyze->add_option("--target", outs.coreTarget,
+                        "Target of a FuseSoC core (default: synth if the core has it, else default)");
     analyze->add_option("--json", outs.json, "Write the result as JSON to this file");
     analyze->add_option("--dump-ir", outs.ir, "Write a text dump of the extracted Design IR to this file");
     analyze->add_option("--html", outs.html, "Write a self-contained HTML report (with schematics) to this file");
@@ -630,9 +644,11 @@ int main(int argc, char** argv) {
     ImportArgs importArgs;
     auto* importCmd = app.add_subcommand(
         "import", "Write the OpenCDC project of a Vivado project (*.xpr: the sources, IP and constraints of its "
-                  "current synthesis run) or of a Quartus project (*.qpf: its first revision, or a revision *.qsf), of a Gowin project (*.gprj) or of a Lattice Diamond project (*.ldf: its default implementation)");
-    importCmd->add_option("project", importArgs.project, "Vivado, Quartus, Gowin or Diamond project (*.xpr, *.qpf, *.qsf, *.gprj, *.ldf)")
+                  "current synthesis run) or of a Quartus project (*.qpf: its first revision, or a revision *.qsf), of a Gowin project (*.gprj), of a Lattice Diamond project (*.ldf: its default implementation) or of a FuseSoC core (*.core: a target, with its dependency cores)");
+    importCmd->add_option("project", importArgs.project, "Vivado, Quartus, Gowin or Diamond project or FuseSoC core (*.xpr, *.qpf, *.qsf, *.gprj, *.ldf, *.core)")
         ->required();
+    importCmd->add_option("--target", importArgs.coreTarget,
+                          "Target of a FuseSoC core (default: synth if the core has it, else default)");
     importCmd->add_option("-o,--output", importArgs.output,
                           "OpenCDC project to write (default: <name>.ocdc.json next to the vendor project)");
     importCmd->add_flag("--force", importArgs.force, "Replace the output file when it exists");
