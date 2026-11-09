@@ -117,6 +117,7 @@
 - 阶段 87 的 Windows CI（提交 1460817，运行 42632557900）：Release 与 Debug 均 688/688 通过。
 - 本阶段中间提交的 Windows CI（提交 9f5db5d，运行 42640571601）：Release 与 Debug 均 691/691 通过。
 - 中间提交 c5b53bd 的 Windows CI（运行 42654358692）构建失败：`SeqGraph.cpp` 中 `std::pair<std::size_t, std::uint8_t>{1, kLogic | kSelect}` 的 `int` 到 `unsigned char` 转换在 MSVC 中是 C4244 告警（告警视为错误），GCC 与 Clang 不报。已改为显式的 `std::uint8_t` 常量。
+- 本阶段的 Windows CI（提交 23b06ab，运行 42657339185）：Release 与 Debug 均 692/692 通过，生成 `OpenCDC-0.88.0-windows-x64.zip` 与 `.exe`。
 
 ## 5. 已知限制
 
