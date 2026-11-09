@@ -80,7 +80,9 @@ process (...) begin ... SDRAM_WRITE_EN <= write_enable_next; ...   -- 组合进�
 - SV 语料 30 个项目全部匹配，VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
 - 阶段 75 的 Windows CI（提交 62cfe8d，运行 42549878280）：Release 与 Debug 均 626/626 通过。
-- 本阶段的 Windows CI：见提交后的记录。
+- 本阶段的 Windows CI（提交 59afc31，运行 42555357003）：
+  - Release：628/628 通过，生成 `OpenCDC-0.76.0-windows-x64.zip` 与 `.exe`；
+  - Debug：628/628 通过。
 
 ## 5. 已知限制
 
