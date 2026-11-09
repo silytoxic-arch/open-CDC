@@ -157,6 +157,7 @@
 - SV 语料 52 项、VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
 - 阶段 86 的 Windows CI（提交 85d3aed，运行 42622852774）：Release 与 Debug 均 678/678 通过，生成 `OpenCDC-0.86.0-windows-x64.zip` 与 `.exe`。
+- 本阶段的 Windows CI（提交 1460817，运行 42632557900）：Release 与 Debug 均 688/688 通过，生成 `OpenCDC-0.87.0-windows-x64.zip` 与 `.exe`。
 
 ## 5. 已知限制
 
