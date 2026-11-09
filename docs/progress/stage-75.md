@@ -77,7 +77,9 @@ Corundum ZCU106（Release 版本）：
 - Clang 构建无告警。
 - 测量用的临时计数代码都已删除。
 - 阶段 74 的 Windows CI（提交 58f2524，运行 42542210823）：Release 与 Debug 均 625/625 通过。
-- 本阶段的 Windows CI：见提交后的记录。
+- 本阶段的 Windows CI（提交 62cfe8d，运行 42549878280）：
+  - Release：626/626 通过，生成 `OpenCDC-0.75.0-windows-x64.zip` 与 `.exe`；
+  - Debug：626/626 通过。
 
 ## 6. 已知限制
 
