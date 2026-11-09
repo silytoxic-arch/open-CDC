@@ -56,6 +56,7 @@
 - SV 语料 53 项、VHDL 语料 48 个全部匹配。
 - Clang 构建无告警。
 - 阶段 88 的 Windows CI（提交 23b06ab，运行 42657339185）：Release 与 Debug 均 692/692 通过，生成 `OpenCDC-0.88.0-windows-x64.zip` 与 `.exe`。
+- 本阶段的 Windows CI（提交 826317b，运行 42663578786）：Release 第一次在配置时下载 nlohmann_json 得到 HTTP 500（GitHub 的临时错误，与代码无关），重新运行失败的作业后通过。Release 与 Debug 均 694/694 通过，生成 `OpenCDC-0.89.0-windows-x64.zip` 与 `.exe`。
 
 ## 5. 已知限制
 
