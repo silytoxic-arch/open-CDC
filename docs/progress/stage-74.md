@@ -132,7 +132,9 @@ if (OUT_TLP_SEG_COUNT > 1) begin
   - 测试名中的逗号被 Catch 当作分隔符，改用通配符运行。
 - 诊断过程中加过临时的调试输出，都已删除。
 - 阶段 73 的 Windows CI（提交 0121e06，运行 42487281494）：Release 与 Debug 均 619/619 通过。
-- 本阶段的 Windows CI：见提交后的记录。
+- 本阶段的 Windows CI（提交 58f2524，运行 42542210823）：
+  - Release：625/625 通过，生成 `OpenCDC-0.74.0-windows-x64.zip` 与 `.exe`；
+  - Debug：625/625 通过。
 
 ## 5. 已知限制
 
