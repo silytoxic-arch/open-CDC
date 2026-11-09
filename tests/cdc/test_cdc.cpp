@@ -1098,3 +1098,25 @@ TEST_CASE("A first synchronizer stage read by parallel chains qualifies data beh
     CHECK(r.path("top.data", "top.q2").syncType != SyncType::QualifiedData);
     CHECK(r.path("top.data", "top.q2").status != AnalysisStatus::Safe);
 }
+
+TEST_CASE("Memory writes: the data and index cone is shared by the bits of the write", "[cdc][seqgraph][memory]") {
+    // taxi cndm: FIFOs of up to 4096 bits whose write logic (data, index) every bit reads;
+    // the cone of the shared inputs is built once per write cell, with the same sources
+    auto r = analyze("module top(input clk_a, input clk_b, input [7:0] d, input [2:0] a, input [2:0] ra,\n"
+                     "           input we, output reg [7:0] q, output reg [7:0] k);\n"
+                     "  reg [7:0] dr; reg [2:0] ar;\n"
+                     "  always @(posedge clk_a) begin dr <= d; ar <= a; end\n"
+                     "  reg [7:0] mem [0:7];\n"
+                     "  reg [7:0] cmem [0:7];\n"
+                     "  always @(posedge clk_b) if (we) mem[ar] <= dr;\n"   // data and index from clk_a
+                     "  always @(posedge clk_b) if (we) cmem[3'd2] <= d;\n"  // a constant index, input data
+                     "  always @(posedge clk_b) begin q <= mem[ra]; k <= cmem[ra]; end\n"
+                     "endmodule\n");
+    const auto& data = r.path("top.dr", "top.mem");
+    const auto& index = r.path("top.ar", "top.mem");
+    CHECK_FALSE(data.throughSelect);
+    CHECK(index.throughSelect); // the index selects the element written
+    // negative: nothing from clk_a reaches the memory written with a constant index
+    CHECK_FALSE(r.hasPath("top.dr", "top.cmem"));
+    CHECK_FALSE(r.hasPath("top.ar", "top.cmem"));
+}

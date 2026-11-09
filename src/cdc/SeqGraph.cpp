@@ -549,7 +549,32 @@ BitInput SeqGraph::computeCell(const CellKey& root) {
                 }
                 inputs.push_back({ci, d});
             };
-            if (!whole) {
+            const Cell& kc = view_.bodyOf(InstanceId{k.inst}).cells[k.cell];
+            if (k.bit == kShared) {
+                // the data and index of a DynInsert, read by every bit: once for the cell
+                // (as cellInputs lists them after A[bit]: D as logic, the index as a select)
+                for (const auto& [input, flags] : {std::pair<std::size_t, std::uint8_t>{2, ConeEntry::kLogic},
+                                                   {1, ConeEntry::kLogic | ConeEntry::kSelect}})
+                    if (input < kc.inputs.size())
+                        for (std::uint32_t b = 0; b < kc.inputs[input].width(); ++b)
+                            if (auto bit = view_.bitOf(InstanceId{k.inst}, kc.inputs[input], b))
+                                take({*bit, flags}, view_.driver(*bit));
+            }
+            else if (!whole && kc.kind == CellKind::DynInsert) {
+                // A[bit] here; D and the index through the shared group
+                if (k.bit < kc.inputs[0].width())
+                    if (auto b = view_.bitOf(InstanceId{k.inst}, kc.inputs[0], k.bit))
+                        take({*b, ConeEntry::kLogic}, view_.driver(*b));
+                const CellKey sk{k.inst, k.cell, kShared};
+                if (memo_[sk].state == 0) {
+                    stack.push_back(sk);
+                    pushed = true;
+                }
+                ResolvedInput ri;
+                ri.shared = true;
+                inputs.push_back(ri);
+            }
+            else if (!whole) {
                 for (const auto& ci : cellInputs(InstanceId{k.inst}, k.cell, k.bit))
                     take(ci, view_.driver(ci.bit));
             }
@@ -646,8 +671,21 @@ BitInput SeqGraph::combine(const CellKey& k, const std::vector<ResolvedInput>& i
     std::vector<ConeEntry> acc;
     std::unordered_map<std::uint32_t, std::size_t> where;
     ConeEntry scratch;
+    // inputs reading the same interned cone with the same flags (the bits of a
+    // wide driver cell feeding one cell evaluated as a whole) add nothing new
+    std::unordered_set<std::uint64_t> merged;
     for (const auto& ri : inputs) {
-        const BitInput v = valueOf(ri.driver);
+        BitInput v;
+        if (ri.shared) {
+            const Memo& sm = memo_[CellKey{k.inst, k.cell, kShared}];
+            if (sm.state == 2)
+                v = sm.value;
+        }
+        else
+            v = valueOf(ri.driver);
+        if (!v.isDirect() && v.cone != 0 && v.cone != BitInput::kDirectCone &&
+            !merged.insert((static_cast<std::uint64_t>(v.cone) << 8) | ri.in.flags).second)
+            continue;
         for (auto e : entries(v, scratch)) {
             e.flags |= ri.in.flags;
             accumulate(acc, e, where);

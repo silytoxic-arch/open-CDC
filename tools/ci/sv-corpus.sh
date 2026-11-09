@@ -236,16 +236,24 @@ fetch_sparse taxi https://github.com/fpganinja/taxi cc70b270b910d369ab1ad7b3855e
     "/src/" "!/src/*/tb/" "!*.py"
 python3 - <<'PY'
 import json, re
-d = "taxi/src/eth/example/KC705/fpga/fpga_rgmii_1g/"
-mk = open(d + "Makefile").read()
-def files(var):
-    return [f.replace("$(RTL_DIR)", "../rtl").replace("$(TAXI_SRC_DIR)", "../lib/taxi/src")
-            for f in re.findall(r"^" + var + r" \+?= (\S+)", mk, re.M)]
-params = dict(re.findall(r'^dict set params (\w+) "([^"]*)"', open(d + "config.tcl").read(), re.M))
-json.dump({"format": "opencdc-project", "version": 1, "name": "taxi_kc705_rgmii", "top": "fpga",
-           "sources": files("SYN_FILES"), "constraints": files("XDC_FILES"),
-           "parameters": {k: v if v.isdigit() else '"' + v + '"' for k, v in params.items()},
-           "options": {"unknownModules": "blackbox"}}, open(d + "taxi_kc705.ocdc.json", "w"), indent=1)
+def project(d, name, out):
+    mk = open(d + "Makefile").read()
+    var = dict(re.findall(r"^(\w+) = (\S+)\s*$", mk, re.M))
+    def files(v):
+        out = []
+        for f in re.findall(r"^" + v + r" \+?= (\S+)", mk, re.M):
+            for _ in range(3):
+                f = re.sub(r"\$\((\w+)\)", lambda m: var.get(m.group(1), m.group(0)), f)
+            out.append(f)
+        return out
+    # plain parameter values of config.tcl (not those computed from the build date or git)
+    params = {k: v if v.isdigit() else '"' + v + '"'
+              for k, v in re.findall(r'^dict set params (\w+) "([^"$]*)"', open(d + "config.tcl").read(), re.M)}
+    json.dump({"format": "opencdc-project", "version": 1, "name": name, "top": var.get("FPGA_TOP", "fpga"),
+               "sources": files("SYN_FILES"), "constraints": files("XDC_FILES"), "parameters": params,
+               "options": {"unknownModules": "blackbox"}}, open(d + out, "w"), indent=1)
+project("taxi/src/eth/example/KC705/fpga/fpga_rgmii_1g/", "taxi_kc705_rgmii", "taxi_kc705.ocdc.json")
+project("taxi/src/cndm/board/ADM_PCIE_9V3/fpga/fpga/", "cndm_adm_pcie_9v3", "cndm_adm_pcie_9v3.ocdc.json")
 PY
 
 # ATaylorCEngFIET/Hackster (Hackster.io projects without a license, only fetched for this check): block designs
@@ -612,6 +620,7 @@ check f32c/rtl/proj/lattice/ulx3s/sdram_dv/ulx3s_sdram_dv.ldf "RTL     : 24 modu
 check TangNano-20K-example/nestang/nes.gprj "Instances: 122.*RTL     : 89 module bodies, 638 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 12 \(638/638 registers resolved\).*NES_Tang20k.clk_div.clkdiv_inst.CLKOUT  \[divider\].*= clk_p5 x 5.*Gowin project imported: 35 source\(s\), 1 constraint file\(s\), top not set.*FE-AUTO-TOP\]: no top module given: 'NES_Tang20k' is the top.*built-in models used for vendor primitives: CLKDIV, ELVDS_OBUF, OSER10, rPLL.*Summary : 0 error\(s\).*CDC     : 27 crossing path\(s\), 0 synchronized, 27 unsynchronized"
 check corundum/fpga/mqnic/ZCU106/fpga_pcie/corundum.ocdc.json "Instances: 532.*RTL     : 192 module bodies, 5848 registers .* 0 latches, .* 3 unsupported construct\(s\).*Clocks  : 9 \(5848/5848 registers resolved\).*pcie_tlp_fifo_raw.v:450:57: warning\[FE-SLANG-ValueMustBePositive\].*FE-BLACKBOX-MODULE.*Summary : 0 error\(s\).*CDC     : 219 crossing path\(s\), 209 synchronized, 10 unsynchronized.*10 unsynchronized path\(s\) covered by a timing exception"
 check taxi/src/eth/example/KC705/fpga/fpga_rgmii_1g/taxi_kc705.ocdc.json "Instances: 146.*RTL     : 70 module bodies, 1252 registers .* 0 latches, .* 2 unsupported construct\(s\).*Clocks  : 6 \(1252/1252 registers resolved\).*fpga.clk_mmcm_inst.CLKOUT0  \[divider\] alias=clk_mmcm_out .*period=8ns.*info\[PRJ-FILELIST\]: 45 source\(s\) read from 5 file list\(s\).*fpga_core.sv:154:12: warning\[FE-SIZE-INSTANCE-ARRAY\].*Summary : 0 error\(s\), 6 warning\(s\).*CDC     : 76 crossing path\(s\), 76 synchronized, 0 unsynchronized, 35 synchronizer structure\(s\).*9 path\(s\) at potential risk"
+check taxi/src/cndm/board/ADM_PCIE_9V3/fpga/fpga/cndm_adm_pcie_9v3.ocdc.json "Instances: 858.*RTL     : 244 module bodies, 11886 registers .* 0 latches, .* 4 unsupported construct\(s\).*Clocks  : 21 \(11886/11886 registers resolved\).*info\[PRJ-FILELIST\]: 101 source\(s\) read from 4 file list\(s\).*FE-BLACKBOX-MODULE.*pcie4_uscale_plus_0.*Summary : 0 error\(s\), 43 warning\(s\).*CDC     : 603 crossing path\(s\), 603 synchronized, 0 unsynchronized, 439 synchronizer structure\(s\).*45 path\(s\) at potential risk, 16 path\(s\) need review"
 check u96_mpsoc.ocdc.json "Clocks  : 1 \(93/93 registers resolved\).*zynq_ultra_ps_e_0.pl_clk0  \[black-box\] alias=clk_pl_0 .*period=10ns.*zynq_ultra_ps_e:3.2\) modelled from its configuration: PL clocks pl_clk0.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 # MicroBlaze (simulation netlist: slice gates, SRLC16E), its debug module (FDC_1/FDRE_1), MMCM_ADV, an encrypted IP known by
 # its interface clocks; the camera interface drives pclk_out twice (an assignment and a BUFG): a real error

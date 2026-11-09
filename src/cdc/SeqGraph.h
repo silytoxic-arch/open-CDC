@@ -199,6 +199,9 @@ private:
         std::uint32_t arst = 0, arstLen = 0;
     };
     static constexpr std::uint32_t kAll = 0xFFFFFFFFu;
+    /// The inputs every bit of a per-bit cell reads (the data and index of a
+    /// DynInsert): their cone is computed once per cell under this key bit.
+    static constexpr std::uint32_t kShared = 0xFFFFFFFEu;
 
 public:
     struct FamilyCache {
@@ -226,6 +229,7 @@ private:
     struct ResolvedInput {
         CellInput in;
         graph::Driver driver;
+        bool shared = false; ///< the cone of the cell's shared inputs (key bit kShared), not `driver`
     };
     BitInput computeCell(const CellKey& root);
     BitInput combine(const CellKey& k, const std::vector<ResolvedInput>& inputs);
