@@ -350,7 +350,8 @@ public:
         const auto& prims = PrimitiveLibrary::instance();
         std::set<std::string> foreign = vhdlEntities;
         for (const auto& n : prims.names())
-            foreign.insert(lower(n));
+            if (input_.gowinPrimitives || !prims.gowinOnly(n))
+                foreign.insert(lower(n));
 
         std::vector<Diagnostic> lastDiags;
         std::shared_ptr<ir::Design> finalDesign;
@@ -402,7 +403,8 @@ public:
                 // Verilog is case-sensitive: only a module named exactly like the
                 // primitive replaces it (verilog-ethernet's 'iddr' wraps Xilinx 'IDDR')
                 for (const auto& n : prims.names())
-                    if (std::ranges::none_of(verilogDefs_, [&](const auto& d) { return d.name == n; }) &&
+                    if ((input_.gowinPrimitives || !prims.gowinOnly(n)) &&
+                        std::ranges::none_of(verilogDefs_, [&](const auto& d) { return d.name == n; }) &&
                         !vhdlEntities.contains(lower(n)))
                         primitiveModules_[lower(n)] = n;
                 for (const auto& f : vout.value().summary.parsedFiles)
@@ -697,10 +699,12 @@ public:
         sum.definitions = verilogDefs_;
         sum.definitions.insert(sum.definitions.end(), vhdlDefs.begin(), vhdlDefs.end());
         std::ranges::sort(sum.definitions, {}, &DefinitionInfo::name);
-        if (finalDesign) {
-            for (auto t : finalDesign->tops)
-                sum.topInstances.push_back(makeInfo(*finalDesign, t));
-            sum.instanceCount = finalDesign->instances.size();
+        // the hierarchy also with errors (as the Verilog-only path): the last converged round
+        if (const ir::Design* shown = finalDesign ? finalDesign.get() : lastDesign.get()) {
+            for (auto t : shown->tops)
+                if (shown->instance(t).name != kWrapper)
+                    sum.topInstances.push_back(makeInfo(*shown, t));
+            sum.instanceCount = shown->instances.size();
         }
         output.design = finalDesign;
         return output;
@@ -875,6 +879,59 @@ private:
 class AutoFrontend final : public IFrontend {
 public:
     Result<FrontendOutput> elaborate(const FrontendInput& original, DiagnosticSink& sink) override {
+        if (original.deepestRootTop && original.top.empty()) {
+            // no top: every root is elaborated once, then only the deepest one
+            FrontendInput all = original;
+            all.deepestRootTop = false;
+            CollectingDiagnosticSink probe;
+            auto r = elaborate(all, probe);
+            if (r.ok() && r.value().summary.topInstances.size() > 1) {
+                const auto& tops = r.value().summary.topInstances;
+                std::function<std::pair<std::size_t, std::size_t>(const InstanceInfo&)> measure =
+                    [&](const InstanceInfo& i) -> std::pair<std::size_t, std::size_t> {
+                    std::size_t depth = 0, count = 1;
+                    for (const auto& c : i.children) {
+                        const auto [d, n] = measure(c);
+                        depth = std::max(depth, d + 1);
+                        count += n;
+                    }
+                    return {depth, count};
+                };
+                const InstanceInfo* best = nullptr;
+                std::pair<std::size_t, std::size_t> bestSize{};
+                for (const auto& t : tops) {
+                    const auto size = measure(t);
+                    if (!best || size > bestSize) { // deeper, then more instances; the first on a tie
+                        best = &t;
+                        bestSize = size;
+                    }
+                }
+                std::vector<std::string> others;
+                for (const auto& t : tops)
+                    if (&t != best)
+                        others.push_back(t.definition);
+                FrontendInput chosen = original;
+                chosen.top = best->definition;
+                chosen.deepestRootTop = false;
+                sink.report({"FE-AUTO-TOP", Severity::Info,
+                             "no top module given: '" + best->definition + "' is the top, the root module with the "
+                                 "deepest hierarchy (" + std::to_string(bestSize.first) + " level(s), " +
+                                 std::to_string(bestSize.second) + " instance(s)); " + std::to_string(others.size()) +
+                                 " other root module(s) not analyzed",
+                             best->location,
+                             {"not analyzed: " + [&] {
+                                  std::string t;
+                                  for (const auto& o : others)
+                                      t += (t.empty() ? "" : ", ") + o;
+                                  return t;
+                              }(),
+                              "set the project's top module to analyze another one"}});
+                return elaborate(chosen, sink);
+            }
+            for (auto d : probe.diagnostics())
+                sink.report(std::move(d));
+            return r;
+        }
         // Vivado IP configurations (.xci) are replaced by generated models
         FrontendInput input = original;
         if (std::ranges::any_of(input.sourceFiles,
@@ -967,7 +1024,7 @@ public:
             RoundSink first;
             auto r = makeSlangFrontend()->elaborate(input, first);
             if (r.ok() && !r.value().design &&
-                (primitivesMissing(first.diags) || (input.blackBoxUnknownModules && unknownModules(first.diags)))) {
+                (primitivesMissing(first.diags, input.gowinPrimitives) || (input.blackBoxUnknownModules && unknownModules(first.diags)))) {
                 MixedLinker linker(input, sink);
                 return linker.run();
             }
@@ -996,13 +1053,15 @@ public:
 private:
     /// Some unknown module is a modelled vendor primitive (the linker then
     /// reports the remaining unknown modules itself).
-    static bool primitivesMissing(const std::vector<Diagnostic>& diags) {
+    static bool primitivesMissing(const std::vector<Diagnostic>& diags, bool gowin) {
         static const std::regex nameRe("'([^']+)'");
         for (const auto& d : diags) {
             std::smatch m;
             // the built-in black box of the models (IP models from .xci use it too)
             if (d.code == "FE-SLANG-UnknownModule" && std::regex_search(d.message, m, nameRe) &&
-                (PrimitiveLibrary::instance().find(m[1].str()) || lower(m[1].str()) == "opencdc_async_source"))
+                ((PrimitiveLibrary::instance().find(m[1].str()) &&
+                  (gowin || !PrimitiveLibrary::instance().gowinOnly(*PrimitiveLibrary::instance().find(m[1].str())))) ||
+                 lower(m[1].str()) == "opencdc_async_source"))
                 return true;
         }
         return false;

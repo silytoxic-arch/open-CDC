@@ -1,6 +1,6 @@
 // SDC/XDC subset: a small Tcl-like interpreter plus design object resolution.
 //
-// Supported Tcl: commands separated by newlines or ';', '#' comments,
+// Supported Tcl: commands separated by newlines or ';', '#' comments (and Gowin's '//'),
 // backslash-newline continuation, "quoted" and {braced} words, [command]
 // substitution, $var / ${var}, set, expr, if/elseif/else, foreach, for,
 // while, break, continue, incr, llength, lindex, lappend, puts and
@@ -1126,7 +1126,7 @@ public:
                 ++line_;
                 continue;
             }
-            if (i_ < s_.size() && s_[i_] == '#') {
+            if (i_ < s_.size() && (s_[i_] == '#' || slashComment())) {
                 while (i_ < s_.size() && s_[i_] != '\n') {
                     if (s_[i_] == '\\' && i_ + 1 < s_.size() && s_[i_ + 1] == '\n') {
                         ++line_;
@@ -1151,6 +1151,9 @@ public:
                     ++i_;
                 }
             }
+            if (slashComment()) // a trailing Gowin comment: the rest of the line
+                while (i_ < s_.size() && s_[i_] != '\n')
+                    ++i_;
             if (i_ >= s_.size() || s_[i_] == '\n' || s_[i_] == ';')
                 break;
             Word w;
@@ -1180,6 +1183,12 @@ public:
 
 private:
     static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+
+    // Gowin EDA's SDC: "//" starts a comment, also after a command. Only a word that
+    // begins with "//" is one (no SDC word does), not "//" inside a word or braces.
+    [[nodiscard]] bool slashComment() const {
+        return i_ + 1 < s_.size() && s_[i_] == '/' && s_[i_ + 1] == '/';
+    }
 
     // Tcl: a backslash-newline and the spaces and tabs after it are one space, also
     // inside braces (the substitution happens before the command is parsed); SNES_MiSTer
@@ -1411,7 +1420,10 @@ bool isTimingOrMiscCommand(std::string_view c) {
         "set_external_delay", "config_timing_pessimism", "set_assert", "set_hierarchy_separator",
         // Quartus: PLL output clocks come from the built-in PLL models
         "derive_pll_clocks", "derive_clock_uncertainty", "derive_clocks", "set_time_format", "set_max_skew",
-        "set_net_delay", "set_scc_mode", "set_annotated_delay"};
+        "set_net_delay", "set_scc_mode", "set_annotated_delay",
+        // timing reports requested in the constraints (Gowin EDA, Quartus)
+        "report_timing", "report_high_fanout_nets", "report_route_congestion", "report_max_frequency",
+        "report_min_pulse_width"};
     return cmds.contains(c);
 }
 

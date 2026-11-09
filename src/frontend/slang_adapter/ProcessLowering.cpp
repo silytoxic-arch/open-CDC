@@ -339,12 +339,27 @@ void BodyBuilder::assignTargets(const std::vector<LTarget>& targets, const SigSp
                 rd.rangeRight = t.right;
                 rd.origin = loc(l);
                 if (t.subDynamic) {
+                    const SigSpec whole = emit(std::move(rd));
+                    SigSpec inner = part;
+                    if (t.subInner) {
+                        // the selected part, read and modified at its static position
+                        Cell sel;
+                        sel.kind = CellKind::DynSelect;
+                        sel.inputs = {whole, t.subIndex};
+                        sel.width = t.subElemWidth;
+                        sel.isSigned = t.subIndexSigned;
+                        sel.elemWidth = t.subElemWidth;
+                        sel.rangeLeft = t.subLeft;
+                        sel.rangeRight = t.subRight;
+                        sel.origin = loc(l);
+                        inner = emit(std::move(sel)).replaced(t.subInnerOffset, part);
+                    }
                     Cell in;
                     in.kind = CellKind::DynInsert;
-                    in.inputs = {emit(std::move(rd)), t.subIndex, part};
+                    in.inputs = {whole, t.subIndex, inner};
                     in.width = t.unitWidth;
                     in.isSigned = t.subIndexSigned;
-                    in.elemWidth = t.width;
+                    in.elemWidth = t.subInner ? t.subElemWidth : t.width;
                     in.rangeLeft = t.subLeft;
                     in.rangeRight = t.subRight;
                     in.origin = loc(l);

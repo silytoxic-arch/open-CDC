@@ -28,6 +28,11 @@ struct AnalysisOptions {
     std::uint32_t reconvergenceDepth = 2; ///< register levels searched after synchronizers (CDC-005)
     /// Instances of modules defined nowhere: errors (false) or black boxes (true)
     bool blackBoxUnknownModules = false;
+    /// No top given and several root modules: the root with the deepest hierarchy
+    /// is the top (true), or every root is analyzed (false)
+    bool deepestRootTop = false;
+    /// Gowin cells with generic names (CLKDIV, OSER10, ...) are modelled
+    bool gowinPrimitives = false;
     /// Waivers that expire within this many days are reported (WAIVER-EXPIRING); 0 = never
     std::uint32_t waiverExpiryWarningDays = 30;
 };
@@ -41,6 +46,8 @@ struct AnalysisOptions {
 ///   "name":        "my_design",
 ///   "top":         "top",                       (optional)
 ///   "language":    "verilog-2001",              (optional; verilog-2001 | verilog-2005 | systemverilog-2017; default verilog-2001, or systemverilog-2017 when a source is .sv/.svh)
+///   "verilogFilesSystemVerilog": true,          (optional; with systemverilog-2017: .v files are SystemVerilog too, as
+///                                                in Gowin EDA; default false: .v files keep the Verilog-2005 keywords)
 ///   "sources":     ["rtl/top.v", "rtl/sync.v",
 ///                   {"file": "rtl/olo_base_cc_bits.vhd", "library": "olo"}],
 ///                  (.vhd/.vhdl files are VHDL; a source may name its VHDL library, default "work")
@@ -61,6 +68,11 @@ struct AnalysisOptions {
 ///                   "reconvergenceDepth": 2,            (optional; 0..8)
 ///                   "unknownModules": "error",          (optional; error | blackbox: modules defined
 ///                                                        nowhere, e.g. IP cores, are black boxes)
+///                   "topSelection": "all",              (optional; all | deepest: without "top", every root
+///                                                        module is analyzed, or only the root with the deepest
+///                                                        hierarchy: Gowin projects without a top module)
+///                   "gowinPrimitives": false,           (optional; Gowin cells with generic names, CLKDIV,
+///                                                        OSER10, ..., are modelled: Gowin projects)
 ///                   "waiverExpiryWarningDays": 30}      (optional; 0..3650: warn about waivers that
 ///                                                        expire this soon, 0 = never)
 /// }
@@ -75,6 +87,7 @@ struct ProjectConfig {
     std::string name;
     std::string top;
     frontend::LanguageStd language = frontend::LanguageStd::Verilog2001;
+    bool verilogFilesSystemVerilog = false; ///< SystemVerilog keywords in .v files too (systemverilog-2017 only)
     std::vector<std::filesystem::path> sources;     ///< absolute
     std::vector<std::string> sourceLibraries;       ///< VHDL library per source ("" = work), parallel to sources
     std::vector<std::filesystem::path> includeDirs; ///< absolute

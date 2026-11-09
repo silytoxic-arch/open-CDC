@@ -125,7 +125,18 @@ Sources:
 | `DPB` | True dual-port RAM: port A on `CLKA`, port B on `CLKB`, per-port write arrays |
 | `rPLL`, `PLLVR` | `CLKOUT`/`CLKOUTP` derived from `CLKIN`: f = f(in) × (`FBDIV_SEL`+1) / (`IDIV_SEL`+1); `CLKOUTD` = `CLKOUT` / `DYN_SDIV_SEL`, `CLKOUTD3` = `CLKOUT` / 3; input frequency from the input clock or `FCLKIN` (MHz); `LOCK` has no clock domain |
 
-Generic Gowin cell names (`DFF`, `DFFE`, `CLKDIV`, …) are deliberately not modelled: they collide with common user module names, and a missing user module must remain an error. Gowin `IDDR`/`ODDR` are not modelled either: the names are the Xilinx cells.
+Gowin cells with generic names are modelled **only in Gowin projects** (a `.gprj` analyzed or imported, or the project option `"gowinPrimitives": true`): elsewhere a module of such a name that the design does not define stays an unknown module, as a missing user module must.
+
+| Primitive (Gowin projects only) | Model |
+|---|---|
+| `CLKDIV` | `CLKOUT` derived from `HCLKIN`, divided by `DIV_MODE` (`"2"`, `"3.5"`, `"4"`, `"5"`, `"8"`) |
+| `CLKDIV2` | `CLKOUT` = `HCLKIN` / 2 |
+| `DHCEN` | Clock enable of a high-speed clock: `CLKOUT` is `CLKIN` |
+| `OSER4`, `OSER8`, `OSER10` | Serializers: the parallel word is registered on `PCLK`, shifted out on `FCLK` |
+| `IDES4`, `IDES8`, `IDES10` | Deserializers: shifted in on `FCLK`, the word is registered on `PCLK` |
+| `ELVDS_OBUF`, `TLVDS_OBUF`, `ELVDS_IBUF`, `TLVDS_IBUF` | Differential buffers (wires) |
+
+`DFF`, `DFFE` and the other Gowin flip-flop cells are not modelled; Gowin `IDDR`/`ODDR` are not modelled either: the names are the Xilinx cells.
 
 ## Not modelled
 

@@ -93,7 +93,7 @@ PrimitiveLibrary::PrimitiveLibrary() {
             const std::string body = text.substr(start, end + 9 - start) + "\n";
             std::smatch m;
             if (std::regex_search(body, m, moduleRe))
-                models_.push_back({m[1].str(), body, {}});
+                models_.push_back({m[1].str(), body, {}, file == "gowin.v"});
             pos = end;
         }
     }
@@ -148,6 +148,10 @@ PrimitiveLibrary::PrimitiveLibrary() {
             if (&o != &m && used.contains(o.name))
                 m.deps.push_back(o.name);
     }
+}
+
+bool PrimitiveLibrary::gowinOnly(const std::string& name) const {
+    return std::ranges::any_of(models_, [&](const Model& m) { return m.gowin && m.name == name; });
 }
 
 std::optional<std::string> PrimitiveLibrary::find(const std::string& name) const {

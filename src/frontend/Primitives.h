@@ -29,6 +29,9 @@ public:
     /// input clock (synchronous to it and to each other).
     [[nodiscard]] bool isClockGenerator(const std::string& name) const;
     [[nodiscard]] std::string generatorModel(const std::string& name, const std::set<std::string>& params) const;
+    /// Models of Gowin cells with generic names (gowin.v: CLKDIV, OSER10, ...),
+    /// used only when FrontendInput::gowinPrimitives is set.
+    [[nodiscard]] bool gowinOnly(const std::string& name) const;
     /// Module names (as written) of the modelled primitives.
     [[nodiscard]] const std::vector<std::string>& names() const noexcept { return names_; }
     /// VHDL component packages: (library, file name, text).
@@ -45,6 +48,7 @@ private:
         std::string name;
         std::string text;
         std::vector<std::string> deps;
+        bool gowin = false; ///< from gowin.v
     };
     std::vector<Model> models_;
     std::vector<std::string> names_;

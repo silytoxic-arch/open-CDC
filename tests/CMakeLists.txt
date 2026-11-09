@@ -26,6 +26,7 @@ add_executable(opencdc_tests
     engine/test_clock_pairs.cpp
     engine/test_vivado_project.cpp
     engine/test_quartus_project.cpp
+    engine/test_gowin_project.cpp
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_quartus_compat.cpp

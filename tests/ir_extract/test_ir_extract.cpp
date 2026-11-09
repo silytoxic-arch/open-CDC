@@ -1316,3 +1316,62 @@ TEST_CASE("IR: an if / else if chain covering every two-state value, or unique i
     CHECK(e.contains("latch k "));
     CHECK(e.contains("latch z "));   // unique0 promises no match is fine
 }
+
+TEST_CASE("Streaming concatenations and string literals as values", "[extract][stream]") {
+    // nestang print.v: int_print({>>{"text"}}, STR) into a 1024-bit argument
+    auto e = extract("module m(input [5:0] a, output [15:0] s, output [5:0] r, output [7:0] t, output [3:0] n);\n"
+                     "  assign s = {>>{\"AB\"}};\n"            // "AB" = 16'h4142
+                     "  assign t = {>>{a[1:0]}};\n"            // left-justified: {a[1:0], 6'b0}
+                     "  assign r = {<<4{6'b110101}};\n"        // IEEE 1800 11.4.14.2: 6'b010111
+                     "  assign n = {<<{a[3:0]}};\n"            // bit reversal
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK_FALSE(e.hasErrors());
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 0);
+    CHECK(e.contains("s = 16'b0100000101000010"));
+    CHECK(e.contains("r = 6'b010111"));
+    CHECK(e.contains("t = {a[1:0], 6'b000000}"));
+    CHECK(e.contains("n = {a[0], a[1], a[2], a[3]}"));
+}
+
+TEST_CASE("Streaming negative: a with clause is not analyzed", "[extract][stream]") {
+    auto e = extract("module m(input [7:0] a, output [7:0] s);\n"
+                     "  logic [7:0] arr [4];\n"
+                     "  assign arr[0] = a; assign arr[1] = a; assign arr[2] = a; assign arr[3] = a;\n"
+                     "  assign s = {>>{arr with [0 +: 1]}};\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 1);
+}
+
+TEST_CASE("A hierarchical read of a connected output port of a child instance", "[extract][hier]") {
+    // nestang nes_tang20k.v: if (uart_demux.write) ... with .write(uart_write) connected by position
+    auto e = extract("module child(input clk, output reg w, output reg v);\n"
+                     "  always @(posedge clk) begin w <= ~w; v <= w; end\n"
+                     "endmodule\n"
+                     "module m(input clk, output reg [3:0] n, output reg k);\n"
+                     "  wire uw;\n"
+                     "  child c (clk, uw, );\n"
+                     "  always @(posedge clk) if (c.w) n <= n + 1'b1;\n"
+                     // negative: an output without a connection stays a hierarchical reference
+                     "  always @(posedge clk) k <= c.v;\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK(e.countCode("IR-UNSUPPORTED-EXPR") == 1);
+    CHECK(std::ranges::any_of(e.diags, [](const Diagnostic& d) {
+        return d.code == "IR-UNSUPPORTED-EXPR" && d.message.find("'v'") != std::string::npos;
+    }));
+    CHECK(e.contains("uw"));
+}
+
+TEST_CASE("Writing mem[i][j][k] with two variable indexes and a constant one", "[extract]") {
+    // nestang packet_picker.sv: audio_sample_word_buffer[cur][remaining][0] <= ...
+    auto e = extract("module m(input clk, input i, input [1:0] j, input [7:0] d, input we, output reg [31:0] q);\n"
+                     "  logic [7:0] buf_ [1:0][3:0][1:0];\n"
+                     "  always @(posedge clk) if (we) begin buf_[i][j][0] <= d; buf_[i][j][1] <= ~d; end\n"
+                     "  always @(posedge clk) q <= {buf_[i][j][1], buf_[i][j][0], buf_[!i][j][1], buf_[!i][j][0]};\n"
+                     "endmodule\n",
+                     LanguageStd::SystemVerilog2017, "m");
+    CHECK(e.countCode("IR-UNSUPPORTED-LVALUE") == 0);
+    CHECK(e.contains("reg buf_ <= "));
+}

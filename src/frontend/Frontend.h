@@ -37,6 +37,10 @@ struct FrontendInput {
     std::vector<MacroDefine> defines;
     std::string top; ///< empty: let the elaborator infer top-level modules
     LanguageStd language = LanguageStd::Verilog2001;
+    /// SystemVerilog projects: .v files take the SystemVerilog keywords too
+    /// (Gowin's "SystemVerilog 2017" setting, which applies to every Verilog
+    /// file); otherwise a .v file keeps the Verilog-2005 keywords (Vivado).
+    bool verilogFilesSystemVerilog = false;
     /// VHDL: logical library of each source file (parallel to sourceFiles;
     /// missing or empty entries mean "work").
     std::vector<std::string> sourceLibraries;
@@ -47,6 +51,13 @@ struct FrontendInput {
     /// not in the sources) are analyzed as black boxes (warning) instead of
     /// being errors.
     bool blackBoxUnknownModules = false;
+    /// `top` empty and several root modules: only the root with the deepest
+    /// hierarchy (then the most instances) is elaborated (FE-AUTO-TOP), as a
+    /// synthesis tool elaborates one top; false: every root is a top.
+    bool deepestRootTop = false;
+    /// Gowin cells with generic names (CLKDIV, OSER10, ...) are modelled
+    /// (a Gowin project); otherwise such modules stay unknown.
+    bool gowinPrimitives = false;
     /// Directories searched for the component.xml of IP given as .xci that
     /// OpenCDC does not model (Vivado's ip_repo_paths): the IP's HDL is used.
     std::vector<std::filesystem::path> ipRepositories;

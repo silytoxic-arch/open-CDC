@@ -19,7 +19,11 @@ add_library(opencdc_engine STATIC
     VivadoProject.cpp
     VivadoProject.h
     WaiverFile.cpp
-    WaiverFile.h)
+    WaiverFile.h
+    Xml.cpp
+    Xml.h
+    GowinProject.cpp
+    GowinProject.h)
 
 target_link_libraries(opencdc_engine
     PUBLIC  opencdc_core opencdc_ir opencdc_frontend opencdc_graph opencdc_constraints opencdc_clock opencdc_cdc opencdc_rules opencdc_schematic

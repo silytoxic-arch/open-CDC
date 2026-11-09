@@ -1131,6 +1131,10 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
             return SigSpec::constant(fromSVInt(e.as<sast::IntegerLiteral>().getValue(), w));
         case EK::UnbasedUnsizedIntegerLiteral:
             return SigSpec::constant(fromSVInt(e.as<sast::UnbasedUnsizedIntegerLiteral>().getValue(), w));
+        case EK::StringLiteral: // "abc": 8 bits per character, the first one most significant
+            if (const auto& cv = e.as<sast::StringLiteral>().getIntValue(); w > 0 && cv.isInteger())
+                return SigSpec::constant(fromSVInt(cv.integer(), w));
+            return opaque(e, "string literal");
         case EK::NamedValue: {
             const auto& s = e.as<sast::NamedValueExpression>().symbol;
             switch (s.kind) {
@@ -1165,6 +1169,10 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
                     (hs.kind == sast::SymbolKind::Net || hs.kind == sast::SymbolKind::Variable) && netFor(hs))
                     return read(hs).resized(w, e.type->isSigned());
             }
+            // an output port of a direct child instance (nestang nes_tang20k.v: uart_demux.write):
+            // the signal its connection drives in this module
+            if (const auto* x = childOutputConnection(e.as<sast::HierarchicalValueExpression>().symbol))
+                return lower(*x).resized(w, e.type->isSigned());
             return opaque(e, "hierarchical reference '" +
                                  std::string(e.as<sast::HierarchicalValueExpression>().symbol.name) + "'");
         }
@@ -1236,6 +1244,15 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
         case EK::Conversion: {
             const auto& c = e.as<sast::ConversionExpression>();
             const auto& op = c.operand();
+            if (op.kind == EK::Streaming && e.type->isIntegral()) {
+                // a stream assigned to a wider target is left-justified (IEEE 1800 11.4.14)
+                auto bits = lowerStream(op.as<sast::StreamingConcatenationExpression>());
+                if (!bits || bits->width() > w)
+                    return opaque(e, "streaming concatenation of type '" + e.type->toString() + "'");
+                SigSpec out = SigSpec::constant(0, w - bits->width());
+                out.append(*bits);
+                return out;
+            }
             if (!op.type->isIntegral() || !e.type->isIntegral()) {
                 if (typeWidth(*op.type) == w && w > 0)
                     return lower(op); // e.g. unpacked array to same-size array
@@ -1244,6 +1261,12 @@ SigSpec BodyBuilder::lowerImpl(const sast::Expression& e) {
             return lower(op).resized(w, op.type->isSigned());
         }
         case EK::Call: return lowerCall(e);
+        case EK::Streaming: {
+            auto bits = lowerStream(e.as<sast::StreamingConcatenationExpression>());
+            if (!bits || bits->width() != w)
+                return opaque(e, "streaming concatenation of type '" + e.type->toString() + "'");
+            return *bits;
+        }
         case EK::EmptyArgument: return {};
         default:
             return opaque(e, "expression kind '" + std::string(sast::toString(e.kind)) + "'");
@@ -1438,6 +1461,73 @@ SigSpec BodyBuilder::lowerSelect(const sast::Expression& e) {
     return dynamicSelect(std::move(lsbIndex), rs.left().type->isSigned());
 }
 
+const sast::Expression* BodyBuilder::childOutputConnection(const sast::ValueSymbol& v) {
+    const sast::Scope* sc = v.getParentScope();
+    if (!sc || sc->asSymbol().kind != sast::SymbolKind::InstanceBody)
+        return nullptr;
+    const auto* inst = sc->asSymbol().as<sast::InstanceBodySymbol>().parentInstance;
+    if (!inst)
+        return nullptr;
+    // the instance is in this module (directly or in its generate blocks)
+    const sast::Scope* up = inst->getParentScope();
+    while (up && up->asSymbol().kind != sast::SymbolKind::InstanceBody)
+        up = up->asSymbol().getParentScope();
+    if (!up || &up->asSymbol() != &sym_)
+        return nullptr;
+    for (const auto* pc : inst->getPortConnections()) {
+        if (pc->port.kind != sast::SymbolKind::Port)
+            continue;
+        const auto& ps = pc->port.as<sast::PortSymbol>();
+        if (ps.internalSymbol != &v || ps.direction != sast::ArgumentDirection::Out)
+            continue;
+        const auto* expr = pc->getExpression();
+        if (!expr || expr->bad() || expr->kind == sast::ExpressionKind::EmptyArgument)
+            return nullptr;
+        if (expr->kind == sast::ExpressionKind::Assignment && expr->as<sast::AssignmentExpression>().isLValueArg())
+            expr = &expr->as<sast::AssignmentExpression>().left();
+        // the connection must carry the whole port, unchanged
+        if (expr->type && v.getType().isMatching(*expr->type))
+            return expr;
+        return nullptr;
+    }
+    return nullptr;
+}
+
+std::optional<SigSpec> BodyBuilder::lowerStream(const sast::StreamingConcatenationExpression& s) {
+    // the bitstream: the operands left to right (the first one most significant)
+    SigSpec stream;
+    const auto parts = s.streams();
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
+        if (it->withExpr)
+            return std::nullopt;
+        const auto& op = *it->operand;
+        if (op.kind == sast::ExpressionKind::Streaming) {
+            auto inner = lowerStream(op.as<sast::StreamingConcatenationExpression>());
+            if (!inner)
+                return std::nullopt;
+            stream.append(*inner);
+        }
+        else if (op.type->isIntegral()) {
+            stream.append(lower(op));
+        }
+        else {
+            return std::nullopt;
+        }
+    }
+    const auto n = s.getSliceSize();
+    if (n == 0 || stream.width() == 0)
+        return stream; // >>: as written
+    // <<: blocks of n bits from the right end, the first block becomes the most significant
+    const std::uint32_t width = stream.width();
+    const std::uint32_t blocks = static_cast<std::uint32_t>((width + n - 1) / n);
+    SigSpec out;
+    for (std::uint32_t k = blocks; k-- > 0;) {
+        const std::uint32_t lo = static_cast<std::uint32_t>(k * n);
+        out.append(stream.extract(lo, std::min<std::uint32_t>(width, static_cast<std::uint32_t>(lo + n)) - lo));
+    }
+    return out;
+}
+
 SigSpec BodyBuilder::lowerCall(const sast::Expression& e) {
     const auto& call = e.as<sast::CallExpression>();
     const std::uint32_t w = exprWidth(e);
@@ -1534,6 +1624,41 @@ bool BodyBuilder::lvalueInto(const sast::Expression& e, std::vector<LTarget>& ou
                 return false;
             LTarget t = inner[0];
             const std::uint32_t w = exprWidth(e);
+            if (t.dynamic && t.subDynamic && !t.subInner) {
+                // mem[i][j][0], mem[i][j][7:0] (nestang packet_picker.sv): a static part of the
+                // variably selected part of a dynamically indexed element
+                std::optional<std::int64_t> i1, i2;
+                if (e.kind == EK::ElementSelect) {
+                    const auto& sel = e.as<sast::ElementSelectExpression>().selector();
+                    i1 = i2 = constIndex(lower(sel), sel.type->isSigned());
+                }
+                else {
+                    const auto& rs = e.as<sast::RangeSelectExpression>();
+                    i1 = constIndex(lower(rs.left()), rs.left().type->isSigned());
+                    const auto r = constIndex(lower(rs.right()), rs.right().type->isSigned());
+                    if (i1 && r) {
+                        if (rs.getSelectionKind() == sast::RangeSelectionKind::Simple)
+                            i2 = r;
+                        else if (*r > 0)
+                            i2 = rs.getSelectionKind() == sast::RangeSelectionKind::IndexedUp ? *i1 + *r - 1
+                                                                                              : *i1 - *r + 1;
+                    }
+                }
+                if (!i1 || !i2)
+                    return false;
+                const auto o1 = elementOffset(*i1, info->left, info->right);
+                const auto o2 = elementOffset(*i2, info->left, info->right);
+                if (!o1 || !o2)
+                    return false;
+                t.subInner = true;
+                t.subInnerOffset = std::min(*o1, *o2) * info->elemWidth;
+                t.subElemWidth = t.width;
+                if (t.subInnerOffset + w > t.subElemWidth)
+                    return false;
+                t.width = w;
+                out.push_back(t);
+                return true;
+            }
             if (t.dynamic) {
                 // mem[i][7:0], mem[i][k*8 +: 8]: a static part of a dynamically indexed element
                 if (t.sub || t.width != t.unitWidth)

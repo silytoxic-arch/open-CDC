@@ -1,6 +1,7 @@
 #include "engine/ProjectConfig.h"
 
 #include "core/PathUtil.h"
+#include "engine/GowinProject.h"
 #include "engine/QuartusProject.h"
 #include "engine/VivadoProject.h"
 
@@ -68,7 +69,10 @@ frontend::FrontendInput ProjectConfig::toFrontendInput() const {
     in.sourceLibraries = sourceLibraries;
     in.topParameters = parameters;
     in.blackBoxUnknownModules = options.blackBoxUnknownModules;
+    in.deepestRootTop = options.deepestRootTop;
+    in.gowinPrimitives = options.gowinPrimitives;
     in.ipRepositories = ipRepositories;
+    in.verilogFilesSystemVerilog = verilogFilesSystemVerilog;
     return in;
 }
 
@@ -126,6 +130,11 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
                                                   "' (expected verilog-2001, verilog-2005 or systemverilog-2017)");
         }
         cfg.language = *lang;
+    }
+    if (auto it = root.find("verilogFilesSystemVerilog"); it != root.end()) {
+        if (!it->is_boolean())
+            return projectError("PRJ-SCHEMA", "field 'verilogFilesSystemVerilog' must be true or false");
+        cfg.verilogFilesSystemVerilog = it->get<bool>();
     }
 
     if (auto it = root.find("sources"); it == root.end()) {
@@ -251,6 +260,16 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
                     return projectError("PRJ-SCHEMA", "options.unknownModules must be error or blackbox");
                 cfg.options.blackBoxUnknownModules = value.get<std::string>() == "blackbox";
             }
+            else if (key == "gowinPrimitives") {
+                if (!value.is_boolean())
+                    return projectError("PRJ-SCHEMA", "options.gowinPrimitives must be true or false");
+                cfg.options.gowinPrimitives = value.get<bool>();
+            }
+            else if (key == "topSelection") {
+                if (!value.is_string() || (value.get<std::string>() != "all" && value.get<std::string>() != "deepest"))
+                    return projectError("PRJ-SCHEMA", "options.topSelection must be all or deepest");
+                cfg.options.deepestRootTop = value.get<std::string>() == "deepest";
+            }
             else {
                 return projectError("PRJ-SCHEMA", "unknown option '" + key + "'");
             }
@@ -273,7 +292,7 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
 }
 
 bool isVendorProjectFile(const std::filesystem::path& file) {
-    return isVivadoProjectFile(file) || isQuartusProjectFile(file);
+    return isVivadoProjectFile(file) || isQuartusProjectFile(file) || isGowinProjectFile(file);
 }
 
 bool isQuartusProject(const ProjectConfig& config) {
@@ -285,6 +304,8 @@ Result<ProjectConfig> loadProjectFile(const std::filesystem::path& file) {
         return projectFromXprFile(file);
     if (isQuartusProjectFile(file))
         return projectFromQuartusFile(file);
+    if (isGowinProjectFile(file))
+        return projectFromGprjFile(file);
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return projectError("PRJ-OPEN", "cannot open project file", file);
@@ -337,6 +358,8 @@ std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path&
     if (!cfg.top.empty())
         j["top"] = cfg.top;
     j["language"] = std::string(frontend::toString(cfg.language));
+    if (cfg.verilogFilesSystemVerilog)
+        j["verilogFilesSystemVerilog"] = true;
     auto sources = nlohmann::ordered_json::array();
     for (std::size_t i = 0; i < cfg.sources.size(); ++i) {
         const std::string file = relativeText(cfg.sources[i], baseDir);
@@ -389,12 +412,18 @@ std::string projectToJson(const ProjectConfig& cfg, const std::filesystem::path&
         cfg.options.minSyncStages != defaults.minSyncStages ||
         cfg.options.reconvergenceDepth != defaults.reconvergenceDepth ||
         cfg.options.blackBoxUnknownModules != defaults.blackBoxUnknownModules ||
+        cfg.options.deepestRootTop != defaults.deepestRootTop ||
+        cfg.options.gowinPrimitives != defaults.gowinPrimitives ||
         cfg.options.waiverExpiryWarningDays != defaults.waiverExpiryWarningDays) {
         j["options"] = {{"unknownClockRelation", std::string(policyText(cfg.options.unknownClockRelation))},
                         {"minSyncStages", cfg.options.minSyncStages},
                         {"reconvergenceDepth", cfg.options.reconvergenceDepth}};
         if (cfg.options.blackBoxUnknownModules)
             j["options"]["unknownModules"] = "blackbox";
+        if (cfg.options.deepestRootTop)
+            j["options"]["topSelection"] = "deepest";
+        if (cfg.options.gowinPrimitives)
+            j["options"]["gowinPrimitives"] = true;
         if (cfg.options.waiverExpiryWarningDays != defaults.waiverExpiryWarningDays)
             j["options"]["waiverExpiryWarningDays"] = cfg.options.waiverExpiryWarningDays;
     }

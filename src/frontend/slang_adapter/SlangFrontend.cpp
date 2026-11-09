@@ -444,6 +444,7 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
             std::size_t editOffset, remove;
             std::string insert;
             bool inout = false;
+            bool input = false;
         };
         std::vector<Decl> decls;
         const auto text = [&](slang::BufferID b) { return sm.getSourceText(b); };
@@ -472,7 +473,26 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
                                  twoSpaces ? 6u : 5u, "output", true});
                 return;
             }
-            if (h.varKeyword || h.dataType->kind != SyntaxKind::ImplicitType || !h.direction)
+            // `input reg x` driven in the module (nestang autofire.v): the module drives it, so it is
+            // read as `output reg x`
+            if (h.direction.kind == slang::parsing::TokenKind::InputKeyword && !h.varKeyword &&
+                h.dataType->kind == SyntaxKind::RegType) {
+                const auto k = sm.getFullyOriginalLoc(h.direction.location());
+                const auto n = sm.getFullyOriginalLoc(d.name.location());
+                if (k.buffer() != n.buffer())
+                    return;
+                const auto t = text(k.buffer());
+                const std::size_t after = k.offset() + 5;
+                const bool twoSpaces = after + 1 < t.size() && (t[after] == ' ' || t[after] == '\t') &&
+                                       (t[after + 1] == ' ' || t[after + 1] == '\t');
+                Decl decl{n.buffer().getId(), n.offset(), std::string(d.name.valueText()), n, k.offset(),
+                          twoSpaces ? 6u : 5u, "output", false};
+                decl.input = true;
+                decls.push_back(std::move(decl));
+                return;
+            }
+            if (h.varKeyword || h.dataType->kind != SyntaxKind::ImplicitType || !h.direction ||
+                h.direction.kind == slang::parsing::TokenKind::InputKeyword) // an input stays an error
                 return;
             const auto k = sm.getFullyOriginalLoc(h.direction.location());
             const auto n = sm.getFullyOriginalLoc(d.name.location());
@@ -540,7 +560,14 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
                 }
                 if (!best || !done.emplace(buffer, best->editOffset).second)
                     continue;
-                if (best->inout)
+                if (best->input)
+                    edits.push_back({bufferKey(sm, best->loc.buffer()), best->editOffset, best->remove,
+                                     best->insert, "FE-NET-PROCEDURAL-ASSIGN",
+                                     "input port '" + name + "' is assigned in a procedural block, which "
+                                     "(System)Verilog does not allow: read as an output driven by the module",
+                                     "declare the port as 'output reg' to make the design portable",
+                                     convertLocation(sm, best->loc)});
+                else if (best->inout)
                     edits.push_back({bufferKey(sm, best->loc.buffer()), best->editOffset, best->remove,
                                      best->insert, "FE-NET-PROCEDURAL-ASSIGN",
                                      "inout port '" + name + "' is assigned in a procedural block, which "
@@ -837,8 +864,9 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     if (svKeywordMapping) {
         std::map<std::string, slang::parsing::KeywordVersion> version;
         for (const auto& p : keywordPatterns)
-            version[p] = p.ends_with(".v") || p.ends_with(".V") ? slang::parsing::KeywordVersion::v1364_2005
-                                                                 : slang::parsing::KeywordVersion::v1800_2017;
+            version[p] = (p.ends_with(".v") || p.ends_with(".V")) && !input.verilogFilesSystemVerilog
+                             ? slang::parsing::KeywordVersion::v1364_2005
+                             : slang::parsing::KeywordVersion::v1800_2017;
         // an include takes the keywords of the file that first includes it
         std::function<slang::parsing::KeywordVersion(const std::string&, int)> of =
             [&](const std::string& f, int depth) -> slang::parsing::KeywordVersion {

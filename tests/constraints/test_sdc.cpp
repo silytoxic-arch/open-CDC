@@ -996,3 +996,23 @@ TEST_CASE("Quartus' set_clock_groups -exclusive is read as -asynchronous", "[con
     CHECK(none.set.groups.empty());
     CHECK(std::ranges::any_of(none.diags, [](const Diagnostic& d) { return d.code == "CON-PARSE"; }));
 }
+
+TEST_CASE("Gowin SDC: '//' comments on their own line and after a command", "[constraints][gowin]") {
+    // nestang nestang.sdc
+    FakeResolver r;
+    auto p = parse("// NES clocks\n"
+                   "create_clock -name clk -period 37.04 [get_ports {clk}]       // 27 Mhz\n"
+                   "//create_generated_clock -name x -source [get_ports {clk}] -divide_by 3 [get_ports {clk_b}]\n"
+                   "report_timing -hold -from_clock [get_clocks {clk*}] -to_clock [get_clocks {clk*}] -max_paths 25\n",
+                   r);
+    CHECK(p.countCode("CON-PARSE") == 0);
+    CHECK(p.countCode("CON-UNKNOWN-COMMAND") == 0);
+    CHECK(p.countCode("CON-UNMATCHED") == 0);
+    REQUIRE(p.set.clocks.size() == 1);
+    CHECK(p.set.clocks[0].name == "clk");
+    CHECK(p.set.clocks[0].periodNs == 37.04);
+    // negative: '//' inside a word or in braces is not a comment
+    auto q = parse("create_clock -name {a//b} -period 10 [get_ports clk]\n", r);
+    REQUIRE(q.set.clocks.size() == 1);
+    CHECK(q.set.clocks[0].name == "a//b");
+}

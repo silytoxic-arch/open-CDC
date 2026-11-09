@@ -512,6 +512,40 @@ private:
         return t;
     }
 
+    /// The register whose output `b` is, directly or through one NOT: (driver, inverted).
+    std::optional<std::pair<Driver, bool>> registerBehind(const BitRef& b) const {
+        Driver d = driverOf(b);
+        bool inverted = false;
+        if (d.kind == DriverKind::Cell) {
+            const Cell& c = view_.bodyOf(d.bit.inst).cells[d.index];
+            if (c.kind != CellKind::Not)
+                return std::nullopt;
+            const auto in = view_.bitOf(d.bit.inst, c.inputs[0], d.bit.bit);
+            if (!in)
+                return std::nullopt;
+            d = driverOf(*in);
+            inverted = true;
+        }
+        if (d.kind != DriverKind::Register)
+            return std::nullopt;
+        return std::pair{d, inverted};
+    }
+
+    /// Two registers clocked by the same bit (after aliases), on the same edge.
+    bool sameRegisterClock(const Driver& x, const Driver& y) const {
+        const auto& rx = view_.bodyOf(x.bit.inst).registers.at(x.index);
+        const auto& ry = view_.bodyOf(y.bit.inst).registers.at(y.index);
+        if (rx.clock.edge != ry.clock.edge)
+            return false;
+        const auto cx = view_.bitOf(x.bit.inst, rx.clock.signal, 0);
+        const auto cy = view_.bitOf(y.bit.inst, ry.clock.signal, 0);
+        if (!cx || !cy)
+            return false;
+        const Driver dx = driverOf(*cx);
+        const Driver dy = driverOf(*cy);
+        return dx.kind == dy.kind && dx.bit == dy.bit;
+    }
+
     Trace traceInput(const Input& in, int depth) {
         if (!in.bit) {
             Trace t;
@@ -580,6 +614,21 @@ private:
                     t.gated = true;
                     t.gating.push_back(gate);
                     return t;
+                }
+                // two register outputs of one clock domain, one of them inverted (nestang
+                // dualshock_controller.v: ~psSEL & RXWT): a strobe made by logic from registers,
+                // gated by an active-low enable; the strobe register is the clock source
+                if (sa == 0 && sb == 0 && c.kind == CellKind::And) {
+                    const auto ra = registerBehind(*a.bit);
+                    const auto rb = registerBehind(*b.bit);
+                    if (ra && rb && ra->second != rb->second && sameRegisterClock(ra->first, rb->first)) {
+                        const BitRef& clk = ra->second ? *b.bit : *a.bit;
+                        const BitRef& gate = ra->second ? *a.bit : *b.bit;
+                        absorb(t, trace(clk, depth + 1), false);
+                        t.gated = true;
+                        t.gating.push_back(gate);
+                        return t;
+                    }
                 }
                 return unresolved(std::string("cannot tell which input of the ") + op + " gate at '" + at +
                                   "' is the clock ('" + view_.name(*a.bit) + "' or '" + view_.name(*b.bit) + "')");

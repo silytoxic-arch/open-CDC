@@ -445,3 +445,20 @@ TEST_CASE("A single clock group is asynchronous to all other clocks (Quartus-sty
                                          "set_clock_groups -asynchronous -group [get_clocks {clk_c}]\n");
     CHECK(each.rel("clk_b", "clk_c") == ClockRelation::Asynchronous);
 }
+
+TEST_CASE("A strobe register gated by an inverted enable register of its domain", "[clock][gated]") {
+    // nestang dualshock_controller.v: assign O_RXWT = ~psSEL & RXWT; always @(negedge W_RXWT) ...
+    auto r = analyze("module top(input clk, input d, input sel_in, output reg q, output reg p);\n"
+                     "  reg strobe = 0, sel = 1, other = 0, other2 = 0;\n"
+                     "  always @(posedge clk) begin strobe <= d; sel <= sel_in; other <= ~d; other2 <= sel_in; end\n"
+                     "  wire wt = ~sel & strobe;\n"
+                     "  always @(negedge wt) q <= d;\n"
+                     // negative: two registers, neither inverted: still undecided
+                     "  wire both = other & other2;\n"
+                     "  always @(posedge both) p <= d;\n"
+                     "endmodule\n");
+    CHECK(r.reg("top.q").status == ClockStatus::Resolved);
+    CHECK(r.clockName("top.q") == "top.strobe");
+    CHECK(r.clock("top.strobe").kind == ClockKind::Divider);
+    CHECK(r.reg("top.p").status != ClockStatus::Resolved);
+}

@@ -12,6 +12,7 @@ The architecture is described in [docs/architecture.md](docs/architecture.md).
 |---|---|
 | Project file (`*.ocdc.json`) loading and validation | ✅ |
 | Quartus projects (`.qpf`, `.qsf`): analyzed directly or imported (`opencdc import`): the revision's settings evaluated as Quartus does (sourced scripts, IP file lists `.qip` with `$::quartus(qip_path)`, Platform Designer systems by their generated `.qip`), design files with their VHDL libraries, include directories, macros, top parameters, SystemVerilog mode, SDC files; what is not read is reported. Constructs that are errors in (System)Verilog but that Quartus accepts are read as Quartus does, with a warning each: nets assigned in procedural blocks, names of a generate block used in its module, `always` blocks without an event control (combinational, as synthesis tools read them). Verified with the MiSTer framework (Template_MiSTer: Cyclone V with its HPS, three PLLs, 414 crossings) and a whole core on it (NES_MiSTer: SystemVerilog and VHDL, 457 instances, 3754 registers, 523 crossings) | ✅ |
+| Gowin EDA projects (`.gprj`): analyzed directly or imported: the enabled design and SDC files, the top module, Verilog standard and include directories of the synthesis settings (`impl/*process_config.json`); without a top module, the root with the deepest hierarchy; Gowin cells (`CLKDIV`, `OSER4/8/10`, `IDES4/8/10`, LVDS buffers) modelled in Gowin projects. Verified with NESTang (Tang Nano 20K) | ✅ |
 | Vivado projects (`.xpr`): analyzed directly (CLI, GUI) or imported into an OpenCDC project (`opencdc import`): the sources, IP and block designs, VHDL libraries, Verilog headers, defines, generics, top and constraints (with their module scopes) of the current synthesis run; disabled, simulation-only, missing and unreadable files reported. Verified with the Vivado projects of ArtyS7-RPU-SoC, the Loongson chiplab SoC, the Fuxi SoC and five Zynq-7000 block design projects (same results as their hand-written projects) | ✅ |
 | Verilog-2001/2005 parsing, preprocessing (`include/`define/`ifdef), elaboration (parameters, generate, instance arrays) via slang | ✅ |
 | SystemVerilog interfaces: interface instances (with their own logic), modport/generic interface ports, interface arrays, ports passed down the hierarchy; verified on PULP `axi_cdc_intf` | ✅ |
@@ -245,6 +246,10 @@ Different clock names alone never make two clocks asynchronous.
 
 `options.minSyncStages` (default 2) is the minimum flop-chain length accepted by CDC-002, and the minimum reset synchronizer length for CDC-006.
 
+`options.topSelection` applies when `top` is not given: `all` (default) analyzes every root module (one that no other module instantiates); `deepest` analyzes only the root with the deepest hierarchy, then the most instances (`FE-AUTO-TOP` names it and the roots left out), as a synthesis tool elaborates one top. `options.gowinPrimitives` (default false) models the Gowin cells with generic names (`CLKDIV`, `OSER10`, …, see [docs/primitives.md](docs/primitives.md)). Both are set when a Gowin project is imported.
+
+`verilogFilesSystemVerilog` (optional, with `"language": "systemverilog-2017"`): `.v` files are read as SystemVerilog too, as Gowin EDA does with its SystemVerilog setting. By default a `.v` file of a SystemVerilog project keeps the Verilog-2005 keywords, as in Vivado, so that a Verilog signal named `logic` or `int` stays an identifier.
+
 `waivers` lists waiver files (see [docs/waivers.md](docs/waivers.md)).
 
 `vivadoClockReports` (optional) lists outputs of Vivado `report_clocks` (or `report_timing_summary`). Their clocks are matched to the clock model by source pin or name, and differing periods are reported as `VIV-PERIOD-MISMATCH`. The CLI option `--vivado-clocks <file>` adds a report for one run.
@@ -288,6 +293,18 @@ Reported: missing files (`PRJ-QSF-MISSING`), AHDL, schematics and netlists (`PRJ
 Quartus accepts some constructs that (System)Verilog does not; OpenCDC reads them as Quartus does, with a warning each, and analyzes the design:
 * a net assigned in a procedural block (`wire x; always_comb x = ...`, or an output port without a type, `output [7:0] q` assigned in `always`): read as a variable (`FE-NET-PROCEDURAL-ASSIGN`); an `inout reg` port assigned procedurally is read as an output;
 * a name declared in a generate block and used outside it in the module: its declaration is read in the module (`FE-GENERATE-SCOPE`).
+
+#### Gowin projects
+
+A Gowin EDA project (`.gprj`) can be given wherever a project is expected, as a Vivado or Quartus project; `opencdc import` writes it as an OpenCDC project. The import takes:
+* the enabled design files of the file list (`file.verilog`: `.v` and `.sv`; `file.vhdl`) in order, and the timing constraints (`file.sdc`);
+* from the synthesis settings in the project's `impl` directory (`impl/<project>_process_config.json`, or `impl/project_process_config.json` of older Gowin EDA versions): the top module (`TopModule`), the Verilog standard (`Verilog_Standard`: `Vlg_Std_Sysv2017` reads every Verilog file as SystemVerilog 2017, `.v` files included), the include directories (`IncludePath`);
+* without a top module, Gowin EDA chooses the top itself: OpenCDC analyzes the root module with the deepest hierarchy (`options.topSelection: deepest`, `FE-AUTO-TOP`);
+* the Gowin cell models (`options.gowinPrimitives`).
+
+Reported: missing files (`PRJ-GPRJ-MISSING`), disabled files, physical constraints (`.cst`), analyzer configurations (`.gao`) and other files (`PRJ-GPRJ-SKIPPED`), unreadable settings (`PRJ-GPRJ-CONFIG`). In Gowin SDC files, `//` starts a comment, also after a command; `report_timing` and the other reporting commands are ignored.
+
+Verified with NESTang on the Tang Nano 20K (GW2AR-18C: rPLL, CLKDIV, OSER10 HDMI output; 122 instances, 638 registers, all clocks resolved). An `input reg` port that its module assigns (NESTang's autofire) is read as an output (`FE-NET-PROCEDURAL-ASSIGN`).
 
 Quartus' `set_clock_groups -exclusive` (an old alias of `-logically_exclusive`, used to cut paths between unrelated clocks; Quartus' Timing Analyzer treats all clock groups alike) is read as `-asynchronous` (`CON-EXCLUSIVE-AS-ASYNC`), so that the crossings between the groups are checked.
 

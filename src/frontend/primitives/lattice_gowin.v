@@ -145,8 +145,8 @@ module PLLVR #(parameter FCLKIN = "100.0", parameter integer IDIV_SEL = 0, param
     opencdc_async_source u_lock (LOCK);
 endmodule
 
-// Generic Gowin names (DFF, DFFE, CLKDIV, ...) are not modelled: they collide
-// with common user module names, and a missing user module must stay an error.
+// Generic Gowin names (CLKDIV, OSER10, ...) are modelled in gowin.v, used only
+// in Gowin projects: elsewhere they could hide a missing user module.
 
 // ---- Lattice ECP5 DDR and block RAM -------------------------------------
 

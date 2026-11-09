@@ -9,6 +9,7 @@
 
 #include <slang/ast/Compilation.h>
 #include <slang/ast/Expression.h>
+#include <slang/ast/expressions/OperatorExpressions.h>
 #include <slang/ast/Statement.h>
 #include <slang/ast/symbols/BlockSymbols.h>
 #include <slang/ast/symbols/CompilationUnitSymbols.h>
@@ -111,6 +112,11 @@ struct LTarget {
     bool subIndexSigned = false;
     std::int32_t subLeft = 0;
     std::int32_t subRight = 0;
+    /// subDynamic: only [subInnerOffset, +width) of the selected part is written
+    /// (mem[i][j][0]); subElemWidth is the width of that part
+    bool subInner = false;
+    std::uint32_t subInnerOffset = 0;
+    std::uint32_t subElemWidth = 0;
 };
 
 inline LTarget wholeTarget(const sast::ValueSymbol* sym, std::uint32_t width) {
@@ -184,6 +190,12 @@ private:
     ir::SigSpec lowerBinary(const sast::Expression& e);
     ir::SigSpec lowerSelect(const sast::Expression& e);
     ir::SigSpec lowerCall(const sast::Expression& e);
+    /// The bitstream of a streaming concatenation ({>>{a, b}}, {<<8{x}}); nullopt: not analyzed
+    /// (a `with` clause, an operand that is not integral).
+    std::optional<ir::SigSpec> lowerStream(const sast::StreamingConcatenationExpression& s);
+    /// `v` is the internal signal of an output port of a direct child instance whose
+    /// connection is the whole port: that connection (read through a hierarchical name).
+    const sast::Expression* childOutputConnection(const sast::ValueSymbol& v);
     std::optional<ir::SigSpec> tryConstant(const sast::Expression& e);
     bool lvalueInto(const sast::Expression& e, std::vector<LTarget>& out);
 
