@@ -677,3 +677,85 @@ TEST_CASE("altddio_bidir and the Cyclone V names of PLL clocks", "[quartus-compa
     // the pad is read by the input registers of the DDR I/O, in inclock's domain
     CHECK_FALSE(a.crosses("top.io.dataout_h", "top.q"));
 }
+
+TEST_CASE("$size of an instance array is its size, as Vivado evaluates it", "[vivado-compat][size]") {
+    // taxi (KC705 example): .PORTS($size(xfcp_sw_us)) with taxi_axis_if xfcp_sw_us[2]()
+    const std::string lib = "interface bus_if; logic v; endinterface\n"
+                            "module sink #(parameter N = 1)(input wire clk, input wire [N-1:0] d, output reg [N-1:0] q);\n"
+                            "  always @(posedge clk) q <= d;\n"
+                            "endmodule\n";
+    SECTION("[N], a parameter expression and a range") {
+        test::TempDir dir;
+        auto a = analyze(dir,
+                         {{"t.sv", lib + "module top #(parameter K = 3)(input wire clk, input wire [15:0] d,\n"
+                                         "  output wire [2:0] q1, output wire [3:0] q2, output wire [4:0] q3);\n"
+                                         "  bus_if two[3]();\n"
+                                         "  bus_if many[K+1]();\n"
+                                         "  bus_if span[6:2]();\n"
+                                         "  sink #(.N($size(two))) s1(.clk(clk), .d(d[2:0]), .q(q1));\n"
+                                         "  sink #(.N($size( many ))) s2(.clk(clk), .d(d[3:0]), .q(q2));\n"
+                                         "  sink #(.N($size(span))) s3(.clk(clk), .d(d[4:0]), .q(q3));\n"
+                                         "endmodule\n"}},
+                         "top");
+        CHECK(a.errors() == 0);
+        CHECK(a.count("FE-SIZE-INSTANCE-ARRAY") == 3);
+        CHECK(a.has("FE-SIZE-INSTANCE-ARRAY", "'two'"));
+        CHECK(a.has("FE-SIZE-INSTANCE-ARRAY", "replaced by its size (3)"));
+        CHECK(a.has("FE-SIZE-INSTANCE-ARRAY", "replaced by its size (K+1)"));
+        // the warning has no empty note
+        for (const auto& d : a.r->diagnostics)
+            if (d.code == "FE-SIZE-INSTANCE-ARRAY")
+                CHECK(d.notes.empty());
+        REQUIRE(a.r->design);
+        // 3 + 4 + 5 register bits: the sizes became the widths
+        const auto dump = ir::dumpDesign(*a.r->design);
+        UNSCOPED_INFO(dump);
+        CHECK(a.r->design->stats().registerBits == 12);
+    }
+    SECTION("negative: $size of a single instance is still an error") {
+        test::TempDir dir;
+        auto a = analyze(dir,
+                         {{"t.sv", lib + "module top(input wire clk, input wire [3:0] d, output wire [3:0] q);\n"
+                                         "  bus_if one();\n"
+                                         "  sink #(.N($size(one))) s(.clk(clk), .d(d), .q(q));\n"
+                                         "endmodule\n"}},
+                         "top");
+        CHECK(a.errors() >= 1);
+        CHECK(a.count("FE-SIZE-INSTANCE-ARRAY") == 0);
+    }
+}
+
+TEST_CASE("Initial blocks: loops bounded by a value computed from a wide string parameter", "[frontend][initial]") {
+    // taxi's XFCP modules: the ID ROM is filled from a string parameter of more than 64 bits; the
+    // string length j is found by a loop and bounds the next one
+    auto design = [](const std::string& str) {
+        return "module top #(parameter ID_STR = " + str + ")(input wire clk, input wire [5:0] a, output reg [7:0] q);\n"
+               "  logic [7:0] rom[64];\n"
+               "  integer j;\n"
+               "  initial begin\n"
+               "    for (integer i = 0; i < 64; i = i + 1) rom[i] = 0;\n"
+               "    j = 0;\n"
+               "    for (integer i = 1; i <= 16; i = i + 1)\n"
+               "      if (j == i-1 && (ID_STR >> (i*8)) > 0) j = i;\n"
+               "    for (integer i = 0; i <= j; i = i + 1) rom[i+16] = ID_STR[8*(j-i) +: 8];\n"
+               "  end\n"
+               "  always @(posedge clk) q <= rom[a];\n"
+               "endmodule\n";
+    };
+    for (const std::string str : {"\"I2C\"", "\"Statistics\"", "\"0123456789abcdef\""}) {
+        test::TempDir dir;
+        auto a = analyze(dir, {{"t.sv", design(str)}}, "top");
+        INFO(str);
+        CHECK(a.errors() == 0);
+        CHECK(a.count("IR-UNSUPPORTED-LOOP") == 0);
+        CHECK(a.count("IR-INITIAL-IGNORED") == 0);
+    }
+    // negative: a bound that depends on an input is still not unrolled
+    test::TempDir dir;
+    auto b = analyze(dir,
+                     {{"t.sv", "module top(input wire clk, input wire [3:0] n, output reg [7:0] q);\n"
+                               "  always @(posedge clk) for (integer i = 0; i < n; i = i + 1) q[i] <= 1'b1;\n"
+                               "endmodule\n"}},
+                     "top");
+    CHECK(b.count("IR-UNSUPPORTED-LOOP") == 1);
+}

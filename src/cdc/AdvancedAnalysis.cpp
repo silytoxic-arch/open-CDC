@@ -1175,11 +1175,15 @@ void analyzeConvergence(State& st) {
         std::set<std::string> names;
         const auto bits = st.sg.pinBits(p.dstRegister, p.pin);
         ConeEntry scratch;
+        std::unordered_set<std::uint32_t> seenCones; // bits reading one interned cone: walked once
+        std::unordered_set<std::uint32_t> seenNodes;
         for (const auto b : p.dstBits) {
             if (b >= bits.size())
                 continue;
+            if (!bits[b].isDirect() && bits[b].cone != 0 && !seenCones.insert(bits[b].cone).second)
+                continue;
             for (const auto& e : st.sg.entries(bits[b], scratch)) {
-                if (e.node == p.srcNode)
+                if (e.node == p.srcNode || !seenNodes.insert(e.node).second)
                     continue;
                 for (const auto& ce : st.domain[e.node]) {
                     const auto toDst = st.clocks.relation(ce.clock, p.dstClock.clock);
@@ -1469,10 +1473,81 @@ void analyzeConvergence(State& st) {
     ops.labelsOnly = [&](std::uint32_t m) {
         return m == SeqGraph::kInfeasible ? m : member(members[m].first, 0);
     };
-    ops.subsumes = [&](std::uint32_t a, std::uint32_t b) {
-        const auto [la, ga] = members[a];
-        const auto [lb, gb] = members[b];
-        return std::ranges::includes(sets.get(la), sets.get(lb)) && std::ranges::includes(guards[gb], guards[ga]);
+    // a subsumes b: at least b's labels under at most b's conditions. Sizes and
+    // 64-bit masks of the labels and guard facts are necessary conditions that
+    // reject most pairs before the sets are compared.
+    struct Signature {
+        std::uint64_t labelMask = 0, guardMask = 0;
+        std::size_t labelCount = 0, guardCount = 0;
+        bool known = false;
+    };
+    std::vector<Signature> signatures;
+    auto signatureOf = [&](std::uint32_t m) -> Signature {
+        if (m >= signatures.size())
+            signatures.resize(members.size());
+        Signature& s = signatures[m];
+        if (!s.known) {
+            const auto [l, g] = members[m];
+            const auto& ls = sets.get(l);
+            for (const auto x : ls)
+                s.labelMask |= std::uint64_t{1} << (static_cast<std::uint64_t>(x) * 0x9E3779B97F4A7C15ULL >> 58);
+            for (const auto& f : guards[g]) {
+                const std::uint64_t h = (std::uint64_t{f.node} << 33) ^ (std::uint64_t{f.bit} << 9) ^
+                                        (std::uint64_t{f.delay} << 1) ^ (f.value ? 1U : 0U);
+                s.guardMask |= std::uint64_t{1} << (h * 0x9E3779B97F4A7C15ULL >> 58);
+            }
+            s.labelCount = ls.size();
+            s.guardCount = guards[g].size();
+            s.known = true;
+        }
+        return s;
+    };
+    // families recur (the same register bits reach many cells): members are
+    // interned, so the result for a family never changes
+    struct FamilyHash {
+        std::size_t operator()(const std::vector<std::uint32_t>& f) const noexcept {
+            std::uint64_t h = f.size();
+            for (const auto m : f)
+                h = (h ^ m) * 0x9E3779B97F4A7C15ULL;
+            return static_cast<std::size_t>(h ^ (h >> 29));
+        }
+    };
+    std::unordered_map<std::vector<std::uint32_t>, std::vector<std::uint32_t>, FamilyHash> maximalMemo;
+    ops.keepMaximal = [&](std::vector<std::uint32_t>& f) {
+        if (auto it = maximalMemo.find(f); it != maximalMemo.end()) {
+            f = it->second;
+            return;
+        }
+        if (maximalMemo.size() > 1'000'000)
+            maximalMemo.clear();
+        auto& kept = maximalMemo[f];
+        // subsumption between distinct members is a strict partial order: the
+        // members no other member subsumes remain, whatever the order of the checks
+        std::vector<Signature> sig;
+        sig.reserve(f.size());
+        for (const auto m : f)
+            sig.push_back(signatureOf(m));
+        auto subsumes = [&](std::size_t a, std::size_t b) {
+            const Signature& sa = sig[a];
+            const Signature& sb = sig[b];
+            if (sa.labelCount < sb.labelCount || sa.guardCount > sb.guardCount ||
+                (sb.labelMask & ~sa.labelMask) != 0 || (sa.guardMask & ~sb.guardMask) != 0)
+                return false;
+            const auto [la, ga] = members[f[a]];
+            const auto [lb, gb] = members[f[b]];
+            return std::ranges::includes(sets.get(la), sets.get(lb)) && std::ranges::includes(guards[gb], guards[ga]);
+        };
+        std::vector<bool> drop(f.size(), false);
+        for (std::size_t i = 0; i < f.size(); ++i)
+            for (std::size_t j = 0; j < f.size() && !drop[i]; ++j)
+                if (i != j && !drop[j] && subsumes(j, i))
+                    drop[i] = true;
+        std::size_t k = 0;
+        for (std::size_t i = 0; i < f.size(); ++i)
+            if (!drop[i])
+                f[k++] = f[i];
+        f.resize(k);
+        kept = f;
     };
     ops.either = [&](std::uint32_t a, std::uint32_t b) -> std::uint32_t {
         if (a == SeqGraph::kInfeasible)

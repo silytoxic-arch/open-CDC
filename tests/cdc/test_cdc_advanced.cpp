@@ -1088,3 +1088,32 @@ TEST_CASE("Frame FIFO negative: independent synchronizers outside the FIFO still
     CHECK(r.hits("CDC-005") == 2); // x and y meet in z
     CHECK(r.path("top.xa", "top.x1").structure != r.path("top.u_fifo.mem", "top.u_fifo.dout").structure);
 }
+
+TEST_CASE("CDC-005 through a memory: wide memories keep the label union", "[CDC-005][memory]") {
+    // taxi's Ethernet FIFOs: memories of more than 4096 bits are tracked as one unit (their bits are
+    // not refined one by one, which took most of the analysis time); the findings are those of a
+    // narrow memory
+    auto design = [](int depth, bool both) {
+        return "module top(input clk_a, input clk_b, input x, input z, input [9:0] wa, input [9:0] ra,\n"
+               "           input we, output reg y);\n"
+               "  reg a1, a2, sa1, sa2, sb1, sb2;\n"
+               "  reg [7:0] mem [0:" + std::to_string(depth - 1) + "];\n"
+               "  always @(posedge clk_a) begin a1 <= x; a2 <= z; end\n"
+               "  always @(posedge clk_b) begin sa1 <= a1; sa2 <= sa1; sb1 <= a2; sb2 <= sb1; end\n"
+               "  always @(posedge clk_b) if (we) mem[wa] <= {6'd0, sa2, " + std::string(both ? "sb2" : "1'b0") + "};\n"
+               "  always @(posedge clk_b) y <= ^mem[ra];\n"
+               "endmodule\n";
+    };
+    for (const int depth : {16, 1024}) { // 128 and 8192 bits
+        INFO("depth " << depth);
+        // positive: both synchronized signals are written into one word and read together
+        auto r = analyze(design(depth, true), kAsync3);
+        CHECK(r.hits("CDC-005") == 2);
+        CHECK(r.cdc->stats.reconvergencePoints == 1);
+        CHECK(hasHit(r.path("top.a1", "top.sa1"), "CDC-005"));
+        // negative: only one of them reaches the memory
+        auto n = analyze(design(depth, false), kAsync3);
+        CHECK(n.hits("CDC-005") == 0);
+        CHECK(n.cdc->stats.reconvergencePoints == 0);
+    }
+}

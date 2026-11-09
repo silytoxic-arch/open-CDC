@@ -30,6 +30,7 @@ add_executable(opencdc_tests
     engine/test_diamond_project.cpp
     engine/test_yaml.cpp
     engine/test_fusesoc_project.cpp
+    engine/test_file_list.cpp
     frontend/test_slang_frontend.cpp
     frontend/test_primitives.cpp
     frontend/test_quartus_compat.cpp

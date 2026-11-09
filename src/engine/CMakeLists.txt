@@ -1,6 +1,8 @@
 add_library(opencdc_engine STATIC
     AnalysisSession.cpp
     AnalysisSession.h
+    FileList.cpp
+    FileList.h
     ProjectConfig.cpp
     ProjectConfig.h
     Report.cpp

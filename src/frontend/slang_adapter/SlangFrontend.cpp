@@ -413,12 +413,15 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
     std::vector<std::pair<slang::SourceLocation, std::string>> undeclared;
     std::vector<slang::SourceLocation> forwardDefparams;
     std::vector<slang::SourceLocation> portDefaults;
+    std::vector<std::pair<slang::SourceLocation, slang::SourceLocation>> notAValue; // use, declaration
     for (const auto& d : diags) {
         const auto loc = sm.getFullyOriginalLoc(d.location);
         if (d.code == slang::diag::UsedBeforeDeclared)
             forwardDefparams.push_back(loc);
         if (d.code == slang::diag::DisallowedPortDefault)
             portDefaults.push_back(loc);
+        if (d.code == slang::diag::NotAValue && !d.notes.empty())
+            notAValue.emplace_back(loc, sm.getFullyOriginalLoc(d.notes.front().location));
         if (d.code == slang::diag::AssignToNet) {
             if (auto id = identifierAt(sm, loc); !id.empty())
                 netUses[loc.buffer().getId()].emplace_back(loc.offset(), std::move(id));
@@ -651,6 +654,88 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
                     walkModules(*c);
         };
         walkModules(tree.root());
+    }
+    // ---- $size of an instance array (taxi: .PORTS($size(xfcp_sw_us)) with taxi_axis_if xfcp_sw_us[2]()):
+    // Vivado evaluates it, slang does not take an instance array as a value. The call is replaced by the
+    // size written in the declaration ([N] -> (N), [a:b] -> the number of elements) ----
+    for (const auto& [use, decl] : notAValue) {
+        if (use.buffer() != decl.buffer())
+            continue;
+        const auto text = sm.getSourceText(use.buffer());
+        // the use: `$size ( name )`
+        std::size_t b = use.offset();
+        while (b > 0 && std::isspace(static_cast<unsigned char>(text[b - 1])))
+            --b;
+        if (b == 0 || text[b - 1] != '(')
+            continue;
+        --b;
+        while (b > 0 && std::isspace(static_cast<unsigned char>(text[b - 1])))
+            --b;
+        if (b < 5 || text.substr(b - 5, 5) != "$size")
+            continue;
+        b -= 5;
+        std::size_t e = use.offset();
+        while (e < text.size() && (std::isalnum(static_cast<unsigned char>(text[e])) || text[e] == '_'))
+            ++e;
+        const std::string name(text.substr(use.offset(), e - use.offset()));
+        while (e < text.size() && std::isspace(static_cast<unsigned char>(text[e])))
+            ++e;
+        if (e >= text.size() || text[e] != ')')
+            continue;
+        ++e;
+        // the declaration: `name [ dims ]`
+        std::size_t q = decl.offset();
+        if (text.substr(q, name.size()) != name)
+            continue;
+        q += name.size();
+        while (q < text.size() && std::isspace(static_cast<unsigned char>(text[q])))
+            ++q;
+        if (q >= text.size() || text[q] != '[')
+            continue;
+        int depth = 0;
+        std::size_t close = q;
+        for (; close < text.size(); ++close) {
+            if (text[close] == '[')
+                ++depth;
+            else if (text[close] == ']' && --depth == 0)
+                break;
+        }
+        if (close >= text.size())
+            continue;
+        std::string dim(text.substr(q + 1, close - q - 1));
+        std::ranges::replace(dim, '\n', ' ');
+        std::ranges::replace(dim, '\r', ' ');
+        // a range a:b (a colon outside parentheses and not of a ?: )
+        std::size_t colon = std::string::npos;
+        int par = 0;
+        int questions = 0;
+        for (std::size_t i = 0; i < dim.size(); ++i) {
+            if (dim[i] == '(' || dim[i] == '[' || dim[i] == '{')
+                ++par;
+            else if (dim[i] == ')' || dim[i] == ']' || dim[i] == '}')
+                --par;
+            else if (par == 0 && dim[i] == '?')
+                ++questions;
+            else if (par == 0 && dim[i] == ':') {
+                if (questions > 0)
+                    --questions;
+                else
+                    colon = i;
+            }
+        }
+        std::string size;
+        if (colon == std::string::npos)
+            size = "(" + dim + ")";
+        else {
+            const std::string l = "(" + dim.substr(0, colon) + ")";
+            const std::string r = "(" + dim.substr(colon + 1) + ")";
+            size = "((" + l + " > " + r + ") ? (" + l + " - " + r + " + 1) : (" + r + " - " + l + " + 1))";
+        }
+        const slang::SourceLocation where(use.buffer(), b);
+        edits.push_back({bufferKey(sm, use.buffer()), b, e - b, size, "FE-SIZE-INSTANCE-ARRAY",
+                         "$size of the instance array '" + name + "', which (System)Verilog does not take as a value: "
+                         "replaced by its size " + size + ", as Vivado evaluates it",
+                         "", convertLocation(sm, where)});
     }
     // ---- a value on an output net port (`output wire led = 1'b0`, SERV's board tops): Yosys and
     // Vivado read it as a continuous assignment; the value moves to an assign after the header ----
@@ -1069,7 +1154,8 @@ Result<FrontendOutput> detail::elaborateVerilog(const FrontendInput& input, Diag
     const auto& root = compilation.getRoot();
     for (const auto& e : appliedEdits)
         if (!e.code.empty())
-            sink.report({e.code, Severity::Warning, e.message, e.where, {e.note}});
+            sink.report({e.code, Severity::Warning, e.message, e.where,
+                         e.note.empty() ? std::vector<std::string>{} : std::vector<std::string>{e.note}});
 
     const auto& slangDiags = compilation.getAllDiagnostics();
     std::vector<UnusedRange> unused;

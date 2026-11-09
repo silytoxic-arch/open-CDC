@@ -1035,6 +1035,11 @@ SeqGraph::dataAlternatives(std::size_t globalReg, std::uint32_t bit, const Famil
         return std::nullopt;
     const auto [inst0, r] = regLocal_[globalReg];
     const auto& reg = view_.bodyOf(inst0).registers[r];
+    // A very wide register is a memory: its write logic is tracked as one unit
+    // (as in the cones), so its bits keep the label union instead of being
+    // evaluated one by one through the per-bit write cells.
+    if (reg.d.width() > kWideCell)
+        return std::nullopt;
     const auto root = view_.bitOf(inst0, reg.d, bit);
     if (!root)
         return Family{0};
@@ -1056,16 +1061,7 @@ SeqGraph::dataAlternatives(std::size_t globalReg, std::uint32_t bit, const Famil
     auto prune = [&](Family& f) {
         if (f.size() < 2 || f.size() > 512)
             return;
-        std::vector<bool> drop(f.size(), false);
-        for (std::size_t i = 0; i < f.size(); ++i)
-            for (std::size_t j = 0; j < f.size() && !drop[i]; ++j)
-                if (i != j && !drop[j] && ops.subsumes(f[j], f[i]))
-                    drop[i] = true;
-        Family kept;
-        for (std::size_t i = 0; i < f.size(); ++i)
-            if (!drop[i])
-                kept.push_back(f[i]);
-        f = std::move(kept);
+        ops.keepMaximal(f);
     };
     auto capped = [&](Family f) {
         normalize(f);

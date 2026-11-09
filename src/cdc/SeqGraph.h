@@ -131,8 +131,9 @@ public:
         std::function<std::uint32_t(std::uint32_t)> labelsOnly;
         /// one of two members: the union of their labels under the conditions both share
         std::function<std::uint32_t(std::uint32_t, std::uint32_t)> either;
-        /// `a` makes `b` redundant: at least b's labels under at most b's conditions
-        std::function<bool(std::uint32_t a, std::uint32_t b)> subsumes;
+        /// drops the members another member makes redundant (at least their
+        /// labels under at most their conditions); the order is kept
+        std::function<void(std::vector<std::uint32_t>&)> keepMaximal;
     };
     static constexpr std::size_t kMaxFamily = 16;
     /// Families of cells, shared by the calls that see the same labels and

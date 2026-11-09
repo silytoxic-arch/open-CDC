@@ -127,6 +127,67 @@ TEST_CASE("Constant folding of arithmetic, comparison and logic", "[ir][fold]") 
     CHECK(simplifyCell(red)->asConst()->toUint() == 1u);
 }
 
+TEST_CASE("Constant folding of values wider than 64 bits", "[ir][fold]") {
+    // taxi's XFCP ID ROM: (ID_STR >> (i*8)) > 0 with an 80-bit string parameter
+    // a wide constant from a hex string, LSB first
+    auto wide = [](const std::string& hex, std::uint32_t width) {
+        std::vector<Logic> bits(width, Logic::L0);
+        std::uint32_t pos = 0;
+        for (auto it = hex.rbegin(); it != hex.rend() && pos < width; ++it) {
+            const int v = std::stoi(std::string(1, *it), nullptr, 16);
+            for (int k = 0; k < 4 && pos < width; ++k, ++pos)
+                bits[pos] = ((v >> k) & 1) != 0 ? Logic::L1 : Logic::L0;
+        }
+        return SigSpec::constant(ConstBits(std::move(bits)));
+    };
+    auto fold = [](CellKind k, SigSpec a, SigSpec b, std::uint32_t w, bool isSigned = false) {
+        Cell c;
+        c.kind = k;
+        c.width = w;
+        c.isSigned = isSigned;
+        c.inputs = {std::move(a), std::move(b)};
+        return simplifyCell(c);
+    };
+    const auto str = wide("53746174697374696373", 80); // "Statistics"
+    // shifts and comparisons
+    auto r = fold(CellKind::Shr, str, SigSpec::constant(72, 32), 80);
+    REQUIRE(r);
+    CHECK(r->width() == 80);
+    CHECK(*r == wide("53", 80));
+    CHECK(*fold(CellKind::Gt, *r, SigSpec::constant(0, 32), 1) == SigSpec::constant(1, 1));
+    CHECK(*fold(CellKind::Shr, str, SigSpec::constant(80, 32), 80) == wide("0", 80));
+    CHECK(*fold(CellKind::Shl, wide("1", 70), SigSpec::constant(69, 8), 70) == wide("200000000000000000", 70));
+    CHECK(*fold(CellKind::Eq, str, wide("53746174697374696373", 80), 1) == SigSpec::constant(1, 1));
+    CHECK(*fold(CellKind::Ne, str, wide("53746174697374696372", 80), 1) == SigSpec::constant(1, 1));
+    CHECK(*fold(CellKind::Lt, wide("1", 80), str, 1) == SigSpec::constant(1, 1));
+    // signed: the top bit of an 80-bit value is its sign
+    CHECK(*fold(CellKind::Lt, wide("80000000000000000000", 80), wide("1", 80), 1, true) == SigSpec::constant(1, 1));
+    CHECK(*fold(CellKind::Lt, wide("80000000000000000000", 80), wide("1", 80), 1) == SigSpec::constant(0, 1));
+    CHECK(*fold(CellKind::Sshr, wide("80000000000000000000", 80), SigSpec::constant(76, 8), 80, true) ==
+          wide("fffffffffffffffffff8", 80));
+    // arithmetic and bitwise operators carry over 64 bits
+    CHECK(*fold(CellKind::Add, wide("ffffffffffffffff", 80), wide("1", 80), 80) == wide("10000000000000000", 80));
+    CHECK(*fold(CellKind::Sub, wide("10000000000000000", 80), wide("1", 80), 80) == wide("ffffffffffffffff", 80));
+    CHECK(*fold(CellKind::Xor, str, str, 80) == wide("0", 80));
+    CHECK(*fold(CellKind::LogicAnd, str, SigSpec::constant(0, 1), 1) == SigSpec::constant(0, 1));
+    // a narrow value in a wide result: ~0 sets every bit
+    Cell n;
+    n.kind = CellKind::Not;
+    n.width = 72;
+    n.inputs = {SigSpec::constant(0, 8)};
+    CHECK(*simplifyCell(n) == wide("ffffffffffffffffff", 72));
+    Cell red;
+    red.kind = CellKind::ReduceOr;
+    red.width = 1;
+    red.inputs = {wide("100000000000000000000", 84)};
+    CHECK(*simplifyCell(red) == SigSpec::constant(1, 1));
+    // negative: undefined bits and the operators that are not folded stay cells
+    std::vector<Logic> xbits(80, Logic::L0);
+    xbits[70] = Logic::X;
+    CHECK_FALSE(fold(CellKind::Gt, SigSpec::constant(ConstBits(xbits)), SigSpec::constant(0, 8), 1).has_value());
+    CHECK_FALSE(fold(CellKind::Mul, str, wide("2", 80), 80).has_value());
+}
+
 TEST_CASE("Bitwise identities with a constant operand", "[ir][fold]") {
     const NetId a{0};
     Cell c;

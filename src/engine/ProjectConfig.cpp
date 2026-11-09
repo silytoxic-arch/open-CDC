@@ -2,6 +2,7 @@
 
 #include "core/PathUtil.h"
 #include "engine/DiamondProject.h"
+#include "engine/FileList.h"
 #include "engine/FuseSocProject.h"
 #include "engine/GowinProject.h"
 #include "engine/QuartusProject.h"
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 namespace opencdc::engine {
@@ -139,6 +141,12 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
         cfg.verilogFilesSystemVerilog = it->get<bool>();
     }
 
+    std::set<std::filesystem::path> fileListSeen;
+    std::size_t fileLists = 0;
+    std::size_t fileListSources = 0;
+    std::vector<std::filesystem::path> fileListIncludes;
+    std::vector<frontend::MacroDefine> fileListDefines;
+    std::vector<std::string> fileListIgnored;
     if (auto it = root.find("sources"); it == root.end()) {
         return projectError("PRJ-SCHEMA", "missing required field 'sources'");
     }
@@ -146,10 +154,30 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
         return projectError("PRJ-SCHEMA", "field 'sources' must be an array");
     }
     else {
-        // "file.v" or {"file": "x.vhd", "library": "olo"} (VHDL logical library)
+        // "file.v" or {"file": "x.vhd", "library": "olo"} (VHDL logical library);
+        // "list.f": the sources of a file list (engine/FileList.h)
         for (const auto& item : *it) {
             if (item.is_string()) {
-                cfg.sources.push_back(resolve(baseDir, item.get<std::string>()));
+                const auto path = resolve(baseDir, item.get<std::string>());
+                if (isFileList(path)) {
+                    auto r = readFileList(path, fileListSeen);
+                    if (!r.error.empty())
+                        return projectError("PRJ-FILELIST", r.error, path);
+                    ++fileLists;
+                    fileListSources += r.sources.size();
+                    for (auto& src : r.sources) {
+                        cfg.sources.push_back(std::move(src));
+                        cfg.sourceLibraries.emplace_back();
+                    }
+                    for (auto& d : r.includeDirs)
+                        fileListIncludes.push_back(std::move(d));
+                    for (auto& d : r.defines)
+                        fileListDefines.push_back(std::move(d));
+                    for (auto& ig : r.ignored)
+                        fileListIgnored.push_back(std::move(ig));
+                    continue;
+                }
+                cfg.sources.push_back(path);
                 cfg.sourceLibraries.emplace_back();
                 continue;
             }
@@ -278,6 +306,40 @@ Result<ProjectConfig> parseProjectJson(std::string_view jsonText, const std::fil
         }
     }
 
+    if (fileLists > 0) {
+        // a file named directly and by a list (taxi: taxi_sync_reset.sv in the Makefile and in
+        // taxi_eth_mac_1g_rgmii_fifo.f) is read once, where it is first named
+        std::set<std::filesystem::path> seenSources;
+        std::size_t out = 0;
+        for (std::size_t i = 0; i < cfg.sources.size(); ++i) {
+            std::error_code ec;
+            auto c = std::filesystem::weakly_canonical(cfg.sources[i], ec);
+            if (ec)
+                c = cfg.sources[i].lexically_normal();
+            if (!seenSources.insert(c).second)
+                continue;
+            cfg.sources[out] = std::move(cfg.sources[i]);
+            cfg.sourceLibraries[out] = std::move(cfg.sourceLibraries[i]);
+            ++out;
+        }
+        cfg.sources.resize(out);
+        cfg.sourceLibraries.resize(out);
+        for (auto& d : fileListIncludes)
+            if (std::ranges::find(cfg.includeDirs, d) == cfg.includeDirs.end())
+                cfg.includeDirs.push_back(std::move(d));
+        for (auto& d : fileListDefines)
+            cfg.defines.push_back(std::move(d));
+        Diagnostic note{"PRJ-FILELIST", Severity::Info,
+                        std::to_string(fileListSources) + " source(s) read from " + std::to_string(fileLists) +
+                            " file list(s)",
+                        {}, {}};
+        if (!fileListIgnored.empty()) {
+            note.message += "; " + std::to_string(fileListIgnored.size()) + " option(s) not read";
+            for (std::size_t i = 0; i < fileListIgnored.size() && i < 5; ++i)
+                note.notes.push_back(fileListIgnored[i]);
+        }
+        cfg.importNotes.push_back(std::move(note));
+    }
     if (cfg.name.empty())
         cfg.name = "unnamed";
     // No "language": SystemVerilog sources (.sv/.svh) select IEEE 1800-2017.

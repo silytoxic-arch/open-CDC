@@ -4,6 +4,7 @@
 #include "ir/Dump.h"
 
 #include <algorithm>
+#include <span>
 #include <functional>
 #include <cctype>
 #include <cmath>
@@ -399,8 +400,10 @@ private:
                 std::vector<Agg> aggs;
                 std::unordered_map<std::uint32_t, std::size_t> aggIndex;
                 ConeEntry scratch;
-                for (std::uint32_t i = 0; i < bits.size(); ++i) {
-                    const BitInput& bi = bits[i];
+                // Bits that read the same interned cone (the words of a memory, the bits of
+                // a wide bus) have the same sources: each cone is walked once, for all of them.
+                std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> byCone;
+                auto record = [&](const BitInput& bi, std::span<const std::uint32_t> dstBits) {
                     for (const auto& e : st_.sg.entries(bi, scratch)) {
                         if (e.node == SeqGraph::registerNode(g))
                             continue; // feedback from itself
@@ -410,14 +413,28 @@ private:
                         if (inserted)
                             aggs.push_back(Agg{e.node, {}, 0xFFFFFFFFu, 0, 0, true});
                         Agg* it = &aggs[idx->second];
-                        it->dstBits.push_back(i);
+                        it->dstBits.insert(it->dstBits.end(), dstBits.begin(), dstBits.end());
                         it->lo = std::min(it->lo, e.lo);
                         it->hi = std::max(it->hi, e.hi);
                         it->flags |= e.flags;
                         if (bi.directNode != e.node)
                             it->allDirect = false;
                     }
+                };
+                for (std::uint32_t i = 0; i < bits.size(); ++i)
+                    if (!bits[i].isDirect() && bits[i].cone != 0)
+                        byCone[bits[i].cone].push_back(i);
+                // in bit order, a cone at its first bit: the sources are met in the same order
+                for (std::uint32_t i = 0; i < bits.size(); ++i) {
+                    const BitInput& bi = bits[i];
+                    if (bi.isDirect() || bi.cone == 0)
+                        record(bi, std::span<const std::uint32_t>(&i, 1));
+                    else if (const auto& group = byCone[bi.cone]; group.front() == i)
+                        record(bi, group);
                 }
+                if (!byCone.empty())
+                    for (auto& a : aggs)
+                        std::ranges::sort(a.dstBits);
                 for (auto& a : aggs) {
                     const auto& srcDomain = st_.domain[a.node];
                     if (dstDomain.empty()) {
@@ -1053,12 +1070,16 @@ private:
         auto pushControls = [&](std::size_t reg, std::uint32_t depth, bool includeData) {
             for (const Pin pin : {Pin::Enable, Pin::Data}) {
                 ConeEntry scratch;
-                for (const auto& bi : st_.sg.pinBits(reg, pin))
+                std::unordered_set<std::uint32_t> cones; // bits reading one interned cone: walked once
+                for (const auto& bi : st_.sg.pinBits(reg, pin)) {
+                    if (!bi.isDirect() && bi.cone != 0 && !cones.insert(bi.cone).second)
+                        continue;
                     for (const auto& e : st_.sg.entries(bi, scratch)) {
                         const bool control = pin != Pin::Data || (e.flags & ConeEntry::kSelect) != 0 || includeData;
                         if (control && e.node != p.srcNode && seen.insert(e.node).second)
                             work.emplace_back(e.node, depth);
                     }
+                }
             }
         };
         // When the source reaches the destination only as a mux select (q <=
@@ -1068,12 +1089,16 @@ private:
         bool srcSeen = false;
         {
             ConeEntry scratch;
-            for (const auto& bi : st_.sg.pinBits(g, Pin::Data))
+            std::unordered_set<std::uint32_t> cones;
+            for (const auto& bi : st_.sg.pinBits(g, Pin::Data)) {
+                if (!bi.isDirect() && bi.cone != 0 && !cones.insert(bi.cone).second)
+                    continue;
                 for (const auto& e : st_.sg.entries(bi, scratch))
                     if (e.node == p.srcNode) {
                         srcSeen = true;
                         srcOnlySelect = srcOnlySelect && (e.flags & ConeEntry::kSelect) != 0;
                     }
+            }
         }
         pushControls(g, 0, srcSeen && srcOnlySelect);
         if (auto q = andQualifier(p))

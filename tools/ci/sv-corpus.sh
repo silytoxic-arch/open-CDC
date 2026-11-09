@@ -228,6 +228,26 @@ json.dump({"format": "opencdc-project", "version": 1, "name": "corundum_zcu106",
            "options": {"unknownModules": "blackbox"}}, open(d + "corundum.ocdc.json", "w"), indent=1)
 PY
 
+# fpganinja/taxi (MIT): the KC705 Ethernet example (1G RGMII MAC with asynchronous FIFOs, the SFP port in 1000BASE-X,
+# XFCP over the UART); the Makefile names file lists (.f) through the lib/taxi symlink to the repository root, the
+# Vivado IP (PCS/PMA) is generated from Tcl: black boxes. $size of interface instance arrays, string parameters of
+# more than 64 bits, and FIFO memories of more than 4096 bits
+fetch_sparse taxi https://github.com/fpganinja/taxi cc70b270b910d369ab1ad7b3855e76399fd461f1 \
+    "/src/" "!/src/*/tb/" "!*.py"
+python3 - <<'PY'
+import json, re
+d = "taxi/src/eth/example/KC705/fpga/fpga_rgmii_1g/"
+mk = open(d + "Makefile").read()
+def files(var):
+    return [f.replace("$(RTL_DIR)", "../rtl").replace("$(TAXI_SRC_DIR)", "../lib/taxi/src")
+            for f in re.findall(r"^" + var + r" \+?= (\S+)", mk, re.M)]
+params = dict(re.findall(r'^dict set params (\w+) "([^"]*)"', open(d + "config.tcl").read(), re.M))
+json.dump({"format": "opencdc-project", "version": 1, "name": "taxi_kc705_rgmii", "top": "fpga",
+           "sources": files("SYN_FILES"), "constraints": files("XDC_FILES"),
+           "parameters": {k: v if v.isdigit() else '"' + v + '"' for k, v in params.items()},
+           "options": {"unknownModules": "blackbox"}}, open(d + "taxi_kc705.ocdc.json", "w"), indent=1)
+PY
+
 # ATaylorCEngFIET/Hackster (Hackster.io projects without a license, only fetched for this check): block designs
 # with the Zynq UltraScale+ MPSoC (Ultra96), MicroBlaze on Spartan-7 with a MIPI camera, a Sobel filter (HLS IP
 # exported without its output products) on the Zybo Z7; design checkpoints and VHDL netlists are not fetched
@@ -591,6 +611,7 @@ check fpga-disk-controller/lattice/liron.ldf "RTL     : 10 module bodies, 31 reg
 check f32c/rtl/proj/lattice/ulx3s/sdram_dv/ulx3s_sdram_dv.ldf "RTL     : 24 module bodies, 350 registers .* 0 latches, .* 1 unsupported construct\(s\).*Clocks  : 5 \(350/350 registers resolved\).*clk_25m  \[constraint\].*period=40ns.*CLKOS3  \[divider\].*\(74.25 MHz\).*Lattice Diamond project imported: 22 source\(s\), 1 constraint file\(s\), top 'top_sdram_dv'.*rom.vhd:146:12: warning\[IR-UNSUPPORTED-INIT\].*built-in models used for vendor primitives: EHXPLLL, ODDRX1F, USRMCLK, VHI, VLO.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 15 crossing path\(s\), 3 synchronized, 12 unsynchronized"
 check TangNano-20K-example/nestang/nes.gprj "Instances: 122.*RTL     : 89 module bodies, 638 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 12 \(638/638 registers resolved\).*NES_Tang20k.clk_div.clkdiv_inst.CLKOUT  \[divider\].*= clk_p5 x 5.*Gowin project imported: 35 source\(s\), 1 constraint file\(s\), top not set.*FE-AUTO-TOP\]: no top module given: 'NES_Tang20k' is the top.*built-in models used for vendor primitives: CLKDIV, ELVDS_OBUF, OSER10, rPLL.*Summary : 0 error\(s\).*CDC     : 27 crossing path\(s\), 0 synchronized, 27 unsynchronized"
 check corundum/fpga/mqnic/ZCU106/fpga_pcie/corundum.ocdc.json "Instances: 532.*RTL     : 192 module bodies, 5848 registers .* 0 latches, .* 3 unsupported construct\(s\).*Clocks  : 9 \(5848/5848 registers resolved\).*pcie_tlp_fifo_raw.v:450:57: warning\[FE-SLANG-ValueMustBePositive\].*FE-BLACKBOX-MODULE.*Summary : 0 error\(s\).*CDC     : 219 crossing path\(s\), 209 synchronized, 10 unsynchronized.*10 unsynchronized path\(s\) covered by a timing exception"
+check taxi/src/eth/example/KC705/fpga/fpga_rgmii_1g/taxi_kc705.ocdc.json "Instances: 146.*RTL     : 70 module bodies, 1252 registers .* 0 latches, .* 2 unsupported construct\(s\).*Clocks  : 6 \(1252/1252 registers resolved\).*fpga.clk_mmcm_inst.CLKOUT0  \[divider\] alias=clk_mmcm_out .*period=8ns.*info\[PRJ-FILELIST\]: 45 source\(s\) read from 5 file list\(s\).*fpga_core.sv:154:12: warning\[FE-SIZE-INSTANCE-ARRAY\].*Summary : 0 error\(s\), 6 warning\(s\).*CDC     : 76 crossing path\(s\), 76 synchronized, 0 unsynchronized, 35 synchronizer structure\(s\).*9 path\(s\) at potential risk"
 check u96_mpsoc.ocdc.json "Clocks  : 1 \(93/93 registers resolved\).*zynq_ultra_ps_e_0.pl_clk0  \[black-box\] alias=clk_pl_0 .*period=10ns.*zynq_ultra_ps_e:3.2\) modelled from its configuration: PL clocks pl_clk0.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"
 # MicroBlaze (simulation netlist: slice gates, SRLC16E), its debug module (FDC_1/FDRE_1), MMCM_ADV, an encrypted IP known by
 # its interface clocks; the camera interface drives pclk_out twice (an assignment and a BUFG): a real error

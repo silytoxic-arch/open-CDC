@@ -99,6 +99,158 @@ std::optional<SigSpec> foldBinary(const Cell& c, std::uint64_t a, std::uint64_t 
     }
 }
 
+// Values wider than 64 bits (string parameters, wide masks): bit vectors, LSB
+// first, for the operators whose result needs no multiplication or division.
+using Bits = std::vector<bool>;
+
+std::optional<Bits> constBits(const SigSpec& s) {
+    auto c = s.asConst();
+    if (!c || c->width() == 0 || !c->isFullyDefined())
+        return std::nullopt;
+    Bits out(c->width());
+    for (std::uint32_t i = 0; i < c->width(); ++i)
+        out[i] = (*c)[i] == Logic::L1;
+    return out;
+}
+
+Bits extended(const Bits& v, std::size_t n, bool sign) {
+    Bits out(n, sign && !v.empty() && v.back());
+    for (std::size_t i = 0; i < std::min(n, v.size()); ++i)
+        out[i] = v[i];
+    return out;
+}
+
+SigSpec toSig(const Bits& v, std::uint32_t w) {
+    std::vector<Logic> bits(w, Logic::L0);
+    for (std::uint32_t i = 0; i < w && i < v.size(); ++i)
+        bits[i] = v[i] ? Logic::L1 : Logic::L0;
+    return SigSpec::constant(ConstBits(std::move(bits)));
+}
+
+bool anySet(const Bits& v) {
+    return std::ranges::any_of(v, [](bool b) { return b; });
+}
+
+Bits addBits(const Bits& a, const Bits& b, bool carry) {
+    Bits out(a.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const int sum = int{a[i]} + int{b[i]} + int{carry};
+        out[i] = (sum & 1) != 0;
+        carry = sum >= 2;
+    }
+    return out;
+}
+
+// -1, 0, 1: a compared with b (same width)
+int compareBits(const Bits& a, const Bits& b, bool isSigned) {
+    const std::size_t n = a.size();
+    if (isSigned && n > 0 && a[n - 1] != b[n - 1])
+        return a[n - 1] ? -1 : 1;
+    for (std::size_t i = n; i-- > 0;)
+        if (a[i] != b[i])
+            return a[i] ? 1 : -1;
+    return 0;
+}
+
+std::optional<SigSpec> foldWide(const Cell& c) {
+    const std::uint32_t w = c.width;
+    const auto n = inputCount(c.kind);
+    if (n == 1) {
+        const auto a = constBits(c.inputs.at(0));
+        if (!a)
+            return std::nullopt;
+        switch (c.kind) {
+            case CellKind::Not: {
+                Bits r = extended(*a, w, false);
+                r.flip();
+                return toSig(r, w);
+            }
+            case CellKind::Neg: {
+                Bits r = extended(*a, w, false);
+                r.flip();
+                return toSig(addBits(r, Bits(w, false), true), w);
+            }
+            case CellKind::ReduceAnd: return bool1(std::ranges::all_of(*a, [](bool b) { return b; })).resized(w, false);
+            case CellKind::ReduceOr: return bool1(anySet(*a)).resized(w, false);
+            case CellKind::ReduceXor:
+                return bool1(std::ranges::count(*a, true) % 2 == 1).resized(w, false);
+            case CellKind::LogicNot: return bool1(!anySet(*a)).resized(w, false);
+            default: return std::nullopt;
+        }
+    }
+    if (n != 2)
+        return std::nullopt;
+    const auto a = constBits(c.inputs.at(0));
+    const auto b = constBits(c.inputs.at(1));
+    if (!a || !b)
+        return std::nullopt;
+    auto bitwise = [&](auto op) {
+        const Bits x = extended(*a, w, false);
+        const Bits y = extended(*b, w, false);
+        Bits r(w);
+        for (std::uint32_t i = 0; i < w; ++i)
+            r[i] = op(x[i], y[i]);
+        return toSig(r, w);
+    };
+    auto compare = [&](auto pred) {
+        const std::size_t m = std::max(a->size(), b->size());
+        return bool1(pred(compareBits(extended(*a, m, c.isSigned), extended(*b, m, c.isSigned), c.isSigned)))
+            .resized(w, false);
+    };
+    // shift amount: anything at least the width shifts everything out
+    auto amount = [&]() -> std::size_t {
+        std::size_t v = 0;
+        for (std::size_t i = b->size(); i-- > 0;) {
+            if (v > (std::size_t{1} << 40))
+                return v;
+            v = v * 2 + ((*b)[i] ? 1U : 0U);
+        }
+        return v;
+    };
+    switch (c.kind) {
+        case CellKind::And: return bitwise([](bool x, bool y) { return x && y; });
+        case CellKind::Or: return bitwise([](bool x, bool y) { return x || y; });
+        case CellKind::Xor: return bitwise([](bool x, bool y) { return x != y; });
+        case CellKind::Xnor: return bitwise([](bool x, bool y) { return x == y; });
+        case CellKind::Add: return toSig(addBits(extended(*a, w, false), extended(*b, w, false), false), w);
+        case CellKind::Sub: {
+            Bits y = extended(*b, w, false);
+            y.flip();
+            return toSig(addBits(extended(*a, w, false), y, true), w);
+        }
+        case CellKind::Shl: {
+            const std::size_t k = amount();
+            const Bits x = extended(*a, w, false);
+            Bits r(w, false);
+            for (std::size_t i = k; i < w; ++i)
+                r[i] = x[i - k];
+            return toSig(r, w);
+        }
+        case CellKind::Shr:
+        case CellKind::Sshr: {
+            const std::size_t k = amount();
+            const bool arith = c.kind == CellKind::Sshr && c.isSigned;
+            const std::size_t m = std::max<std::size_t>(a->size(), w);
+            const Bits x = extended(*a, m, arith);
+            const bool fill = arith && !a->empty() && a->back();
+            Bits r(w, fill);
+            for (std::size_t i = 0; i < w; ++i)
+                if (i + k < m && k < m)
+                    r[i] = x[i + k];
+            return toSig(r, w);
+        }
+        case CellKind::Eq: return compare([](int r) { return r == 0; });
+        case CellKind::Ne: return compare([](int r) { return r != 0; });
+        case CellKind::Lt: return compare([](int r) { return r < 0; });
+        case CellKind::Le: return compare([](int r) { return r <= 0; });
+        case CellKind::Gt: return compare([](int r) { return r > 0; });
+        case CellKind::Ge: return compare([](int r) { return r >= 0; });
+        case CellKind::LogicAnd: return bool1(anySet(*a) && anySet(*b)).resized(w, false);
+        case CellKind::LogicOr: return bool1(anySet(*a) || anySet(*b)).resized(w, false);
+        default: return std::nullopt;
+    }
+}
+
 } // namespace
 
 std::optional<std::uint32_t> elementOffset(std::int64_t index, std::int32_t left, std::int32_t right) noexcept {
@@ -150,6 +302,11 @@ std::optional<SigSpec> simplifyCell(const Cell& c) {
     }
 
     const auto n = inputCount(c.kind);
+    if ((n == 1 || n == 2) && (c.width > 64 || std::ranges::any_of(c.inputs, [](const SigSpec& in) {
+                                   return in.width() > 64;
+                               })))
+        if (auto r = foldWide(c))
+            return r;
     if (n == 1) {
         auto a = constUint(c.inputs.at(0));
         if (!a)

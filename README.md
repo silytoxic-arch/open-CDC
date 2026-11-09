@@ -239,6 +239,8 @@ In the HTML report, a design with more than 5000 paths lists only the paths that
 }
 ```
 
+A source ending in `.f` is a Verilog file list, as simulators and many IP libraries use them (the `Makefile`s of Alex Forencich's taxi library name `taxi_eth_mac_1g_rgmii_fifo.f`). Its entries are relative to the list's directory: source files, nested lists (`other.f`, `-f other.f`, `-F other.f`), `+incdir+dir` and `+define+NAME=value`. Comments (`//`, `#`) are skipped, and other options (`-v`, `-y`, `+libext+`) are reported. A file named by several lists, or by a list and directly, is read once, where it is first named. `PRJ-FILELIST` gives the number of sources read from lists. A list that cannot be read is an error.
+
 `options.unknownClockRelation` sets how clock pairs with an unknown relation are treated. These are pairs from independent sources that no constraint relates.
 * `report` (default): analyze them as asynchronous and flag them for review.
 * `assume_async`: analyze them as asynchronous without the review flag.
@@ -323,7 +325,7 @@ Reported: dependencies not found (`PRJ-CORE-MISSING-DEP`), core files that canno
 
 Verified with the lowRISC ibex demo system (Arty A7: 60 cores, 160 sources, `primgen`; the debug module's two JTAG TAPs; 26 crossings between TCK and the system clock, all synchronized). SystemVerilog `inside` and `case ... inside` (values, wildcard values, ranges `[a:b]` with `$`) are analyzed. All `BSCANE2` instances give the one JTAG TCK of the device: a single clock, named after the first instance, the others as aliases.
 
-Also verified with SERV's servant SoC (`servant.core`, 40 board targets): the targets of Xilinx (`PLLE2_BASE`, `MMCME2/4`, Spartan-6 `PLL_BASE`, Spartan-3E `DCM_SP`), Lattice (iCE40 with `icepll`, ECP5), Intel (`altpll`, Cyclone 10 LP `cyclone10lp_pll`, Cyclone V HPS) Gowin, Microchip (PolarFire `PLL`, `CLKINT`) and Cologne Chip (GateMate `CC_PLL`) boards analyze without errors. An output net port with a value (`output wire o_led2 = 1'b0`, SERV's Go Board top), which (System)Verilog does not allow, is read as a continuous assignment, as synthesis tools read it (`FE-PORT-NET-DEFAULT`).
+Also verified with SERV's servant SoC (`servant.core`, 40 board targets): the targets of Xilinx (`PLLE2_BASE`, `MMCME2/4`, Spartan-6 `PLL_BASE`, Spartan-3E `DCM_SP`), Lattice (iCE40 with `icepll`, ECP5), Intel (`altpll`, Cyclone 10 LP `cyclone10lp_pll`, Cyclone V HPS) Gowin, Microchip (PolarFire `PLL`, `CLKINT`) and Cologne Chip (GateMate `CC_PLL`) boards analyze without errors. An output net port with a value (`output wire o_led2 = 1'b0`, SERV's Go Board top), which (System)Verilog does not allow, is read as a continuous assignment, as synthesis tools read it (`FE-PORT-NET-DEFAULT`). `$size` of an instance array (`.PORTS($size(xfcp_sw_us))` with the interface array `taxi_axis_if xfcp_sw_us[2]()`, taxi's KC705 example) is not a value in (System)Verilog; it is replaced by the size written in the declaration, as Vivado evaluates it (`FE-SIZE-INSTANCE-ARRAY`).
 
 #### Lattice Diamond projects
 
