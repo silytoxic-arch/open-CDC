@@ -15,6 +15,7 @@
 #include <slang/ast/symbols/CompilationUnitSymbols.h>
 #include <slang/ast/symbols/InstanceSymbols.h>
 #include <slang/diagnostics/DiagnosticEngine.h>
+#include <slang/diagnostics/ConstEvalDiags.h>
 #include <slang/diagnostics/DeclarationsDiags.h>
 #include <slang/diagnostics/Diagnostics.h>
 #include <slang/diagnostics/ExpressionsDiags.h>
@@ -404,6 +405,144 @@ bool afterListSeparator(const slang::SourceManager& sm, slang::SourceLocation lo
     return i > 0 && (text[i - 1] == '(' || text[i - 1] == ',');
 }
 
+/// `!&(cnt)`, `~|x` after another unary operator (the CSI-2 receiver's iCEBreaker top): a unary
+/// operator takes a primary, so (System)Verilog needs parentheses around the inner operation;
+/// Yosys and Icarus accept it. The inner operation is parenthesized: `!(&(cnt))`.
+std::vector<SourceEdit> unaryOperandEdits(const slang::SourceManager& sm, slang::SourceLocation loc) {
+    const auto text = sm.getSourceText(loc.buffer());
+    std::size_t i = loc.offset();
+    if (i >= text.size())
+        return {};
+    std::size_t p = i;
+    while (p > 0 && (text[p - 1] == ' ' || text[p - 1] == '\t'))
+        --p;
+    if (p == 0 || std::string_view("!~&|^-+").find(text[p - 1]) == std::string_view::npos)
+        return {};
+    // the inner unary operator: & | ^ ~& ~| ~^ ^~ ! ~
+    std::size_t j = i;
+    if (text[j] == '~' && j + 1 < text.size() && std::string_view("&|^").find(text[j + 1]) != std::string_view::npos)
+        j += 2;
+    else if (text[j] == '^' && j + 1 < text.size() && text[j + 1] == '~')
+        j += 2;
+    else if (std::string_view("&|^!~").find(text[j]) != std::string_view::npos)
+        ++j;
+    else
+        return {};
+    while (j < text.size() && (text[j] == ' ' || text[j] == '\t'))
+        ++j;
+    // its operand: a parenthesized expression, or a name with selects
+    std::size_t end = j;
+    auto skipGroup = [&](char open, char close) {
+        int depth = 0;
+        for (; end < text.size(); ++end) {
+            if (text[end] == open)
+                ++depth;
+            else if (text[end] == close && --depth == 0) {
+                ++end;
+                return true;
+            }
+        }
+        return false;
+    };
+    if (end < text.size() && text[end] == '(') {
+        if (!skipGroup('(', ')'))
+            return {};
+    }
+    else {
+        const auto isName = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '$' || c == '.' || c == '\''; };
+        if (end >= text.size() || !isName(text[end]))
+            return {};
+        while (end < text.size() && isName(text[end]))
+            ++end;
+        while (end < text.size() && text[end] == '[')
+            if (!skipGroup('[', ']'))
+                return {};
+    }
+    const auto key = bufferKey(sm, loc.buffer());
+    std::vector<SourceEdit> out;
+    out.push_back({key, i, 0, "(", "FE-UNARY-OPERAND",
+                   "a unary operator applied to another unary operation ('" + std::string(text.substr(p - 1, 1)) +
+                       std::string(text.substr(i, end - i)) +
+                       "'), which (System)Verilog does not allow: read with parentheses, as Yosys reads it",
+                   "write the inner operation in parentheses to make the design portable", convertLocation(sm, loc)});
+    out.push_back({key, end, 0, ")", "", "", "", {}});
+    return out;
+}
+
+/// `last_byte[i:0] == 0` in a for loop (the CSI-2 receiver's byte aligner): a part select
+/// whose bounds are loop variables, which (System)Verilog does not allow (the width of a
+/// part select is constant); Yosys accepts it, as every iteration has constant bounds.
+/// Only as an operand of == or != (where a wider zero-extended value compares the same):
+/// `name[a:b]` becomes `((name >> (b)) & ~({$bits(name){1'b1}} << ((a) - (b) + 1)))`.
+std::optional<SourceEdit> variableRangeEdit(const slang::SourceManager& sm, slang::SourceLocation loc) {
+    const auto text = sm.getSourceText(loc.buffer());
+    std::size_t open = loc.offset();
+    int depth = 0;
+    for (; open > 0; --open) {
+        const char c = text[open - 1];
+        if (c == ']' || c == ')')
+            ++depth;
+        else if ((c == '[' || c == '(') && depth > 0)
+            --depth;
+        else if (c == '[')
+            break;
+        else if (c == ';' || c == '\n')
+            return std::nullopt;
+    }
+    if (open == 0)
+        return std::nullopt;
+    --open; // the '['
+    std::size_t close = open;
+    depth = 0;
+    std::size_t colon = std::string::npos;
+    for (; close < text.size(); ++close) {
+        const char c = text[close];
+        if (c == '[' || c == '(' || c == '{')
+            ++depth;
+        else if (c == ']' || c == ')' || c == '}') {
+            if (--depth == 0)
+                break;
+        }
+        else if (c == ':' && depth == 1 && colon == std::string::npos)
+            colon = close;
+        else if (c == '+' || c == '-') {
+            if (depth == 1 && close + 1 < text.size() && text[close + 1] == ':')
+                return std::nullopt; // an indexed part select is fine
+        }
+    }
+    if (close >= text.size() || colon == std::string::npos)
+        return std::nullopt;
+    std::size_t nameBegin = open;
+    while (nameBegin > 0 && (std::isalnum(static_cast<unsigned char>(text[nameBegin - 1])) != 0 || text[nameBegin - 1] == '_'))
+        --nameBegin;
+    if (nameBegin == open || std::isdigit(static_cast<unsigned char>(text[nameBegin])) != 0)
+        return std::nullopt;
+    // an operand of == or !=
+    std::size_t a = close + 1;
+    while (a < text.size() && (text[a] == ' ' || text[a] == '\t'))
+        ++a;
+    std::size_t bf = nameBegin;
+    while (bf > 0 && (text[bf - 1] == ' ' || text[bf - 1] == '\t'))
+        --bf;
+    const bool after = a + 1 < text.size() && (text.substr(a, 2) == "==" || text.substr(a, 2) == "!=") &&
+                       (a + 2 >= text.size() || text[a + 2] != '=');
+    const bool before = bf >= 2 && (text.substr(bf - 2, 2) == "==" || text.substr(bf - 2, 2) == "!=") &&
+                        (bf < 3 || text[bf - 3] != '=');
+    if (!after && !before)
+        return std::nullopt;
+    const std::string name(text.substr(nameBegin, open - nameBegin));
+    const std::string hi(text.substr(open + 1, colon - open - 1));
+    const std::string lo(text.substr(colon + 1, close - colon - 1));
+    const std::string repl = "((" + name + " >> (" + lo + ")) & ~({$bits(" + name + "){1'b1}} << ((" + hi + ") - (" + lo +
+                             ") + 1)))";
+    return SourceEdit{bufferKey(sm, loc.buffer()), nameBegin, close + 1 - nameBegin, repl, "FE-VARIABLE-RANGE",
+                      "part select '" + std::string(text.substr(nameBegin, close + 1 - nameBegin)) +
+                          "' with bounds that are not constant, which (System)Verilog does not allow: compared as "
+                          "the bits it selects, as Yosys reads it in an unrolled loop",
+                      "use an indexed part select or a mask to make the design portable",
+                      convertLocation(sm, slang::SourceLocation(loc.buffer(), nameBegin))};
+}
+
 std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, const slang::syntax::SyntaxTree& tree,
                                            const slang::SourceManager& sm, const sast::RootSymbol& root) {
     using namespace slang::syntax;
@@ -422,6 +561,15 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
             portDefaults.push_back(loc);
         if (d.code == slang::diag::NotAValue && !d.notes.empty())
             notAValue.emplace_back(loc, sm.getFullyOriginalLoc(d.notes.front().location));
+        if (d.code == slang::diag::ConstEvalNonConstVariable)
+            if (auto e = variableRangeEdit(sm, loc))
+                if (std::ranges::none_of(edits, [&](const SourceEdit& y) { return y.file == e->file && y.offset == e->offset; }))
+                    edits.push_back(std::move(*e));
+        if (d.code == slang::diag::ExpectedExpression)
+            if (auto e = unaryOperandEdits(sm, loc); !e.empty())
+                for (auto& x : e)
+                    if (std::ranges::none_of(edits, [&](const SourceEdit& y) { return y.file == x.file && y.offset == x.offset; }))
+                        edits.push_back(std::move(x));
         if (d.code == slang::diag::AssignToNet) {
             if (auto id = identifierAt(sm, loc); !id.empty())
                 netUses[loc.buffer().getId()].emplace_back(loc.offset(), std::move(id));

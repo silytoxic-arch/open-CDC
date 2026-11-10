@@ -1244,8 +1244,10 @@ Result<XciModel> clockingWizard(const XciInfo& info) {
     for (const auto& o : outs)
         v << "  wire " << outNet(o) << ";\n";
     const std::string primUsed = usePllParams || !pll ? prim : "MMCME2_ADV";
+    // Vivado's name of the primitive: <instance>/inst/plle2_adv_inst (or mmcm_adv_inst)
     v << "  wire oc_locked;\n"
-      << "  " << primUsed << " #(" << params.str() << ")\n    oc_" << (pll ? "pll" : "mmcm") << " (.CLKIN1(oc_clkin1), .CLKIN2(oc_clkin2), .CLKINSEL("
+      << "  (* OPENCDC_VIVADO_NAME = \"inst/" << (pll ? "plle2_adv_inst" : "mmcm_adv_inst")
+      << "\" *) " << primUsed << " #(" << params.str() << ")\n    oc_" << (pll ? "pll" : "mmcm") << " (.CLKIN1(oc_clkin1), .CLKIN2(oc_clkin2), .CLKINSEL("
       << (switchover && hasPort("clk_in_sel") ? "clk_in_sel" : "1'b1") << "), .CLKFBIN(oc_clkfb_i), .CLKFBOUT(oc_clkfb_o), .RST(" << rst
       << "), .PWRDWN(" << (powerDown && hasPort("power_down") ? "power_down" : "1'b0") << "), .LOCKED(oc_locked)";
     for (const auto& o : outs)

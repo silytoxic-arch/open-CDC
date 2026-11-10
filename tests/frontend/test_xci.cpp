@@ -466,6 +466,47 @@ TEST_CASE("XCI: Clocking Wizard outputs are clocks derived from its input", "[fr
     }));
 }
 
+TEST_CASE("XCI: Vivado's names of the Clocking Wizard's MMCM pins", "[frontend][xci][clk_wiz][vivado-pins]") {
+    // the CSI-2 receiver's Genesys2 demo: set_output_delay -clock [get_clocks [get_clocks -filter {...}
+    // -of_objects [get_pins pll1/inst/plle2_adv_inst/CLKOUT1]]] on the HDMI pins
+    test::TempDir dir;
+    engine::ProjectConfig cfg;
+    cfg.name = "clkwiz";
+    cfg.top = "top";
+    cfg.sources = {dir.write("top.v", "module top(input clk, input clk2, input rst, input d, output reg q, output reg q2,\n"
+                                      "           output reg q3);\n"
+                                      "  wire a, b, l;\n"
+                                      "  ClkGen pll1 (.clk_100MHz_i(clk), .reset_i(rst), .clk_100MHz_o(a), .clk_200MHz_o(b),"
+                                      " .locked_o(l));\n"
+                                      "  always @(posedge a) q <= d; always @(posedge b) q2 <= d; always @(posedge clk2) q3 <= d;\n"
+                                      "endmodule\n"),
+                   dir.write("ClkGen.xci", spirit("ClkGen", "clk_wiz", "6.0", clkGenParams()))};
+    cfg.sourceLibraries = {"", ""};
+    cfg.constraints = {dir.write("c.xdc", "create_clock -name sys -period 10 [get_ports clk]\n"
+                                          "create_clock -name other -period 7 [get_ports clk2]\n"
+                                          "set_output_delay -clock [get_clocks [get_clocks -of_objects "
+                                          "[get_pins pll1/inst/mmcm_adv_inst/CLKOUT1]]] 1.0 [get_ports {q2 q3}]\n")};
+    auto r = run(cfg);
+    REQUIRE(r->cdc);
+    auto count = [&](const engine::AnalysisResult& x, std::string_view code) {
+        return std::ranges::count_if(x.diagnostics, [&](const Diagnostic& d) { return d.code == code; });
+    };
+    CHECK(count(*r, "CON-UNMATCHED") == 0);
+    // the delay names the clock of q2 (CLKOUT1): q2 is fine, q3 (another clock) is reported
+    CHECK(count(*r, "CDC-OUTPUT-CLOCK") == 1);
+    CHECK(std::ranges::any_of(r->diagnostics, [](const Diagnostic& d) {
+        return d.code == "CDC-OUTPUT-CLOCK" && d.message.find("q3") != std::string::npos &&
+               d.message.find("unknown clock") == std::string::npos;
+    }));
+    // negative: the model's own name is not Vivado's, and a pin that does not exist
+    engine::ProjectConfig wrong = cfg;
+    wrong.constraints = {dir.write("w.xdc", "create_clock -name sys -period 10 [get_ports clk]\n"
+                                            "set_output_delay -clock [get_clocks -of_objects "
+                                            "[get_pins pll1/inst/plle2_adv_inst/CLKOUT1]] 1.0 [get_ports {q2 q3}]\n")};
+    auto w = run(wrong);
+    CHECK(count(*w, "CON-UNMATCHED") >= 1);
+}
+
 TEST_CASE("XCI: Clocking Wizard with a PLL, a differential input and an active-low reset", "[frontend][xci][clk_wiz]") {
     auto m = frontend::modelFromXciText(spirit("pll0", "clk_wiz", "6.0",
                                                {{"C_PRIMITIVE", "PLL"}, {"C_PRIMARY_PORT", "clk_in1"},

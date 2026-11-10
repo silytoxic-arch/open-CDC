@@ -1257,8 +1257,29 @@ void Elaborator::lowerProcess(const Stmt& p, Scope& scope) {
             if (s.kind != StmtKind::If)
                 continue;
             for (std::size_t b = 0; b < s.branches.size(); ++b) {
-                if (!s.branches[b].cond)
+                if (!s.branches[b].cond) {
+                    // if rst = '1' then ... else if rising_edge(clk) then ... end if; end if;
+                    // (the CSI-2 receiver's I2C controller): the nested if is an elsif
+                    const auto& eb = s.branches[b].body;
+                    if (b == 0 || eb.size() != 1 || eb[0]->kind != StmtKind::If || eb[0]->branches.empty() ||
+                        !eb[0]->branches[0].cond)
+                        break;
+                    const Stmt& inner = *eb[0];
+                    std::vector<const Expr*> rest;
+                    auto ce = clockEdge(*inner.branches[0].cond, ctx, &rest);
+                    if (!ce)
+                        break;
+                    clock = ce;
+                    enableExprs = std::move(rest);
+                    clockedIndex = k;
+                    clockedBody = &inner.branches[0].body;
+                    for (std::size_t a = 0; a < b; ++a)
+                        asyncs.push_back({s.branches[a].cond.get(), &s.branches[a].body});
+                    if (inner.branches.size() > 1 && !inner.branches[1].body.empty())
+                        warn("VHDL-CLOCKED-ELSE", "statements after the clock edge branch of a clocked process are ignored",
+                             inner.branches[1].loc);
                     break;
+                }
                 std::vector<const Expr*> rest;
                 auto ce = clockEdge(*s.branches[b].cond, ctx, &rest);
                 if (!ce)

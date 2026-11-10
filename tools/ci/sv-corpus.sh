@@ -228,6 +228,18 @@ json.dump({"format": "opencdc-project", "version": 1, "name": "corundum_zcu106",
            "options": {"unknownModules": "blackbox"}}, open(d + "corundum.ocdc.json", "w"), indent=1)
 PY
 
+# daveshah1/CSI2Rx (MIT): the iCE40 MIPI CSI-2 receiver on the iCEBreaker (Makefile: Yosys and nextpnr-ice40);
+# the clocks come from the nextpnr --pre-pack script constraints.py (ctx.addClock), the pins from icecam.pcf
+fetch CSI2Rx https://github.com/daveshah1/CSI2Rx 582f870d31404f58fffa557459b4c0dbd9b85937
+python3 - <<'PY'
+import glob, json, os
+d = "CSI2Rx/verilog_cores/test/icebreaker/"
+src = [os.path.relpath(f, d) for pat in ("../../csi/*.v", "../../phy/*.v", "../../link/*.v", "../../misc/*.v")
+       for f in sorted(glob.glob(d + pat))] + ["uart.v", "top.v"]
+json.dump({"format": "opencdc-project", "version": 1, "name": "csi2rx_icebreaker", "top": "top", "sources": src,
+           "constraints": ["icecam.pcf", "constraints.py"]}, open(d + "icecam.ocdc.json", "w"), indent=1)
+PY
+
 # fpganinja/taxi (MIT): the KC705 Ethernet example (1G RGMII MAC with asynchronous FIFOs, the SFP port in 1000BASE-X,
 # XFCP over the UART); the Makefile names file lists (.f) through the lib/taxi symlink to the repository root, the
 # Vivado IP (PCS/PMA) is generated from Tcl: black boxes. $size of interface instance arrays, string parameters of
@@ -619,6 +631,7 @@ check fpga-disk-controller/lattice/liron.ldf "RTL     : 10 module bodies, 31 reg
 check f32c/rtl/proj/lattice/ulx3s/sdram_dv/ulx3s_sdram_dv.ldf "RTL     : 24 module bodies, 350 registers .* 0 latches, .* 1 unsupported construct\(s\).*Clocks  : 5 \(350/350 registers resolved\).*clk_25m  \[constraint\].*period=40ns.*CLKOS3  \[divider\].*\(74.25 MHz\).*Lattice Diamond project imported: 22 source\(s\), 1 constraint file\(s\), top 'top_sdram_dv'.*rom.vhd:146:12: warning\[IR-UNSUPPORTED-INIT\].*built-in models used for vendor primitives: EHXPLLL, ODDRX1F, USRMCLK, VHI, VLO.*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 15 crossing path\(s\), 3 synchronized, 12 unsynchronized"
 check TangNano-20K-example/nestang/nes.gprj "Instances: 122.*RTL     : 89 module bodies, 638 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 12 \(638/638 registers resolved\).*NES_Tang20k.clk_div.clkdiv_inst.CLKOUT  \[divider\].*= clk_p5 x 5.*Gowin project imported: 35 source\(s\), 1 constraint file\(s\), top not set.*FE-AUTO-TOP\]: no top module given: 'NES_Tang20k' is the top.*built-in models used for vendor primitives: CLKDIV, ELVDS_OBUF, OSER10, rPLL.*Summary : 0 error\(s\).*CDC     : 27 crossing path\(s\), 0 synchronized, 27 unsynchronized"
 check corundum/fpga/mqnic/ZCU106/fpga_pcie/corundum.ocdc.json "Instances: 532.*RTL     : 192 module bodies, 5848 registers .* 0 latches, .* 3 unsupported construct\(s\).*Clocks  : 9 \(5848/5848 registers resolved\).*pcie_tlp_fifo_raw.v:450:57: warning\[FE-SLANG-ValueMustBePositive\].*FE-BLACKBOX-MODULE.*Summary : 0 error\(s\).*CDC     : 219 crossing path\(s\), 209 synchronized, 10 unsynchronized.*10 unsynchronized path\(s\) covered by a timing exception"
+check CSI2Rx/verilog_cores/test/icebreaker/icecam.ocdc.json "RTL     : 12 module bodies, 56 registers .* 0 latches, .* 0 unsupported construct\(s\).*Clocks  : 3 \(56/56 registers resolved\).*csi_rx_i.dphy_clk  \[constraint\] source=top.dphy_clk period=10.4167ns.*uart_i.sys_clk_i  \[constraint\] source=top.clk12 .*top.csi_rx_i.div\[1\]  \[divider\] master=csi_rx_i.dphy_clk.*warning\[FE-VARIABLE-RANGE\].*warning\[FE-UNARY-OPERAND\].*info\[CON-NEXTPNR-DERIVED\].*Summary : 0 error\(s\), 3 warning\(s\).*CDC     : 3 crossing path\(s\), 0 synchronized, 3 unsynchronized"
 check taxi/src/eth/example/KC705/fpga/fpga_rgmii_1g/taxi_kc705.ocdc.json "Instances: 146.*RTL     : 70 module bodies, 1252 registers .* 0 latches, .* 2 unsupported construct\(s\).*Clocks  : 6 \(1252/1252 registers resolved\).*fpga.clk_mmcm_inst.CLKOUT0  \[divider\] alias=clk_mmcm_out .*period=8ns.*info\[PRJ-FILELIST\]: 45 source\(s\) read from 5 file list\(s\).*fpga_core.sv:154:12: warning\[FE-SIZE-INSTANCE-ARRAY\].*Summary : 0 error\(s\), 6 warning\(s\).*CDC     : 76 crossing path\(s\), 76 synchronized, 0 unsynchronized, 35 synchronizer structure\(s\).*9 path\(s\) at potential risk"
 check taxi/src/cndm/board/ADM_PCIE_9V3/fpga/fpga/cndm_adm_pcie_9v3.ocdc.json "Instances: 859.*RTL     : 245 module bodies, 11891 registers .* 0 latches, .* 3 unsupported construct\(s\).*Clocks  : 21 \(11891/11891 registers resolved\).*info\[PRJ-FILELIST\]: 101 source\(s\) read from 4 file list\(s\).*FE-BLACKBOX-MODULE.*pcie4_uscale_plus_0.*Summary : 0 error\(s\), 18 warning\(s\).*CDC     : 603 crossing path\(s\), 603 synchronized, 0 unsynchronized, 439 synchronizer structure\(s\).*45 path\(s\) at potential risk, 16 path\(s\) need review"
 check u96_mpsoc.ocdc.json "Clocks  : 1 \(93/93 registers resolved\).*zynq_ultra_ps_e_0.pl_clk0  \[black-box\] alias=clk_pl_0 .*period=10ns.*zynq_ultra_ps_e:3.2\) modelled from its configuration: PL clocks pl_clk0.*Summary : 0 error\(s\), 0 warning\(s\).*CDC     : 0 crossing path"

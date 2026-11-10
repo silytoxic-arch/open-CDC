@@ -73,6 +73,14 @@ public:
     }
     /// Clock bits of the flip-flops of a cell (empty for instances).
     virtual std::vector<graph::BitRef> cellClocks(const Object& /*cell*/) { return {}; }
+    /// The bits as physical nets: a net that only passes a signal on (through port connections and
+    /// assignments) is the net where the signal starts, a top-level input port or the output of a
+    /// register or cell. Nextpnr's clock constraints name such nets ("uart_i.sys_clk_i" for the
+    /// board clock, "video_clk" for a divider's output).
+    virtual std::vector<graph::BitRef> physicalNet(std::vector<graph::BitRef> bits) { return bits; }
+    /// Whether every bit is driven by a register or a cell of the design (a clock there is derived
+    /// from the clock of that logic).
+    virtual bool drivenByLogic(const std::vector<graph::BitRef>& /*bits*/) { return false; }
     /// The flip-flop cells of a vector register cell, one per bit, named as
     /// Vivado names them ("x_reg[3]"); other cells are returned unchanged.
     virtual std::vector<Object> cellBits(const Object& cell) { return {cell}; }
@@ -121,6 +129,8 @@ public:
     bool cellPropertyKnown(std::string_view prop) override;
     std::optional<std::string> cellProperty(const Object& cell, std::string_view prop) override;
     std::vector<graph::BitRef> cellClocks(const Object& cell) override;
+    std::vector<graph::BitRef> physicalNet(std::vector<graph::BitRef> bits) override;
+    bool drivenByLogic(const std::vector<graph::BitRef>& bits) override;
     std::vector<Object> cellBits(const Object& cell) override;
     std::vector<Object> cellPins(const Object& cell) override;
     std::vector<Object> pinNets(const Object& pin) override;
@@ -174,6 +184,7 @@ private:
     std::vector<CellInfo> regInfo_;       ///< parallel to regs_
     bool instancesBuilt_ = false;
     std::vector<std::string> insts_;      ///< hierarchical instance names (tops excluded)
+    std::unordered_map<std::string, std::string> vivadoInsts_; ///< model path -> Vivado's path (OPENCDC_VIVADO_NAME)
     std::vector<CellInfo> instInfo_;      ///< parallel to insts_
     std::set<std::string, std::less<>> attrNames_; ///< upper-case attribute names on registers/instances
     bool loadsBuilt_ = false;

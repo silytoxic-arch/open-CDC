@@ -63,6 +63,9 @@ fetch microwatt  https://github.com/antonblanchard/microwatt f341bed306a9a7281bf
 fetch vivado-library https://github.com/Digilent/vivado-library 0362ce72d39eebc400fdabacff706ee7fa8ad564
 fetch cmod-a7-gpio https://github.com/Digilent/Cmod-A7-35T-GPIO 793bb5f4fbf4218389922627eda009fcea75440c
 fetch nexys-a7-oob https://github.com/Digilent/Nexys-A7-100T-OOB ad719f27d37dea4a7af3224657f41f7c909b66d2
+# daveshah1/CSI2Rx (MIT): a MIPI CSI-2 camera receiver; its Genesys2 demo (OV13850 camera to DDR3 frame buffer
+# and DVI output) as a Vivado project
+fetch CSI2Rx https://github.com/daveshah1/CSI2Rx 582f870d31404f58fffa557459b4c0dbd9b85937
 
 # ---- 1. parser -------------------------------------------------------------
 REJECT=(
@@ -581,6 +584,9 @@ check neorv32.ocdc.json               "Instances: 110.*RTL     : 77 module bodie
 # ADI_SPI.vhd instantiates IOBUF through unisim.vcomponents (declared since 0.41)
 check zmod_scope.ocdc.json  "Clocks  : 6 \\(170/170 registers resolved\\).*async-fifo x1, handshake x1, reset-sync x6, two-flop x8.*IP 'ZmodADC_SynchonizationFIFO' \\(xilinx.com:ip:fifo_generator:13.2\\) modelled.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 21 crossing path\\(s\\), 18 synchronized"
 check mipi_csi2_rx.ocdc.json "Clocks  : 3 \\(94/94 registers resolved\\).*async-fifo x1, reset-sync x3, two-flop x5.*IP 'cdc_fifo'.*AXI-Stream.*IP 'line_buffer'.*IP 'ila_rxclk'.*Summary : 0 error\\(s\\), 1 warning.*CDC     : 12 crossing path\\(s\\), 11 synchronized, 1 unsynchronized"
+# the I2C controller's "if start_xfer = '1' then ... else if rising_edge(clock_in)" (an asynchronous reset); the
+# HDMI output delays name the clock of the Clocking Wizard's pin pll1/inst/plle2_adv_inst/CLKOUT1
+check CSI2Rx/vhdl_rx/examples/ov13850_demo/ov13850_demo.xpr "RTL     : 50 module bodies, 238 registers .* 0 latches, .* 0 unsupported construct\\(s\\).*Clocks  : 12 \\(238/238 registers resolved\\).*alias=dvi_bit_clock_dvi_pll .*period=1.35135ns.*IP 'ddr3_if' \\(xilinx.com:ip:mig_7series:4.0\\).*Summary : 0 error\\(s\\), 8 warning\\(s\\).*CDC     : 66 crossing path\\(s\\), 0 synchronized, 66 unsynchronized.*2 path\\(s\\) at potential risk, 64 path\\(s\\) need review"
 check cmod_a7_gpio.ocdc.json "Clocks  : 2 \\(37/37 registers resolved\\).*alias=clk_out1_clk_wiz_0.*\\(100 MHz\\).*IP 'clk_wiz_0' \\(xilinx.com:ip:clk_wiz:6.0\\) modelled.*MMCM, input 12 MHz.*Summary : 0 error\\(s\\), 0 warning"
 check nexys_a7_oob.ocdc.json "Clocks  : 4 \\(383/383 registers resolved\\).*Inst_DDR.ui_clk  \\[divider\\] alias=mem_ui_clk alias=clk_pll_i.*\\(75.01 MHz\\).*IP 'ClkGen'.*IP 'BRAM_1'.*single-port ROM.*IP 'Square_Root'.*cordic.*IP 'ddr' \\(xilinx.com:ip:mig_7series:4.1\\) modelled.*DDR2 x16, native interface.*BUFG, MMCME2_ADV, XADC.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 4 crossing path\\(s\\), 2 synchronized, 2 unsynchronized"
 check pmodgpio.ocdc.json "Clocks  : 1 \\(10/10 registers resolved\\).*IP 'PmodGPIO_axi_gpio_0_0' \\(xilinx.com:ip:axi_gpio:2.0\\) modelled.*IP 'PmodGPIO_pmod_bridge_0_0' \\(digilentinc.com:ip:pmod_bridge:1.0\\) modelled.*from the IP repository.*top module 'pmod_concat'.*IP 'PmodGPIO_xlconcat_0_0'.*IP 'PmodGPIO_xlslice_0_0'.*Summary : 0 error\\(s\\), 0 warning.*CDC     : 0 crossing path"

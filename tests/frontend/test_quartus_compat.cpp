@@ -819,3 +819,58 @@ TEST_CASE("An assignment pattern on an output port connection is a target", "[fr
     CHECK_FALSE(a.crosses("top.u.rb", "top.yb"));
     CHECK_FALSE(a.crosses("top.u.ra", "top.yb"));
 }
+
+TEST_CASE("Yosys compatibility: a unary operator applied to a unary operation", "[yosys-compat][unary]") {
+    // the CSI-2 receiver's iCEBreaker top: else if (!&(btn_debounce)) btn_debounce <= btn_debounce + 1;
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input clk, input [3:0] m, output reg [3:0] c, output reg n);\n"
+                              "  always @(posedge clk) begin\n"
+                              "    if (!&(c)) c <= c + 1'b1;\n"
+                              "    n <= ~|m[3:1] ^ !^ m;\n"
+                              "  end\n"
+                              "endmodule\n"}},
+                     "top");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-UNARY-OPERAND") == 2);
+    CHECK(a.has("FE-UNARY-OPERAND", "'!&(c)'"));
+    // negative: written with parentheses there is nothing to report
+    test::TempDir dir2;
+    auto b = analyze(dir2,
+                     {{"t.v", "module top(input clk, output reg [3:0] c);\n"
+                              "  always @(posedge clk) if (!(&c)) c <= c + 1'b1;\n"
+                              "endmodule\n"}},
+                     "top");
+    CHECK(b.errors() == 0);
+    CHECK(b.count("FE-UNARY-OPERAND") == 0);
+}
+
+TEST_CASE("Yosys compatibility: a part select bounded by a loop variable in a comparison", "[yosys-compat][variable-range]") {
+    // the CSI-2 receiver's byte aligner: if (... && (last_byte[i:0] == 0)) inside for (i = 0; i < 8; ...)
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input clk, input [7:0] b, output reg [2:0] o);\n"
+                              "  reg [2:0] off; integer i;\n"
+                              "  always @(*) begin\n"
+                              "    off = 0;\n"
+                              "    for (i = 0; i < 8; i = i + 1)\n"
+                              "      if (b[i:0] == 0) off = i;\n"
+                              "  end\n"
+                              "  always @(posedge clk) o <= off;\n"
+                              "endmodule\n"}},
+                     "top");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-VARIABLE-RANGE") == 1);
+    CHECK(a.has("FE-VARIABLE-RANGE", "'b[i:0]'"));
+    // negative: outside a comparison the width matters: still an error
+    test::TempDir dir2;
+    auto b = analyze(dir2,
+                     {{"t.v", "module top(input clk, input [7:0] b, output reg [7:0] o);\n"
+                              "  integer i;\n"
+                              "  always @(posedge clk)\n"
+                              "    for (i = 0; i < 8; i = i + 1) o <= {b[i:0], 1'b0};\n"
+                              "endmodule\n"}},
+                     "top");
+    CHECK(b.errors() >= 1);
+    CHECK(b.count("FE-VARIABLE-RANGE") == 0);
+}

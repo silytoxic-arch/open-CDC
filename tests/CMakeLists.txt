@@ -10,6 +10,7 @@ add_executable(opencdc_tests
     ir_extract/test_ir_extract.cpp
     graph/test_design_view.cpp
     constraints/test_sdc.cpp
+    constraints/test_nextpnr.cpp
     clock/test_clock.cpp
     cdc/CdcTestUtil.h
     cdc/test_cdc.cpp

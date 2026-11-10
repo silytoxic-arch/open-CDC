@@ -100,6 +100,40 @@ TEST_CASE("VHDL: clocked process with asynchronous active-low reset", "[vhdl][el
     CHECK(r.has("reg q <= d @(posedge clk) arst(!rst_n -> 4'b0000)"));
 }
 
+TEST_CASE("VHDL: asynchronous reset with the clock edge in a nested if of the else branch", "[vhdl][elab][else-if]") {
+    // the CSI-2 receiver's ov_i2c_control: if start_xfer = '1' then ... else if rising_edge(clock_in) ...
+    auto r = elaborate(lib("entity t is port (clk, start : in std_logic; q : out unsigned(3 downto 0)); end;\n"
+                           "architecture rtl of t is signal cnt : unsigned(3 downto 0); begin\n"
+                           "  process (start, clk) begin\n"
+                           "    if start = '1' then\n"
+                           "      cnt <= (others => '0');\n"
+                           "    else\n"
+                           "      if rising_edge(clk) then\n"
+                           "        if cnt < 9 then cnt <= cnt + 1; end if;\n"
+                           "      end if;\n"
+                           "    end if;\n"
+                           "  end process;\n"
+                           "  q <= cnt;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(r.design);
+    CHECK(r.errors() == 0);
+    CHECK(r.count("IR-UNSUPPORTED-EDGE") == 0);
+    CHECK(r.count("IR-LATCH-INFERRED") == 0);
+    CHECK(r.has("@(posedge clk) arst(start -> 4'b0000)"));
+    // negative: an else branch whose nested if is no clock edge stays combinational (a latch here)
+    auto c = elaborate(lib("entity t is port (en, sel, d : in std_logic; q : out std_logic); end;\n"
+                           "architecture rtl of t is begin\n"
+                           "  process (en, sel, d) begin\n"
+                           "    if en = '1' then q <= '0'; else if sel = '1' then q <= d; end if; end if;\n"
+                           "  end process;\n"
+                           "end;\n"),
+                       "t");
+    REQUIRE(c.design);
+    CHECK(c.count("IR-LATCH-INFERRED") == 1);
+    CHECK_FALSE(c.has("@(posedge"));
+}
+
 TEST_CASE("VHDL: asynchronous reset disabled by a generic", "[vhdl][elab]") {
     const std::string src = lib("entity t is generic (RST_ASYNC_G : boolean := false);\n"
                                 "  port (clk, rst, d : in std_logic; q : out std_logic); end;\n"

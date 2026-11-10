@@ -11,6 +11,7 @@
 
 #include "constraints/Sdc.h"
 #include "constraints/Lpf.h"
+#include "constraints/Nextpnr.h"
 
 #include "core/PathUtil.h"
 #include "core/TextEncoding.h"
@@ -169,6 +170,27 @@ std::vector<std::string> instancePrefixes(const ir::Design& d) {
     return prefix;
 }
 
+/// The path Vivado gives an instance of one of OpenCDC's IP models whose hierarchy
+/// differs (the Clocking Wizard's PLL is inst/plle2_adv_inst in Vivado, oc_pll in
+/// the model): the attribute OPENCDC_VIVADO_NAME on the child instance, under the
+/// parent's path. Empty when there is none.
+std::string vivadoPrefix(const ir::Design& d, const std::vector<std::string>& prefix, std::size_t i) {
+    const auto& node = d.instances[i];
+    if (!node.parent.valid())
+        return {};
+    const auto& parentBody = d.body(d.instances[node.parent.index()].body);
+    if (node.childIndex >= parentBody.children.size())
+        return {};
+    for (const auto& a : parentBody.children[node.childIndex].attrs)
+        if (upper(a.name) == "OPENCDC_VIVADO_NAME" && !a.value.empty()) {
+            std::string v = a.value;
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                v = v.substr(1, v.size() - 2);
+            return prefix[node.parent.index()] + v + "/";
+        }
+    return {};
+}
+
 } // namespace
 
 std::optional<std::string> DesignObjectResolver::blackBoxContaining(std::string_view pattern) {
@@ -229,8 +251,11 @@ void DesignObjectResolver::buildNames() {
         for (const auto& p : body.ports) {
             if (!node.parent.valid())
                 withElements(ports_, p.name, BitRef{inst, p.net, 0}, body.net(p.net));
-            else
+            else {
                 withElements(pins_, prefix[i] + p.name, BitRef{inst, p.net, 0}, body.net(p.net));
+                if (const auto vp = vivadoPrefix(d, prefix, i); !vp.empty())
+                    withElements(pins_, vp + p.name, BitRef{inst, p.net, 0}, body.net(p.net));
+            }
         }
         for (std::size_t n = 0; n < body.nets.size(); ++n) {
             const auto& net = body.nets[n];
@@ -444,6 +469,23 @@ std::vector<Object> DesignObjectResolver::pins(std::string_view pattern, bool hi
     return out;
 }
 
+std::vector<graph::BitRef> DesignObjectResolver::physicalNet(std::vector<graph::BitRef> bits) {
+    for (auto& b : bits) {
+        const auto d = view_.driver(b);
+        if (d.kind != graph::DriverKind::Undriven && d.kind != graph::DriverKind::Constant &&
+            d.kind != graph::DriverKind::Loop)
+            b = d.bit;
+    }
+    return bits;
+}
+
+bool DesignObjectResolver::drivenByLogic(const std::vector<graph::BitRef>& bits) {
+    return !bits.empty() && std::ranges::all_of(bits, [&](const graph::BitRef& b) {
+        const auto k = view_.driver(b).kind;
+        return k == graph::DriverKind::Register || k == graph::DriverKind::Cell || k == graph::DriverKind::Latch;
+    });
+}
+
 void DesignObjectResolver::buildInstances() {
     if (instancesBuilt_)
         return;
@@ -455,6 +497,8 @@ void DesignObjectResolver::buildInstances() {
         if (!node.parent.valid())
             continue;
         insts_.push_back(prefix[i].substr(0, prefix[i].size() - 1));
+        if (const auto vp = vivadoPrefix(d, prefix, i); !vp.empty())
+            vivadoInsts_.emplace(insts_.back(), vp.substr(0, vp.size() - 1));
         CellInfo info;
         const auto& pp = prefix[node.parent.index()];
         info.parent = pp.empty() ? std::string() : pp.substr(0, pp.size() - 1);
@@ -487,7 +531,9 @@ std::vector<Object> DesignObjectResolver::cells(std::string_view pattern, bool h
     for (std::size_t i = 0; i < insts_.size(); ++i) {
         bool hit = false;
         const std::string alias = withoutGenblk(insts_[i]);
-        for (const std::string& name : {insts_[i], alias}) {
+        const auto vit = vivadoInsts_.find(insts_[i]);
+        const std::string vivado = vit != vivadoInsts_.end() ? vit->second : std::string();
+        for (const std::string& name : {insts_[i], alias, vivado}) {
             if (name.empty() || hit)
                 continue;
             hit = globMatch(pattern, name, nocase) && (hierarchical || levels(name) == levels(pattern));
@@ -2148,7 +2194,15 @@ private:
         }
         for (const auto& pv : a.positional) {
             std::vector<std::string> patterns;
-            if (pv.hasObjects)
+            if (clocks && pv.hasObjects) {
+                // get_clocks [get_clocks -of_objects ...]: the clocks as they are (with their bits)
+                for (const auto& o : pv.objects)
+                    if (o.kind == ObjectKind::Clock)
+                        result.push_back(o);
+                    else
+                        patterns.push_back(o.name);
+            }
+            else if (pv.hasObjects)
                 for (const auto& o : pv.objects)
                     patterns.push_back(o.name);
             else
@@ -2233,7 +2287,8 @@ private:
 
     Value createClock(const Command& cmd) {
         Args a = parseArgs(cmd, "create_clock",
-                           {{"-name", true}, {"-period", true}, {"-waveform", true}, {"-add", false}, {"-comment", true}});
+                           {{"-name", true}, {"-period", true}, {"-waveform", true}, {"-add", false}, {"-comment", true},
+                            {"-opencdc_physical_net", false}});
         ClockDef def;
         def.loc = {file_, cmd.line, 0};
         def.add = a.flags.contains("-add");
@@ -2258,6 +2313,18 @@ private:
             objs.insert(objs.end(), o.begin(), o.end());
         }
         def.sources = bitsOf(objs);
+        if (a.flags.contains("-opencdc_physical_net")) { // written by the nextpnr readers
+            // a net driven by the design's logic (a divider, a PLL model): nextpnr only checks its
+            // frequency; the clock and its relation to its source come from the design
+            if (resolver_->drivenByLogic(def.sources)) {
+                diag("CON-NEXTPNR-DERIVED", Severity::Info,
+                     "the clock on '" + (a.opts.contains("-name") ? a.opts["-name"].back().text : std::string()) +
+                         "' is derived in the design from the clock of its source; its frequency constraint is not used",
+                     cmd.line);
+                return {};
+            }
+            def.sources = resolver_->physicalNet(std::move(def.sources));
+        }
         for (const auto& o : objs)
             def.sourceNames.push_back(o.name);
         if (a.opts.contains("-name"))
@@ -4160,6 +4227,14 @@ bool SdcReader::readFile(const std::filesystem::path& file) {
                             {toUtf8(file), 0, 0}, {}});
     if (isLpfFile(toUtf8(file.filename()))) { // Lattice preferences: their timing preferences as SDC
         parse(lpfToSdc(text->utf8, toUtf8(file), impl_->sink), toUtf8(file));
+        return true;
+    }
+    if (isPcfFile(toUtf8(file.filename()))) { // nextpnr iCE40 constraints: set_frequency
+        parse(pcfToSdc(text->utf8, toUtf8(file), impl_->sink), toUtf8(file));
+        return true;
+    }
+    if (isNextpnrScript(toUtf8(file.filename()))) { // nextpnr --pre-pack script: ctx.addClock
+        parse(nextpnrScriptToSdc(text->utf8, toUtf8(file), impl_->sink), toUtf8(file));
         return true;
     }
     parse(text->utf8, toUtf8(file));
