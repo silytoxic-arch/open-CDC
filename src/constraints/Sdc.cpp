@@ -991,6 +991,38 @@ void DesignObjectResolver::buildQuartus() {
         q.name = bars(p.name);
         qpins_.push_back(std::move(q));
     }
+    // the clock outputs of the PLL models by Quartus' names (derive_pll_clocks):
+    // "<instance>|auto_generated|generic_pll1~PLL_OUTPUT_COUNTER|divclk", the pin a
+    // create_generated_clock -source names (MiSTVGA's SSRAM clock)
+    {
+        const auto& d = view_.design();
+        const auto prefix = instancePrefixes(d);
+        for (std::size_t i = 0; i < d.instances.size(); ++i) {
+            const auto& body = d.body(d.instances[i].body);
+            if (!body.vendorModel)
+                continue;
+            for (std::size_t n = 0; n < body.nets.size(); ++n) {
+                const auto& net = body.nets[n];
+                const auto* qs = net.findAttr("OPENCDC_CLOCK_QUARTUS_SUFFIX");
+                if (!qs || prefix[i].empty())
+                    continue;
+                std::string all = qs->value;
+                std::erase(all, '"');
+                for (std::size_t from = 0; from <= all.size();) {
+                    const auto semi = all.find(';', from);
+                    const std::string v = all.substr(from, semi == std::string::npos ? std::string::npos : semi - from);
+                    from = semi == std::string::npos ? all.size() + 1 : semi + 1;
+                    if (v.empty())
+                        continue;
+                    Named q;
+                    q.name = bars(prefix[i] + v);
+                    q.first = BitRef{ir::InstanceId{static_cast<std::uint32_t>(i)}, ir::NetId{static_cast<std::uint32_t>(n)}, 0};
+                    q.width = 1;
+                    qpins_.push_back(std::move(q));
+                }
+            }
+        }
+    }
     for (const auto& i : insts_)
         qinsts_.push_back(bars(i));
     // full names: every instance level as "<definition>:<instance>"
@@ -2082,9 +2114,10 @@ private:
 
     Value getObjects(const Command& cmd, const std::string& name) {
         const bool clocks = name == "get_clocks";
-        std::map<std::string, bool> spec = {{"-quiet", false}, {"-nocase", false}, {"-regexp", false},
-                                            {"-filter", true},  {"-of_objects", true}, {"-hierarchical", false},
-                                            {"-include_generated_clocks", false}};
+        // (-nowarn: Quartus' -quiet)
+        std::map<std::string, bool> spec = {{"-quiet", false},  {"-nocase", false},     {"-regexp", false},
+                                            {"-filter", true},  {"-of_objects", true},  {"-hierarchical", false},
+                                            {"-include_generated_clocks", false},       {"-nowarn", false}};
         if (name == "get_nets")
             spec.emplace("-segments", false); // all segments of a net: our nets are whole
         if (name == "get_ports") {
@@ -2102,7 +2135,7 @@ private:
                 return root_->pins(curScope_ + "/" + pat, false, nc);
             return resolver_->ports(pat, nc);
         };
-        const bool quiet = a.flags.contains("-quiet");
+        const bool quiet = a.flags.contains("-quiet") || a.flags.contains("-nowarn");
         const bool nocase = a.flags.contains("-nocase");
         const bool hier = a.flags.contains("-hierarchical");
         if (a.flags.contains("-regexp"))
@@ -2387,6 +2420,9 @@ private:
             def.sourceNames.push_back(o.name);
         def.name = a.opts.contains("-name") ? a.opts["-name"].back().text : (objs.empty() ? "" : objs.front().name);
         if (def.name.empty() || def.sources.empty()) {
+            // a target query that matched nothing is reported by the query: no clock
+            if (!a.positional.empty() && std::ranges::all_of(a.positional, [](const auto& pv) { return pv.hasObjects; }))
+                return {};
             diag("CON-PARSE", Severity::Error, "create_generated_clock: no target object", cmd.line);
             return {};
         }

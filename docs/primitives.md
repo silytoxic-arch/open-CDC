@@ -103,6 +103,8 @@ Sources:
 | `fiftyfivenm_io_clock_divider` | `clkout` is a clock derived from `clk`, divided by 2 |
 | `fiftyfivenm_io_obuf`, `fiftyfivenm_io_ibuf`, `fiftyfivenm_pseudo_diff_out` | I/O buffers (wires; `obar` inverted) |
 | `altera_pll` | `outclk[n]` derived from `refclk`; period ratio = `reference_clock_frequency` / `output_clock_frequencyN` (strings such as `"125.000000 MHz"`); `locked` has no clock domain. Each clock also has Quartus' name (`derive_pll_clocks`) `<instance path>|general[n].gpll~PLL_OUTPUT_COUNTER|divclk` and `<instance path>|cyclonev_pll|counter[n].output_counter|divclk` (Quartus versions name them differently), the path below the top with `|`, so SDC such as `get_clocks {*|pll|pll_inst|altera_pll_i|*[*].*|divclk}` matches |
+| `altera_xcvr_native_av`, `altera_xcvr_native_cv` | The core of a Transceiver Native PHY variation (Arria V, Cyclone V; in a Quartus project the `.qip`'s generated files are not read, `PRJ-IP-MODEL`): every channel's `tx_std_clkout` is derived from the reference clock `tx_pll_refclk[pll_refclk_select]`, frequency = `data_rate` (`"1250 Mbps"`) / `std_pcs_pma_width` (/ 2 with the byte serializer), the input frequency from `pll_refclk_freq` (a list, one entry per reference clock); Quartus' name `<instance path>|txpmalocalclk`. `tx_parallel_data` (44 bits per channel) is registered on `tx_std_coreclkin`; `pll_locked` and `tx_cal_busy` have no clock domain. Not modelled: the serial side, the RX path and the reconfiguration interface |
+| `alt_xcvr_reconfig` | The core of a Transceiver Reconfiguration Controller variation: the Avalon-MM slave and its outputs (`reconfig_busy`, `reconfig_to_xcvr`, `tx_cal_busy`) are registers on `mgmt_clk_clk`; `reconfig_from_xcvr` is registered on it. Not modelled: calibration, the MIF interface |
 | `cyclonev_clkselect` | Clock multiplexer (`inclk[3:0]`, `clkselect`): the output carries every input clock |
 | `cyclonev_lcell_comb`, `lcell`, `soft`, `carry`, `carry_sum`, `cascade`, `opndrn`, `alt_inbuf`, `alt_outbuf`, `alt_outbuf_tri`, `alt_iobuf` | Combinational, buffers |
 | `dff`, `dffe`, `dffea` | Flip-flops with active-low asynchronous clear (`clrn`) and preset (`prn`) |
@@ -169,7 +171,7 @@ Gowin cells with generic names are modelled **only in Gowin projects** (a `.gprj
 
 These primitives are still reported as `FE-UNKNOWN-MODULE`:
 - Xilinx: `PCIE*`, `CMAC*`, `HBM*`;
-- Intel: transceiver IP, `altlvds`, `altiobuf`;
+- Intel: transceiver IP other than the Arria V / Cyclone V Native PHY (Arria 10 and later, PHY IP such as the 10GBASE-R PHY), `altlvds`, `altiobuf`;
 - Lattice: SERDES (`DCUA`), gearing DDR (`IDDRX2F`, `ODDRX2F`, …), `PDPW16KD`; Gowin: `IDDR`/`ODDR` (name clash with Xilinx), `SP`, `pROM`, SERDES; Microchip: `CCC` and the PolarFire transceivers and I/O cells.
 
 For each one you can:

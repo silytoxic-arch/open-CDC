@@ -286,12 +286,16 @@ SourceLocation BodyBuilder::loc(slang::SourceLocation l) const {
 }
 
 void BodyBuilder::unsupported(const std::string& code, const std::string& what, slang::SourceLocation l) {
+    if (quiet_ > 0)
+        return;
     const auto where = loc(l);
     owner_.design().unsupported.push_back({code, body_.name, what, where});
     owner_.report({code, Severity::Warning, what + " (not analyzed; modelled conservatively where possible)", where, {}});
 }
 
 void BodyBuilder::warn(const std::string& code, Severity sev, const std::string& msg, slang::SourceLocation l) {
+    if (quiet_ > 0)
+        return;
     owner_.report({code, sev, msg, loc(l), {}});
 }
 

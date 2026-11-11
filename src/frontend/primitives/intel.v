@@ -476,6 +476,102 @@ module altpll #(parameter bandwidth_type = "AUTO", parameter compensate_clock = 
     assign activeclock = 1'b0;
 endmodule
 
+// ---- Transceiver Native PHY (Arria V, Cyclone V) ----
+
+// The core of the IP variation (the .qip's generated files are not read, PRJ-IP-MODEL). Every
+// channel's TX parallel clock tx_std_clkout is derived from the selected PLL reference clock:
+// f = data rate / PCS-PMA width (/ 2 with the byte serializer); Quartus names it after the PCS
+// pin txpmalocalclk. tx_parallel_data (44 bits per channel) is taken on tx_std_coreclkin.
+// The serial side, the PLL and calibration status (asynchronous) and the RX path are not
+// modelled (an RX parallel clock would come from the recovered data).
+module altera_xcvr_native_av #(parameter integer tx_enable = 1, parameter integer rx_enable = 1,
+                               parameter integer enable_std = 1, parameter data_path_select = "standard",
+                               parameter integer channels = 1, parameter bonded_mode = "non_bonded",
+                               parameter data_rate = "1250 Mbps", parameter integer pma_width = 80,
+                               parameter integer plls = 1, parameter integer pll_refclk_cnt = 1,
+                               parameter pll_refclk_select = "0", parameter pll_refclk_freq = "125.0 MHz",
+                               parameter integer std_pcs_pma_width = 10, parameter integer std_tx_byte_ser_enable = 0)
+                              (input [plls-1:0] pll_powerdown, input [channels-1:0] tx_analogreset,
+                               input [channels-1:0] tx_digitalreset, input [pll_refclk_cnt-1:0] tx_pll_refclk,
+                               output [channels-1:0] tx_serial_data, output [plls-1:0] pll_locked,
+                               input [channels-1:0] tx_std_coreclkin, output [channels-1:0] tx_std_clkout,
+                               output [channels-1:0] tx_cal_busy, input [channels*44-1:0] tx_parallel_data);
+    localparam integer SEL = pll_refclk_select - "0"; // "1" -> 1
+    localparam integer WORD = std_pcs_pma_width * (std_tx_byte_ser_enable != 0 ? 2 : 1);
+    wire ref = tx_pll_refclk[SEL];
+    genvar i;
+    for (i = 0; i < channels; i = i + 1) begin : ch
+        (* OPENCDC_CLOCK_FREQ_IN = pll_refclk_freq, OPENCDC_CLOCK_FREQ_IN_INDEX = SEL,
+           OPENCDC_CLOCK_FREQ_OUT = data_rate, OPENCDC_CLOCK_FREQ_OUT_DIVIDE = WORD,
+           OPENCDC_CLOCK_QUARTUS_SUFFIX = "txpmalocalclk" *) reg clkout = 1'b0;
+        always @(posedge ref) clkout <= ~clkout;
+        assign tx_std_clkout[i] = clkout;
+        reg [43:0] word = 44'd0;
+        always @(posedge tx_std_coreclkin[i]) if (!tx_digitalreset[i]) word <= tx_parallel_data[i*44 +: 44];
+        assign tx_serial_data[i] = ^word;
+        wire busy;
+        opencdc_async_source u_busy (busy);
+        assign tx_cal_busy[i] = busy;
+    end
+    wire locked;
+    opencdc_async_source u_locked (locked);
+    assign pll_locked = {plls{locked}};
+endmodule
+
+module altera_xcvr_native_cv #(parameter integer tx_enable = 1, parameter integer rx_enable = 1,
+                               parameter integer enable_std = 1, parameter data_path_select = "standard",
+                               parameter integer channels = 1, parameter bonded_mode = "non_bonded",
+                               parameter data_rate = "1250 Mbps", parameter integer pma_width = 80,
+                               parameter integer plls = 1, parameter integer pll_refclk_cnt = 1,
+                               parameter pll_refclk_select = "0", parameter pll_refclk_freq = "125.0 MHz",
+                               parameter integer std_pcs_pma_width = 10, parameter integer std_tx_byte_ser_enable = 0)
+                              (input [plls-1:0] pll_powerdown, input [channels-1:0] tx_analogreset,
+                               input [channels-1:0] tx_digitalreset, input [pll_refclk_cnt-1:0] tx_pll_refclk,
+                               output [channels-1:0] tx_serial_data, output [plls-1:0] pll_locked,
+                               input [channels-1:0] tx_std_coreclkin, output [channels-1:0] tx_std_clkout,
+                               output [channels-1:0] tx_cal_busy, input [channels*44-1:0] tx_parallel_data);
+    altera_xcvr_native_av #(.tx_enable(tx_enable), .rx_enable(rx_enable), .channels(channels), .data_rate(data_rate),
+                            .plls(plls), .pll_refclk_cnt(pll_refclk_cnt), .pll_refclk_select(pll_refclk_select),
+                            .pll_refclk_freq(pll_refclk_freq), .std_pcs_pma_width(std_pcs_pma_width),
+                            .std_tx_byte_ser_enable(std_tx_byte_ser_enable))
+        av (.pll_powerdown(pll_powerdown), .tx_analogreset(tx_analogreset), .tx_digitalreset(tx_digitalreset),
+            .tx_pll_refclk(tx_pll_refclk), .tx_serial_data(tx_serial_data), .pll_locked(pll_locked),
+            .tx_std_coreclkin(tx_std_coreclkin), .tx_std_clkout(tx_std_clkout), .tx_cal_busy(tx_cal_busy),
+            .tx_parallel_data(tx_parallel_data));
+endmodule
+
+// Transceiver Reconfiguration Controller (Arria V, Cyclone V; the core of the IP variation, its
+// generated files are not read): an Avalon-MM slave on mgmt_clk_clk; its outputs, including the
+// reconfiguration bus to the transceivers, are registers on mgmt_clk_clk.
+module alt_xcvr_reconfig #(parameter device_family = "Arria V", parameter integer number_of_reconfig_interfaces = 1)
+                          (input mgmt_clk_clk, input mgmt_rst_reset, input [6:0] reconfig_mgmt_address,
+                           input reconfig_mgmt_read, output [31:0] reconfig_mgmt_readdata,
+                           output reconfig_mgmt_waitrequest, input reconfig_mgmt_write,
+                           input [31:0] reconfig_mgmt_writedata, output reconfig_busy,
+                           output [number_of_reconfig_interfaces*70-1:0] reconfig_to_xcvr,
+                           input [number_of_reconfig_interfaces*46-1:0] reconfig_from_xcvr,
+                           output tx_cal_busy, output rx_cal_busy, input cal_busy_in);
+    reg [31:0] csr = 32'd0;
+    reg [number_of_reconfig_interfaces*46-1:0] from_q = 0;
+    reg busy = 1'b1, wait_q = 1'b0;
+    always @(posedge mgmt_clk_clk or posedge mgmt_rst_reset)
+        if (mgmt_rst_reset) begin
+            csr <= 32'd0; busy <= 1'b1; wait_q <= 1'b0;
+        end else begin
+            from_q <= reconfig_from_xcvr;
+            if (reconfig_mgmt_write) csr <= reconfig_mgmt_writedata ^ {25'd0, reconfig_mgmt_address};
+            else if (reconfig_mgmt_read) csr <= {31'd0, ^from_q};
+            busy <= cal_busy_in;
+            wait_q <= reconfig_mgmt_read | reconfig_mgmt_write;
+        end
+    assign reconfig_mgmt_readdata = csr;
+    assign reconfig_mgmt_waitrequest = wait_q;
+    assign reconfig_busy = busy;
+    assign tx_cal_busy = busy;
+    assign rx_cal_busy = busy;
+    assign reconfig_to_xcvr = {number_of_reconfig_interfaces*70{csr[0]}};
+endmodule
+
 // ---- MAX 10 atoms (fiftyfivenm_*, as altera_gpio_lite instantiates them) ----
 
 // DDR output: datainhi/datainlo registered on clkhi/clklo, the output selects them by muxsel

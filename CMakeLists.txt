@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(OpenCDC
-    VERSION 0.90.0
+    VERSION 0.91.0
     DESCRIPTION "OpenCDC Analyzer - FPGA clock domain crossing static analysis"
     LANGUAGES CXX)
 

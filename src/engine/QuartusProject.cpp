@@ -9,6 +9,7 @@
 #include <map>
 #include <regex>
 #include <set>
+#include <utility>
 #include <sstream>
 
 namespace opencdc::engine {
@@ -417,7 +418,12 @@ private:
             interp_.vars["quartus(qip_path)"] = generic(file.parent_path()) + "/";
         }
         scripts_.push_back(file);
+        const std::size_t sourcesBefore = cfg_.sources.size();
+        const std::string outerIp = std::exchange(modelledIp_, {});
         interp_.eval(*text);
+        if (qip && !modelledIp_.empty())
+            dropModelledIp(file, sourcesBefore);
+        modelledIp_ = outerIp;
         if (!interp_.error.empty()) {
             note("PRJ-QSF-TCL", Severity::Warning,
                  "evaluation of " + toUtf8(file.lexically_relative(dir_)) + " stopped: " + interp_.error,
@@ -426,6 +432,36 @@ private:
         }
         scripts_.pop_back();
         interp_.vars["quartus(qip_path)"] = saved;
+    }
+
+    /// IP variations whose core OpenCDC models (the Arria V / Cyclone V Transceiver Native PHY and
+    /// Reconfiguration Controller):
+    /// the files the .qip lists below the variation's own directory are the generated core
+    /// (altera_xcvr_native_av and its atoms); without them the core is the built-in model.
+    /// The variation's wrapper (tmds_tx_phy.v, next to the .qip) stays.
+    void dropModelledIp(const std::filesystem::path& qip, std::size_t from) {
+        const auto core = qip.parent_path() / qip.stem();
+        std::size_t dropped = 0;
+        std::vector<std::filesystem::path> keep;
+        std::vector<std::string> keepLib;
+        for (std::size_t i = 0; i < cfg_.sources.size(); ++i) {
+            const auto rel = cfg_.sources[i].lexically_relative(core);
+            const bool inside = i >= from && !rel.empty() && *rel.begin() != "..";
+            if (inside) {
+                ++dropped;
+                continue;
+            }
+            keep.push_back(cfg_.sources[i]);
+            keepLib.push_back(cfg_.sourceLibraries[i]);
+        }
+        if (dropped == 0)
+            return;
+        cfg_.sources = std::move(keep);
+        cfg_.sourceLibraries = std::move(keepLib);
+        note("PRJ-IP-MODEL", Severity::Info,
+             "IP variation '" + toUtf8(qip.stem()) + "' (" + modelledIp_ + "): its core is analyzed with the built-in model; " +
+                 std::to_string(dropped) + " generated file(s) not read",
+             {});
     }
 
     void addSource(const std::filesystem::path& p, const std::string& library) {
@@ -505,6 +541,12 @@ private:
                 cfg_.defines.push_back({v, std::nullopt});
             else
                 cfg_.defines.push_back({v.substr(0, eq), v.substr(eq + 1)});
+        }
+        else if (n == "IP_TOOL_NAME") {
+            static const std::set<std::string, std::less<>> modelled = {"altera_xcvr_native_av", "altera_xcvr_native_cv",
+                                                                              "alt_xcvr_reconfig"};
+            if (modelled.contains(v))
+                modelledIp_ = v;
         }
         else if (n == "TOP_LEVEL_ENTITY")
             cfg_.top = v;
@@ -727,6 +769,7 @@ private:
     std::vector<Diagnostic> notes_;
     std::vector<std::string> skipped_;
     std::size_t qips_ = 0;
+    std::string modelledIp_; ///< IP_TOOL_NAME of the .qip being read, when OpenCDC models its core
     bool systemVerilog_ = false;
 };
 

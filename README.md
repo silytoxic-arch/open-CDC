@@ -294,11 +294,17 @@ A Quartus project (`.qpf`: its first revision; or a revision's `.qsf`) can be gi
 * include directories (`SEARCH_PATH`, the directories of `VERILOG_INCLUDE_FILE`s), macros (`VERILOG_MACRO`), top-level parameters (`set_parameter` without `-to`), the top (`TOP_LEVEL_ENTITY`); SystemVerilog mode when a file is read as SystemVerilog (`SYSTEMVERILOG_FILE`, also for a `.v` file) or `VERILOG_INPUT_VERSION` says so;
 * the timing constraints (`SDC_FILE`).
 
+The Transceiver Native PHY (Arria V, Cyclone V) and Transceiver Reconfiguration Controller variations are analyzed with built-in models of their cores: the files their `.qip` lists below the variation's own directory (the generated `altera_xcvr_native_av` and its device atoms) are not read (`PRJ-IP-MODEL`); the TX parallel clock `tx_std_clkout` is derived from the selected reference clock at the data rate over the PCS-PMA width, with Quartus' name `…|txpmalocalclk` (see [docs/primitives.md](docs/primitives.md)).
+
 Reported: missing files (`PRJ-QSF-MISSING`), AHDL, schematics and netlists (`PRJ-QSF-UNSUPPORTED-FILE`), memory initialization and other files (`PRJ-QSF-SKIPPED`), Tcl commands not evaluated (`PRJ-QSF-TCL`), a script run before compilation that may generate files (`PRJ-QSF-PRE-FLOW`, e.g. MiSTer's `build_id.v`: compile once in Quartus, or run the script, before the analysis), the other revisions (`PRJ-QSF-REVISION`).
 
 Quartus accepts some constructs that (System)Verilog does not; OpenCDC reads them as Quartus does, with a warning each, and analyzes the design:
 * a net assigned in a procedural block (`wire x; always_comb x = ...`, or an output port without a type, `output [7:0] q` assigned in `always`): read as a variable (`FE-NET-PROCEDURAL-ASSIGN`); an `inout reg` port assigned procedurally is read as an output;
 * a name declared in a generate block and used outside it in the module: its declaration is read in the module (`FE-GENERATE-SCOPE`).
+* a compiler directive inside a module (`` `default_nettype none`` after the port list): applied after the module ends (`FE-DIRECTIVE-IN-MODULE`);
+* a `defparam` of a parameter the built-in model of a megafunction does not declare (the MegaWizard's `lpm_hint`, `port_*` of `altpll`): ignored, as a parameter override in `#(...)` is (`FE-PRIMITIVE-PARAM`, info).
+
+`while` loops are unrolled as synthesis tools do: a trial run in which every iteration runs finds the iteration where the condition must have become false (`value >>= 1` until `value == 0` ends after the value's width: Intel's `clogb2` called with a value of the design); up to it, each iteration runs under the conditions so far. A loop whose end is not found within 4096 iterations is reported (`IR-UNSUPPORTED-LOOP`). A shift by a constant amount is wiring, not logic, in the IR and in the CDC paths.
 
 #### Gowin projects
 
@@ -349,7 +355,7 @@ SCUBA netlists (the HDL that IPexpress generates) set the parameters of their ce
 
 In Quartus SDC, a net may be named with its entities (`get_nets {I2C_HDMI_Config:u_I2C_HDMI_Config|mI2C_CTRL_CLK}`; a clock created on it takes that name, as in Quartus), and a clock given as a pattern to `set_input_delay`/`set_output_delay -clock [get_clocks {*DDR3_PLL5*clk[2]}]` is the first clock (also from `derive_pll_clocks`) whose name or alias matches it. Verified with BrianHG's DDR3 controller on the DECA board (MAX 10: five DDR3 clocks and two video clocks; the PLL is told a phony input frequency on purpose, reported as `CON-INPUT-PERIOD`).
 
-Quartus' `set_clock_groups -exclusive` (an old alias of `-logically_exclusive`, used to cut paths between unrelated clocks; Quartus' Timing Analyzer treats all clock groups alike) is read as `-asynchronous` (`CON-EXCLUSIVE-AS-ASYNC`), so that the crossings between the groups are checked.
+The clock outputs of the PLL models are also pins by Quartus' names in `get_pins` (`u_pll|altpll_component|auto_generated|generic_pll1~PLL_OUTPUT_COUNTER|divclk`, the `-source` of a `create_generated_clock`); `-nowarn` (Quartus' `-quiet`) is accepted by `get_clocks`; a `create_generated_clock` whose targets match nothing defines no clock (the query reports it). Quartus' `set_clock_groups -exclusive` (an old alias of `-logically_exclusive`, used to cut paths between unrelated clocks; Quartus' Timing Analyzer treats all clock groups alike) is read as `-asynchronous` (`CON-EXCLUSIVE-AS-ASYNC`), so that the crossings between the groups are checked.
 
 #### VHDL and mixed designs
 

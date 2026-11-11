@@ -41,6 +41,8 @@ using namespace opencdc::ir;
 namespace {
 
 constexpr int kMaxLoopIterations = 65536;
+// while loops: the trial run that bounds them builds the body's logic once per iteration
+constexpr int kMaxWhileIterations = 4096;
 constexpr int kMaxInlineDepth = 32;
 
 /// Points the builder's "current procedural state" at a state for a scope.
@@ -506,6 +508,7 @@ void BodyBuilder::exec(const sast::Statement& s, ProcState& st) {
         }
         case SK::Case: execCase(s, st); return;
         case SK::ForLoop: execFor(s, st); return;
+        case SK::WhileLoop: execWhile(s, st); return;
         case SK::RepeatLoop: {
             const auto& r = s.as<sast::RepeatLoopStatement>();
             auto n = lower(r.count).asConst();
@@ -868,6 +871,72 @@ void BodyBuilder::execFor(const sast::Statement& s, ProcState& st) {
         // the loop variable steps on in every iteration: it stays a constant
         for (const auto* step : f.steps)
             execExpressionStatement(*step, st);
+    }
+}
+
+// while (c) body, as synthesis tools unroll it: the iterations run while the condition holds.
+// The number of iterations is bounded by a trial run in which every iteration runs: the first
+// iteration whose condition is constant false there (value >>= 1 until value == 0: after the
+// value's width) ends every run, as any run that got so far ran all iterations before it. Up to
+// that bound, each iteration runs under the conditions so far (the clogb2 function of Intel's
+// width adapter called with a value computed in the design).
+void BodyBuilder::execWhile(const sast::Statement& s, ProcState& st) {
+    ProcGuard guard(proc_, &st);
+    const auto& w = s.as<sast::WhileLoopStatement>();
+    const auto l = s.sourceRange.start();
+    auto condition = [&](ProcState& state) {
+        ProcGuard g(proc_, &state);
+        return toBool(lower(w.cond), l);
+    };
+    auto constant = [](const SigSpec& v) -> std::optional<bool> {
+        if (auto k = v.asConst(); k && k->isFullyDefined())
+            return !k->isZero();
+        return std::nullopt;
+    };
+    // the bound: a trial run without guards
+    int bound = 0;
+    {
+        ProcState trial = st;
+        ++quiet_;
+        for (;; ++bound) {
+            const auto c = constant(condition(trial));
+            if (c && !*c)
+                break;
+            if (bound >= kMaxWhileIterations || trial.returned) {
+                bound = -1;
+                break;
+            }
+            ProcGuard g(proc_, &trial);
+            exec(w.body, trial);
+        }
+        --quiet_;
+    }
+    if (bound < 0) {
+        unsupported("IR-UNSUPPORTED-LOOP",
+                    "while loop that does not end within " + std::to_string(kMaxWhileIterations) + " iterations", l);
+        return;
+    }
+    SigSpec active; // empty: every iteration so far ran
+    for (int iter = 0; iter < bound && !st.returned; ++iter) {
+        const SigSpec c = condition(st);
+        if (const auto k = constant(c)) {
+            if (!*k)
+                return;
+        }
+        else
+            active = active.empty() ? c : cell(CellKind::And, {active, c}, 1, l);
+        if (active.empty()) {
+            exec(w.body, st);
+            continue;
+        }
+        ProcState t = st;
+        {
+            ProcGuard g(proc_, &t);
+            exec(w.body, t);
+        }
+        ProcState merged;
+        merge(active, t, st, merged, l);
+        st = std::move(merged);
     }
 }
 

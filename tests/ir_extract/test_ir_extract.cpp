@@ -637,11 +637,13 @@ TEST_CASE("Loop with non-constant bound is reported", "[extract][loop][unsupport
     CHECK(e.countCode("IR-UNSUPPORTED-LOOP") == 1);
 }
 
-TEST_CASE("while loops are reported as unsupported", "[extract][unsupported]") {
+TEST_CASE("while loops whose end is not found are reported as unsupported", "[extract][unsupported]") {
+    // the condition never becomes constant when every iteration runs (y - 1 - 1 - ...)
     auto e = extract("module m(input [3:0] a, output reg [3:0] y);\n"
                      "  always @* begin y = a; while (y > 4'd8) y = y - 4'd1; end\n"
                      "endmodule\n");
-    CHECK(e.countCode("IR-UNSUPPORTED-STMT") == 1);
+    CHECK(e.countCode("IR-UNSUPPORTED-LOOP") == 1);
+    CHECK(e.countCode("IR-UNSUPPORTED-STMT") == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -737,8 +739,14 @@ TEST_CASE("Signed arithmetic shift and comparison", "[extract][expr]") {
                      "  assign y = a >>> 2;\n"
                      "  assign lt = a < b;\n"
                      "endmodule\n");
-    CHECK(e.contains("= sshr.s(A=a, B="));
+    // a shift by a constant is wiring: the sign bit fills the vacated bits
+    CHECK(e.has("assign y = {a[7], a[7], a[7:2]}"));
     CHECK(e.contains("= lt.s(A=a, B=b)"));
+    // a shift by a variable amount stays an operator
+    auto v = extract("module m(input signed [7:0] a, input [2:0] s, output signed [7:0] y);\n"
+                     "  assign y = a >>> s;\n"
+                     "endmodule\n");
+    CHECK(v.contains("= sshr.s(A=a, B=s)"));
 }
 
 TEST_CASE("Reduction and logical operators", "[extract][expr]") {
@@ -778,8 +786,7 @@ TEST_CASE("User functions are inlined", "[extract][function]") {
                      "  endfunction\n"
                      "  always @(posedge clk) g <= bin2gray(b);\n"
                      "endmodule\n");
-    CHECK(e.contains("= shr(A=b, B="));
-    CHECK(e.contains("= xor(A=b, B=$shr$"));
+    CHECK(e.contains("= xor(A=b, B={1'b0, b[3:1]})")); // v >> 1: wiring
     CHECK(e.contains("reg g <= $xor$"));
     CHECK(e.design->unsupported.empty());
 }

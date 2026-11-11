@@ -22,6 +22,7 @@
 #include <slang/diagnostics/LexerDiags.h>
 #include <slang/diagnostics/LookupDiags.h>
 #include <slang/diagnostics/ParserDiags.h>
+#include <slang/diagnostics/PreprocessorDiags.h>
 #include <slang/parsing/Lexer.h>
 #include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Preprocessor.h>
@@ -35,6 +36,7 @@
 #include <slang/util/LanguageVersion.h>
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <exception>
 #include <functional>
@@ -177,6 +179,43 @@ struct ConstantBranchCollector
     }
 };
 
+/// For a name in a defparam (`defparam inst.param = ...`): the parameter and the module that
+/// `inst` instantiates in the same file (found in the text: `<module> [#(...)] inst (`).
+std::optional<std::pair<std::string, std::string>> defparamPrimitive(const slang::SourceManager& sm,
+                                                                     slang::SourceLocation loc) {
+    const std::string_view text = sm.getSourceText(loc.buffer());
+    std::size_t i = loc.offset();
+    if (i < text.size() && text[i] == '.') // slang points at the dot before the name
+        ++i;
+    if (i >= text.size())
+        return std::nullopt;
+    auto isId = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '$'; };
+    std::size_t e = i;
+    while (e < text.size() && isId(text[e]))
+        ++e;
+    const std::string param(text.substr(i, e - i));
+    if (param.empty() || i == 0 || text[i - 1] != '.')
+        return std::nullopt;
+    std::size_t ie = i - 1;
+    std::size_t ib = ie;
+    while (ib > 0 && isId(text[ib - 1]))
+        --ib;
+    if (ib == ie)
+        return std::nullopt;
+    const std::string inst(text.substr(ib, ie - ib));
+    // inside a defparam statement: the keyword before, with no ';' between
+    const std::size_t semi = text.rfind(';', ib);
+    const std::size_t kw = text.rfind("defparam", ib);
+    if (kw == std::string_view::npos || (semi != std::string_view::npos && semi > kw))
+        return std::nullopt;
+    // the instantiation of `inst`
+    const std::regex re("\\b([A-Za-z_][A-Za-z0-9_$]*)\\s*(#\\s*\\([^;]*?\\))?\\s+" + inst + "\\s*\\(");
+    std::match_results<std::string_view::const_iterator> m;
+    if (!std::regex_search(text.begin(), text.end(), m, re))
+        return std::nullopt;
+    return std::make_pair(param, m[1].str());
+}
+
 bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::SourceManager& sm, DiagnosticSink& sink,
                             const std::set<std::string>* lenientModules = nullptr,
                             const std::vector<UnusedRange>* unused = nullptr,
@@ -227,6 +266,17 @@ bool reportSlangDiagnostics(const slang::Diagnostics& diags, const slang::Source
                     out.message = "port " + out.message.substr(p0, p1 - p0 + 1) + " of vendor primitive '" + module +
                                   "' is not modelled; its connection is ignored";
                 }
+            }
+        }
+        // defparam altpll_component.lpm_hint = "...": a parameter the vendor model does not declare
+        // (as for a parameter override in #(...), which slang already accepts): not used
+        if (lenientModules && diag.code == slang::diag::CouldNotResolveHierarchicalPath && diag.location.valid()) {
+            if (auto prim = defparamPrimitive(sm, sm.getFullyOriginalLoc(diag.location));
+                prim && lenientModules->contains(prim->second)) {
+                out.code = "FE-PRIMITIVE-PARAM";
+                out.severity = Severity::Info;
+                out.message = "parameter '" + prim->first + "' of vendor primitive '" + prim->second +
+                              "' is not modelled; its defparam is ignored";
             }
         }
         if (diag.code == slang::diag::UnknownModule)
@@ -469,6 +519,52 @@ std::vector<SourceEdit> unaryOperandEdits(const slang::SourceManager& sm, slang:
     return out;
 }
 
+/// `default_nettype none` (or `timescale, `resetall) inside a module (MiSTVGA's dvi_tx_top.v, after
+/// the port list): (System)Verilog allows compiler directives only outside design elements; Quartus
+/// applies them from there on. The directive moves behind the module's `endmodule`, where it still
+/// applies to the files after it.
+std::vector<SourceEdit> directiveInModuleEdits(const slang::SourceManager& sm, slang::SourceLocation loc) {
+    const auto text = sm.getSourceText(loc.buffer());
+    std::size_t b = loc.offset();
+    if (b >= text.size() || text[b] != '`')
+        return {};
+    std::size_t e = b;
+    while (e < text.size() && text[e] != '\n' && text[e] != '\r' && !(text[e] == '/' && e + 1 < text.size() &&
+                                                                         (text[e + 1] == '/' || text[e + 1] == '*')))
+        ++e;
+    std::string directive(text.substr(b, e - b));
+    while (!directive.empty() && std::isspace(static_cast<unsigned char>(directive.back())) != 0)
+        directive.pop_back();
+    const std::string name = directive.substr(1, directive.find_first_of(" \t") == std::string::npos
+                                                     ? std::string::npos
+                                                     : directive.find_first_of(" \t") - 1);
+    if (name != "default_nettype" && name != "timescale" && name != "resetall")
+        return {};
+    // the end of the enclosing design element: the next endmodule/endinterface/endpackage/endprogram
+    std::size_t end = std::string_view::npos;
+    for (const char* kw : {"endmodule", "endinterface", "endpackage", "endprogram"}) {
+        for (std::size_t k = text.find(kw, e); k != std::string_view::npos; k = text.find(kw, k + 1)) {
+            const std::size_t after = k + std::strlen(kw);
+            const bool wordStart = k == 0 || (std::isalnum(static_cast<unsigned char>(text[k - 1])) == 0 && text[k - 1] != '_');
+            const bool wordEnd = after >= text.size() || (std::isalnum(static_cast<unsigned char>(text[after])) == 0 && text[after] != '_');
+            if (wordStart && wordEnd) {
+                end = std::min(end, after);
+                break;
+            }
+        }
+    }
+    if (end == std::string_view::npos)
+        return {};
+    const auto key = bufferKey(sm, loc.buffer());
+    std::vector<SourceEdit> out;
+    out.push_back({key, b, directive.size(), std::string(directive.size(), ' '), "FE-DIRECTIVE-IN-MODULE",
+                   "compiler directive '" + directive + "' inside a design element, which (System)Verilog does not "
+                       "allow: applied after the element ends (Quartus applies it from here on)",
+                   "move the directive before the module to make the design portable", convertLocation(sm, loc)});
+    out.push_back({key, end, 0, "\n" + directive + "\n", "", "", "", {}});
+    return out;
+}
+
 /// `last_byte[i:0] == 0` in a for loop (the CSI-2 receiver's byte aligner): a part select
 /// whose bounds are loop variables, which (System)Verilog does not allow (the width of a
 /// part select is constant); Yosys accepts it, as every iteration has constant bounds.
@@ -561,6 +657,10 @@ std::vector<SourceEdit> quartusCompatEdits(const slang::Diagnostics& diags, cons
             portDefaults.push_back(loc);
         if (d.code == slang::diag::NotAValue && !d.notes.empty())
             notAValue.emplace_back(loc, sm.getFullyOriginalLoc(d.notes.front().location));
+        if (d.code == slang::diag::DirectiveInsideDesignElement)
+            for (auto& x : directiveInModuleEdits(sm, loc))
+                if (std::ranges::none_of(edits, [&](const SourceEdit& y) { return y.file == x.file && y.offset == x.offset; }))
+                    edits.push_back(std::move(x));
         if (d.code == slang::diag::ConstEvalNonConstVariable)
             if (auto e = variableRangeEdit(sm, loc))
                 if (std::ranges::none_of(edits, [&](const SourceEdit& y) { return y.file == e->file && y.offset == e->offset; }))

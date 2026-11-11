@@ -257,13 +257,27 @@ private:
                 return std::nullopt;
             }
         };
-        // frequencies as written on Intel/Gowin PLLs: "200.000000 MHz", "100" (MHz)
+        // frequencies as written on Intel/Gowin PLLs: "200.000000 MHz", "100" (MHz); a data rate
+        // "1250 Mbps" (a transceiver's); from a list "unused,125.0 MHz" the element that
+        // <key>_INDEX selects
         auto attrFrequencyMHz = [&](std::string_view key) -> std::optional<double> {
             const auto* a = net.findAttr(key);
             if (!a)
                 return std::nullopt;
             std::string v = a->value;
             std::erase(v, '"');
+            if (const auto index = attrNumber(std::string(key) + "_INDEX")) {
+                std::vector<std::string> items;
+                for (std::size_t from = 0; from <= v.size();) {
+                    const auto comma = v.find(',', from);
+                    items.push_back(v.substr(from, comma == std::string::npos ? std::string::npos : comma - from));
+                    from = comma == std::string::npos ? v.size() + 1 : comma + 1;
+                }
+                const auto k = static_cast<std::size_t>(*index);
+                if (*index < 0 || k >= items.size())
+                    return std::nullopt;
+                v = items[k];
+            }
             try {
                 std::size_t used = 0;
                 double x = std::stod(v, &used);
@@ -276,7 +290,9 @@ private:
                     x /= 1000.0;
                 else if (unit == "hz")
                     x /= 1e6;
-                else if (!unit.empty() && unit != "mhz")
+                else if (unit == "gbps")
+                    x *= 1000.0;
+                else if (!unit.empty() && unit != "mhz" && unit != "mbps")
                     return std::nullopt;
                 return x > 0 && std::isfinite(x) ? std::optional(x) : std::nullopt;
             }
@@ -287,8 +303,12 @@ private:
         auto ratio = ratioOverride ? ratioOverride : attrNumber("OPENCDC_CLOCK_RATIO");
         auto inPeriod = attrNumber("OPENCDC_CLOCK_INPUT_PERIOD");
         if (const auto fin = attrFrequencyMHz("OPENCDC_CLOCK_FREQ_IN")) {
-            if (const auto fout = attrFrequencyMHz("OPENCDC_CLOCK_FREQ_OUT"); fout && !ratio)
+            if (auto fout = attrFrequencyMHz("OPENCDC_CLOCK_FREQ_OUT"); fout && !ratio) {
+                // a word clock: the data rate over the word width
+                if (const auto div = attrNumber("OPENCDC_CLOCK_FREQ_OUT_DIVIDE"); div && *div > 0)
+                    *fout /= *div;
                 ratio = *fin / *fout;
+            }
             if (!inPeriod)
                 inPeriod = 1000.0 / *fin;
         }

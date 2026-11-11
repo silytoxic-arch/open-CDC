@@ -50,13 +50,12 @@ module rptr_empty#(ASIZE=4)
   cell $not$0 [5] = not(A={4'b0000, rempty})
   cell $and$1 [5] = and(A={4'b0000, rinc}, B=$not$0)
   cell $add$2 [5] = add(A=rbin, B=$and$1)
-  cell $shr$3 [5] = shr(A=rbinnext, B=32'b00000000000000000000000000000001)
-  cell $xor$4 [5] = xor(A=$shr$3, B=rbinnext)
-  cell $eq$5 [1] = eq(A=rgraynext, B=rq2_wptr)
+  cell $xor$3 [5] = xor(A={1'b0, rbinnext[4:1]}, B=rbinnext)
+  cell $eq$4 [1] = eq(A=rgraynext, B=rq2_wptr)
   assign raddr = rbin[3:0]
   assign rbinnext = $add$2
-  assign rgraynext = $xor$4
-  assign rempty_val = $eq$5
+  assign rgraynext = $xor$3
+  assign rempty_val = $eq$4
   reg rptr <= rgraynext @(posedge rclk) arst(!rrst_n -> 5'b00000)
   reg rbin <= rbinnext @(posedge rclk) arst(!rrst_n -> 5'b00000)
   reg rempty <= rempty_val @(posedge rclk) arst(!rrst_n -> 1'b1)
@@ -77,14 +76,13 @@ module wptr_full#(ASIZE=4)
   cell $not$0 [5] = not(A={4'b0000, wfull})
   cell $and$1 [5] = and(A={4'b0000, winc}, B=$not$0)
   cell $add$2 [5] = add(A=wbin, B=$and$1)
-  cell $shr$3 [5] = shr(A=wbinnext, B=32'b00000000000000000000000000000001)
-  cell $xor$4 [5] = xor(A=$shr$3, B=wbinnext)
-  cell $not$5 [2] = not(A=wq2_rptr[4:3])
-  cell $eq$6 [1] = eq(A=wgraynext, B={$not$5, wq2_rptr[2:0]})
+  cell $xor$3 [5] = xor(A={1'b0, wbinnext[4:1]}, B=wbinnext)
+  cell $not$4 [2] = not(A=wq2_rptr[4:3])
+  cell $eq$5 [1] = eq(A=wgraynext, B={$not$4, wq2_rptr[2:0]})
   assign waddr = wbin[3:0]
   assign wbinnext = $add$2
-  assign wgraynext = $xor$4
-  assign wfull_val = $eq$6
+  assign wgraynext = $xor$3
+  assign wfull_val = $eq$5
   reg wptr <= wgraynext @(posedge wclk) arst(!wrst_n -> 5'b00000)
   reg wbin <= wbinnext @(posedge wclk) arst(!wrst_n -> 5'b00000)
   reg wfull <= wfull_val @(posedge wclk) arst(!wrst_n -> 1'b0)

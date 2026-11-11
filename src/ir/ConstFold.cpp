@@ -298,6 +298,32 @@ std::optional<SigSpec> simplifyCell(const Cell& c) {
             return A.replaced(*off * c.elemWidth, D);
         }
         case CellKind::Opaque: return std::nullopt;
+        case CellKind::Shl:
+        case CellKind::Shr:
+        case CellKind::Sshr: {
+            // a shift by a constant amount is wiring: the bits move, zeros (or sign copies) fill
+            const auto& A = c.inputs.at(0);
+            if (A.asConst() || A.width() == 0)
+                break; // a constant value folds below
+            const auto amount = constUint(c.inputs.at(1));
+            if (!amount)
+                break;
+            const std::uint32_t w = c.width;
+            const bool arith = c.kind == CellKind::Sshr && c.isSigned;
+            const std::uint64_t k = *amount;
+            SigSpec out;
+            for (std::uint32_t i = 0; i < w; ++i) {
+                if (c.kind == CellKind::Shl) {
+                    out.append(i >= k && i - k < A.width() ? A.bit(static_cast<std::uint32_t>(i - k))
+                                                           : SigSpec::constant(0, 1));
+                }
+                else if (i + k < A.width())
+                    out.append(A.bit(static_cast<std::uint32_t>(i + k)));
+                else
+                    out.append(arith ? A.bit(A.width() - 1) : SigSpec::constant(0, 1));
+            }
+            return out;
+        }
         default: break;
     }
 

@@ -221,6 +221,8 @@ private:
     void execExpressionStatement(const sast::Expression& e, ProcState& st);
     void execCase(const sast::Statement& s, ProcState& st);
     void execFor(const sast::Statement& s, ProcState& st);
+    void execWhile(const sast::Statement& s, ProcState& st);
+    int quiet_ = 0; ///< > 0: a trial run (execWhile's bound): no diagnostics
     void execTaskCall(const sast::CallExpression& call, ProcState& st, slang::SourceLocation l);
     void merge(const ir::SigSpec& cond, ProcState& thenSt, ProcState& elseSt, ProcState& out,
                slang::SourceLocation l);

@@ -34,6 +34,14 @@ struct Analysis {
             return d.code == code && d.message.find(text) != std::string::npos;
         });
     }
+    [[nodiscard]] const cdc::CdcPath* path(std::string_view from, std::string_view to) const {
+        if (!r->cdc)
+            return nullptr;
+        for (const auto& p : r->cdc->paths)
+            if (p.srcName == from && p.dstName == to)
+                return &p;
+        return nullptr;
+    }
     [[nodiscard]] bool crosses(std::string_view from, std::string_view to) const {
         if (!r->cdc)
             return false;
@@ -873,4 +881,156 @@ TEST_CASE("Yosys compatibility: a part select bounded by a loop variable in a co
                      "top");
     CHECK(b.errors() >= 1);
     CHECK(b.count("FE-VARIABLE-RANGE") == 0);
+}
+
+TEST_CASE("Quartus compatibility: a compiler directive inside a module", "[quartus-compat][directive]") {
+    // MiSTVGA's dvi_tx_top.v: `default_nettype none after the port list
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"a.v", "module top(input clk, input d, output reg q);\n"
+                              "`default_nettype none\n"
+                              "  wire x = d;\n"
+                              "  always @(posedge clk) q <= x;\n"
+                              "endmodule\n"},
+                      {"b.v", "module other(input i, output o);\n  assign undeclared = i;\n  assign o = i;\nendmodule\n"}},
+                     "top");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-DIRECTIVE-IN-MODULE") == 1);
+    CHECK(a.has("FE-DIRECTIVE-IN-MODULE", "'`default_nettype none'"));
+    // negative: written before the module there is nothing to report
+    test::TempDir dir2;
+    auto b = analyze(dir2,
+                     {{"a.v", "`default_nettype none\nmodule top(input wire clk, input wire d, output reg q);\n"
+                              "  always @(posedge clk) q <= d;\nendmodule\n`default_nettype wire\n"}},
+                     "top");
+    CHECK(b.errors() == 0);
+    CHECK(b.count("FE-DIRECTIVE-IN-MODULE") == 0);
+}
+
+TEST_CASE("Quartus compatibility: defparam of a parameter a vendor model does not declare", "[quartus-compat][defparam]") {
+    // MiSTVGA's a5gx_ssram_pll.v: the MegaWizard's defparam list of altpll (lpm_hint, port_*)
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input clk, input d, output reg q);\n"
+                              "  wire [4:0] c;\n"
+                              "  altpll altpll_component(.inclk({1'b0, clk}), .clk(c));\n"
+                              "  defparam altpll_component.lpm_hint = \"CBX_MODULE_PREFIX=pll\",\n"
+                              "           altpll_component.port_scanclk = \"PORT_UNUSED\",\n"
+                              "           altpll_component.clk0_multiply_by = 2;\n"
+                              "  always @(posedge c[0]) q <= d;\n"
+                              "endmodule\n"}},
+                     "top", "create_clock -period 10 [get_ports clk]\n");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("FE-PRIMITIVE-PARAM") == 2);
+    // the parameters the model has still apply: the output runs at twice the input clock
+    REQUIRE(a.r->clocks);
+    CHECK(std::ranges::any_of(a.r->clocks->clocks, [](const clock::Clock& c) { return c.periodNs && *c.periodNs == 5.0; }));
+    // negative: a parameter a design module does not have is still an error
+    test::TempDir dir2;
+    auto b = analyze(dir2,
+                     {{"t.v", "module sub #(parameter W = 1)(input i, output o); assign o = i; endmodule\n"
+                              "module top(input i, output o);\n  sub u(.i(i), .o(o));\n  defparam u.NOPE = 3;\nendmodule\n"}},
+                     "top");
+    CHECK(b.errors() >= 1);
+    CHECK(b.count("FE-PRIMITIVE-PARAM") == 0);
+}
+
+TEST_CASE("While loops are unrolled up to the iteration where they must have ended", "[frontend][while]") {
+    // Intel's altera_merlin_width_adapter: clogb2(size_ratio) with a value computed in the design
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input clk, input [7:0] x, output reg [3:0] q);\n"
+                              "  function integer clogb2;\n"
+                              "    input [63:0] value;\n"
+                              "    begin\n"
+                              "      clogb2 = 0;\n"
+                              "      while (value > 0) begin value = value >> 1; clogb2 = clogb2 + 1; end\n"
+                              "      clogb2 = clogb2 - 1;\n"
+                              "    end\n"
+                              "  endfunction\n"
+                              "  always @(posedge clk) q <= clogb2(x);\n"
+                              "endmodule\n"}},
+                     "top");
+    CHECK(a.errors() == 0);
+    CHECK(a.count("IR-UNSUPPORTED-LOOP") == 0);
+    CHECK(a.count("IR-UNSUPPORTED-STMT") == 0);
+    // negative: a loop whose condition never becomes constant is still reported
+    test::TempDir dir2;
+    auto b = analyze(dir2,
+                     {{"t.v", "module top(input clk, input [7:0] x, output reg [7:0] q);\n"
+                              "  reg [7:0] v;\n"
+                              "  always @(posedge clk) begin v = x; while (v != 8'd3) v = v + 8'd1; q <= v; end\n"
+                              "endmodule\n"}},
+                     "top");
+    CHECK(b.count("IR-UNSUPPORTED-LOOP") == 1);
+}
+
+TEST_CASE("Quartus SDC: the PLL's output pins, -nowarn, a generated clock on nothing", "[quartus-compat][sdc-pll-pins]") {
+    // MiSTVGA's SDC: create_generated_clock -source [get_pins -compatibility_mode
+    // {u_ssram_pll|altpll_component|auto_generated|generic_pll1~PLL_OUTPUT_COUNTER|divclk}] [get_ports sram_clk];
+    // set_clock_groups ... -group [get_clocks -nowarn {clk_100 ssram_clk_out *u_ssram_pll*}]
+    test::TempDir dir;
+    const std::string design = "module top(input clk, input clk2, input d, output reg q, output reg q2, output sram_clk);\n"
+                               "  wire [4:0] c;\n"
+                               "  altpll #(.clk0_multiply_by(1), .clk0_divide_by(1)) u_ssram_pll(.inclk({1'b0, clk}), .clk(c));\n"
+                               "  assign sram_clk = c[0];\n"
+                               "  reg a; always @(posedge c[0]) a <= d;\n"
+                               "  always @(posedge clk2) q <= a;\n"
+                               "  always @(posedge c[0]) q2 <= a;\n"
+                               "endmodule\n";
+    auto a = analyze(dir, {{"t.v", design}}, "top",
+                     "create_clock -name clk_100 -period 10 [get_ports clk]\n"
+                     "create_clock -name other -period 7 [get_ports clk2]\n"
+                     "create_generated_clock -name ssram_clk_out -source [get_pins -compatibility_mode "
+                     "{u_ssram_pll|altpll_component|auto_generated|generic_pll1~PLL_OUTPUT_COUNTER|divclk "
+                     "u_ssram_pll|auto_generated|generic_pll1~PLL_OUTPUT_COUNTER|divclk}] -divide_by 1 [get_ports sram_clk]\n"
+                     "create_generated_clock -name nothing -source [get_ports clk] [get_pins {no|such|pin}]\n"
+                     "set_clock_groups -asynchronous -group [get_clocks -nowarn {clk_100 ssram_clk_out *u_ssram_pll*}] "
+                     "-group [get_clocks -nowarn {other}]\n");
+    CHECK(a.errors() == 0);
+    // the -source pin is the PLL's output (one CON-UNMATCHED for the instance-less spelling, one for no|such|pin)
+    CHECK(a.count("CON-UNMATCHED") == 2);
+    REQUIRE(a.r->clocks);
+    const auto* gen = [&]() -> const clock::Clock* {
+        for (const auto& c : a.r->clocks->clocks)
+            if (c.name == "ssram_clk_out")
+                return &c;
+        return nullptr;
+    }();
+    REQUIRE(gen);
+    CHECK(gen->master.valid());
+    // -nowarn is a flag: the groups hold the named clocks, not every clock
+    CHECK(a.count("CON-GROUP-OVERLAP") == 0);
+    CHECK(a.count("CON-UNKNOWN-OPTION") == 0);
+    // negative: a misspelled pin of the PLL finds nothing
+    test::TempDir dir2;
+    auto b = analyze(dir2, {{"t.v", design}}, "top",
+                     "create_clock -name clk_100 -period 10 [get_ports clk]\n"
+                     "create_generated_clock -name ssram_clk_out -source [get_pins "
+                     "{u_ssram_pll|altpll_component|auto_generated|generic_pll9~PLL_OUTPUT_COUNTER|divclk}] "
+                     "[get_ports sram_clk]\n");
+    CHECK(b.errors() == 0);
+    CHECK(b.count("CON-UNMATCHED") == 1);
+}
+
+TEST_CASE("A shift by a constant is wiring, not logic", "[ir][fold][shift-wiring]") {
+    // corundum's PTP leaf clock: src_ns_sync_reg <= src_ns_reg >> 8 in the destination domain
+    test::TempDir dir;
+    auto a = analyze(dir,
+                     {{"t.v", "module top(input clk_a, input clk_b, input [15:0] d, input [2:0] s,\n"
+                              "           output reg [7:0] q, output reg [15:0] v);\n"
+                              "  reg [15:0] r; always @(posedge clk_a) r <= d;\n"
+                              "  always @(posedge clk_b) q <= r >> 8;\n"
+                              "  always @(posedge clk_b) v <= r >> s;\n"
+                              "endmodule\n"}},
+                     "top");
+    REQUIRE(a.r->cdc);
+    const auto* wired = a.path("top.r", "top.q");
+    REQUIRE(wired);
+    CHECK_FALSE(wired->throughLogic);
+    CHECK(wired->width == 8); // only the bits that arrive
+    // negative: a shift by a variable amount is logic
+    const auto* shifted = a.path("top.r", "top.v");
+    REQUIRE(shifted);
+    CHECK(shifted->throughLogic);
 }
